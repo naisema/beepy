@@ -162,7 +162,7 @@ class Canvas:
 # dithering it would only blur glyphs that are already only 5 px wide.
 FONT_SRC = "../libbeepyfb/font.c"
 
-EXTRA = {                                   # not in gps-monitor.c's table
+EXTRA = {                                   # fallback only; the C table wins
     "%": (0x19, 0x1A, 0x02, 0x04, 0x08, 0x0B, 0x13),
     ">": (0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08),
     "<": (0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02),
@@ -172,15 +172,20 @@ EXTRA = {                                   # not in gps-monitor.c's table
 
 def load_font():
     import re
-    glyphs = dict(EXTRA)
     try:
         src = open(FONT_SRC).read()
     except OSError:
-        return glyphs
+        return dict(EXTRA)
+    glyphs = {}
     body = src.split("static const unsigned char FONT")[1].split("};")[0]
     for m in re.finditer(r"\[(\d+)\]\s*=\s*\{([^}]*)\}", body):
         glyphs[chr(32 + int(m.group(1)))] = tuple(
             int(v, 0) for v in m.group(2).split(","))
+    # Every glyph transcribed into EXTRA must exist in the C table and match
+    # bit for bit, so a transcription typo cannot silently shift the mockups.
+    for ch, rows in EXTRA.items():
+        assert glyphs.get(ch) == rows, \
+            f"EXTRA[{ch!r}] disagrees with {FONT_SRC}: {glyphs.get(ch)} != {rows}"
     return glyphs
 
 
