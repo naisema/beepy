@@ -1,0 +1,24 @@
+# Device home-directory backup — contains a hardcoded API key
+# (beepy/chatgpt_client.py, see CLAUDE.md). Never commit.
+/beepy/
+/beepy.tar.gz
+
+# Independent git checkout of michaelstepner/beepy-buildroot (own history,
+# own remote) — not part of this repo.
+/beepy-buildroot/
+
+# Build outputs
+*.o
+*.a
+out-*.fb
+/gps-monitor/gps-monitor
+/beepy-nav/beepy-nav
+/beepy-nav/fbplay
+
+# Generated animation (9+ MB, regenerable via sim.py)
+sim-anim.bin
+
+# OS / tooling noise
+.DS_Store
+__pycache__/
+*.pyc

@@ -1,0 +1,69 @@
+#!/bin/sh
+#
+# Show a raw 400x240 XRGB frame on the Beepy panel, then restore the console.
+#
+# Usage: fbshow [--verify] FRAME.fb [SECONDS]
+#
+#   SECONDS    how long to display; default 20, 0 = until you press Enter
+#   --verify   read the framebuffer back and confirm the pixels landed
+#
+# The console on this panel is fbterm -- a userspace framebuffer terminal, not
+# the kernel's fbcon -- so unbinding /sys/class/vtconsole/vtcon1 would not stop
+# it repainting over us. It is SIGSTOPped for the duration and SIGCONTed after,
+# which is why restore is wired to every exit path.
+#
+# If a connection drops at the wrong moment and the panel stays frozen on the
+# image, recover with:  kill -CONT $(pgrep -x fbterm)
+
+set -u
+
+VERIFY=no
+case "${1:-}" in
+	--verify) VERIFY=yes; shift ;;
+	-h|--help) sed -n '3,18p' "$0" | sed 's/^#\{1,2\} \{0,1\}//'; exit 0 ;;
+esac
+
+FRAME=${1:?usage: fbshow [--verify] FRAME.fb [SECONDS]}
+SECS=${2:-20}
+FB=${FB:-/dev/fb1}
+SIZE=384000
+
+[ -r "$FRAME" ] || { echo "fbshow: cannot read $FRAME" >&2; exit 1; }
+have=$(wc -c < "$FRAME")
+[ "$have" = "$SIZE" ] || { echo "fbshow: $FRAME is $have bytes, expected $SIZE" >&2; exit 1; }
+[ -w "$FB" ] || { echo "fbshow: cannot write $FB (need group video)" >&2; exit 1; }
+
+PIDS=$(pgrep -x fbterm 2>/dev/null || true)
+
+restore() {
+	for p in $PIDS; do kill -CONT "$p" 2>/dev/null || :; done
+	# fbterm only repaints when the tty content changes, so ask every attached
+	# tmux client to redraw; otherwise the frame would linger on the panel.
+	tmux list-clients -F '#{client_name}' 2>/dev/null | while read -r c; do
+		tmux refresh-client -t "$c" 2>/dev/null || :
+	done
+}
+trap restore EXIT INT TERM HUP
+
+for p in $PIDS; do kill -STOP "$p" 2>/dev/null || :; done
+
+dd if="$FRAME" of="$FB" bs=$SIZE count=1 conv=notrunc status=none
+
+if [ "$VERIFY" = yes ]; then
+	back=$(mktemp)
+	dd if="$FB" of="$back" bs=$SIZE count=1 status=none
+	if cmp -s "$FRAME" "$back"; then
+		echo "verify: OK - all $SIZE bytes match what is on the panel"
+	else
+		echo "verify: MISMATCH - $(cmp -l "$FRAME" "$back" | wc -l) bytes differ"
+	fi
+	rm -f "$back"
+fi
+
+if [ "$SECS" = 0 ]; then
+	printf 'displaying %s; press Enter to restore the console: ' "$FRAME"
+	read -r _ || :
+else
+	echo "displaying $FRAME for ${SECS}s, then restoring the console"
+	sleep "$SECS"
+fi

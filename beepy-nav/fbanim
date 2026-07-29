@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# Play a packed 1-bit animation on the Beepy panel, then restore the console.
+#
+# Usage: fbanim ANIM.bin [FPS]
+#
+# Same fbterm SIGSTOP/SIGCONT dance as fbshow -- see that script for why.
+# Recovery if a connection drops mid-play:  kill -CONT $(pgrep -x fbterm)
+
+set -u
+ANIM=${1:?usage: fbanim ANIM.bin [FPS]}
+FPS=${2:-6}
+
+[ -r "$ANIM" ] || { echo "fbanim: cannot read $ANIM" >&2; exit 1; }
+
+PIDS=$(pgrep -x fbterm 2>/dev/null || true)
+restore() {
+	for p in $PIDS; do kill -CONT "$p" 2>/dev/null || :; done
+	tmux list-clients -F '#{client_name}' 2>/dev/null | while read -r c; do
+		tmux refresh-client -t "$c" 2>/dev/null || :
+	done
+}
+trap restore EXIT INT TERM HUP
+
+for p in $PIDS; do kill -STOP "$p" 2>/dev/null || :; done
+"$(dirname "$0")/fbplay" "$ANIM" "$FPS"
