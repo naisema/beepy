@@ -102,6 +102,12 @@ endif
 # which is the same thing pointed at the portable binary.
 
 NAV       ?= ./beepy-nav/beepy-nav
+# The four rides below assert per-FIX maths -- snap, latch, cue, progress --
+# which DESIGN.md 8 recomputes once per fix and which is therefore independent
+# of the display rate. Rendering each of them eight times over (6.3's frame
+# clock) would add three minutes to every `make sync` and check nothing new,
+# so they run one frame per fix. The 8 Hz path has its own tests below.
+FPS1       = --fps 1
 RDIR       = beepy-nav/tests/replay
 RROUTE     = beepy-nav/tests/gpx/loop.gpx
 MKNMEA     = python3 tools/mknmea.py --gpx $(RROUTE)
@@ -124,23 +130,23 @@ $(RDIR)/rough.nmea: tools/mknmea.py $(RROUTE)
 
 test-replay: $(NAV) $(REPLAYS)
 	@echo "--- T-RIDE: a ride along its own route"
-	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless \
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless $(FPS1) \
 		--trace $(RDIR)/ride.tsv
 	$(ASSERT) $(RDIR)/ride.tsv --zero off_latched --monotone-up pct \
 		--monotone-down togo_m --monotone-up cue_i \
 		--always off_m "<=" 5 --final pct ">=" 99
 	@echo "--- T-STATIONARY: ten minutes at a standstill"
-	$(NAV) --route $(RROUTE) --replay $(RDIR)/stationary.nmea --headless \
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/stationary.nmea --headless $(FPS1) \
 		--trace $(RDIR)/stationary.tsv
 	$(ASSERT) $(RDIR)/stationary.tsv --max along_m 5 --max off_m 5 \
 		--constant heading_deg --zero off_latched
 	@echo "--- T-DETOUR: a 100 m excursion, latched once and cleared once"
-	$(NAV) --route $(RROUTE) --replay $(RDIR)/detour.nmea --headless \
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/detour.nmea --headless $(FPS1) \
 		--trace $(RDIR)/detour.tsv
 	$(ASSERT) $(RDIR)/detour.tsv --latch-count off_latched 1 \
 		--final off_latched "==" 0 --monotone-up cue_i --final pct ">=" 99
 	@echo "--- T-ROUGH: jitter, a 40 s dropout and 30 s with no fix"
-	$(NAV) --route $(RROUTE) --replay $(RDIR)/rough.nmea --headless \
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/rough.nmea --headless $(FPS1) \
 		--trace $(RDIR)/rough.tsv
 	$(ASSERT) $(RDIR)/rough.tsv --monotone-up cue_i --final pct ">=" 99
 	@echo "--- T-CLIP: a route leaving the map on all four sides"

@@ -440,9 +440,39 @@ out on long straights. `Z`/`X` switch to manual; `A` returns to auto. The scale
 bar picks whichever of 25/50/100/200/500 m, 1/2/5/10/20 km lands between 50 and
 100 px, so it is always a round number.
 
-Heading for course-up comes from VTG, smoothed with a circular EWMA (α = 0.25)
-and **frozen below 3 km/h**. Without the freeze the map spins at every traffic
+Heading for course-up comes from VTG, smoothed with a circular EWMA and
+**frozen below 3 km/h**. Without the freeze the map spins at every traffic
 light, which is the single most common complaint about course-up modes.
+
+**The smoothing constant is a time constant, not a per-frame α.** An earlier
+draft of this section said α = 0.25, and left unsaid what it was 0.25 *per* —
+which was survivable only while the display redrew once per fix. §6.3 renders
+at 8 Hz, so a fixed per-frame α would smooth eight times harder than the same
+number did at 1 Hz, and the map would lag a corner by seconds.
+
+The reference is `sim.py`, which is the only version of this smoothing that has
+been watched moving: α = 0.3 per frame at 6 fps. Read as a time constant that
+is
+
+```
+tau = -dt / ln(1 - alpha) = -(1/6) / ln(0.7) = 0.47 s     (exact)
+tau =  dt / alpha         =  (1/6) / 0.3     = 0.56 s     (first order)
+```
+
+**τ = 0.55 s is adopted**, the first-order reading, rounded. The two differ by
+15%, which is a tenth of a second of lag on a rotation the rider is not
+measuring, and the gentler value is the safer one on a display whose whole
+complaint is jitter. Per frame:
+
+```
+alpha = 1 - exp(-dt / 0.55)
+```
+
+At 8 Hz that is α ≈ 0.203 per frame and 0.84 per second, against the old
+0.25 per second — the corner is taken three times faster, and it was the
+sluggishness of 0.25 that made the residual chevron of §1.1 necessary in the
+first place. Making α depend on dt is also what keeps course-up looking the
+same at 8 Hz, at the 1 Hz stopped rate, and through a dropout.
 
 ### 6.2 Clipping and simplification
 

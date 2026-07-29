@@ -78,6 +78,12 @@ static const char USAGE[] =
     "  --headless    render but present nothing -- a replay on a machine\n"
     "                with no panel, which is how the assertions run\n"
     "  --trace FILE  one TSV row per fix; see tools/assert_trace.py\n"
+    "  --trace-frames F  one TSV row per rendered FRAME: the dead-reckoning\n"
+    "                state, so the 8 Hz extrapolation can be asserted\n"
+    "  --fps N       frames per second while moving (default 8; stopped is\n"
+    "                always 1 Hz -- DESIGN.md 6.3)\n"
+    "  --stats       render ms and frames drawn/skipped, per second and a\n"
+    "                p95 summary at exit\n"
     "  --dump-at S:F write the frame at replay second S to file F (up to 4;\n"
     "                this is how a moving page gets into fbshow --verify)\n"
     "  --print       dump nav_t as text, per fix\n"
@@ -165,6 +171,21 @@ typedef struct {
 static dumpat_t g_dumps[MAX_DUMPS];
 static int g_ndumps;
 
+/* --- dead reckoning, DESIGN.md 6.3 -------------------------------------- */
+
+#define DR_FPS 8.0        /* while moving                                  */
+#define DR_STOPPED_FPS 1.0/* "and 1 Hz when stopped"                       */
+#define DR_MOVING_KMH 3.0 /* the same threshold the heading freeze uses     */
+#define DR_SNAP_M 5.0     /* beyond this a fix is a correction, not drift   */
+#define DR_EASE 3         /* frames a correction inside 5 m is spread over  */
+#define DR_MAX_EXTRAP 2.0 /* seconds: after this the position simply holds  */
+#define DR_MAX_CATCHUP 2.0/* seconds of missed frames worth redrawing       */
+
+/* DESIGN.md 6.1: the EWMA is a time constant, not a per-frame alpha --
+ * sim.py's 0.3 at 6 fps read to first order. See the section for the
+ * arithmetic and for why 0.55 rather than the exact-equivalent 0.47. */
+#define HEADING_TAU 0.55
+
 typedef struct {
     route_t rt;
     navctx_t ctx;
@@ -172,9 +193,32 @@ typedef struct {
     fix_t fx;
     gps_t gps;
 
+    /* What the pages actually draw: the per-fix state with the position (and
+     * only the position) moved on by dead reckoning. The latches, the ETA
+     * ring and the countdown belong to the fix that set them, so they are
+     * copied across rather than recomputed eight times a second. */
+    navctx_t rctx;
+    nav_t rnv;
+
     double heading;    /* smoothed map rotation, radians clockwise from N */
     double raw_course; /* what the chevron gets                           */
     int have_heading;
+
+    /* The extrapolation base: the last fix, and the correction being eased
+     * across after the one before it. */
+    double fix_e, fix_n, fix_course, fix_speed, fix_t, fix_mono;
+    double err_e, err_n, err_course; /* prediction minus fix               */
+    double fix_err;                  /* its magnitude, metres              */
+    double ease_w;                   /* the weight applied this frame      */
+    int ease_left;
+    int have_dr;
+
+    double dr_e, dr_n; /* the position being drawn */
+
+    double fps;        /* the moving frame rate; --fps */
+    double render_t;   /* ride seconds of the last frame drawn */
+    int have_render;
+    long frames_since_fix;
 
     int page, hold, quit, course_up;
     int have_pos;
@@ -204,23 +248,28 @@ wrap_pi(double a)
     return a;
 }
 
-/* DESIGN.md 6.1: circular EWMA, alpha 0.25, FROZEN below 3 km/h. Without the
- * freeze the map spins at every traffic light -- a stationary receiver's
- * reported course is pure noise -- and that is the single most common
- * complaint about course-up displays. */
+/* DESIGN.md 6.1: circular EWMA over a 0.55 s time constant, FROZEN below
+ * 3 km/h. Without the freeze the map spins at every traffic light -- a
+ * stationary receiver's reported course is pure noise -- and that is the
+ * single most common complaint about course-up displays.
+ *
+ * `dt` is the interval since the previous FRAME, not since the previous fix:
+ * at 8 Hz a per-frame constant would smooth eight times harder than the same
+ * number did at 1 Hz. Expressing it as a time constant is what makes the
+ * rotation look the same at either rate, and through a dropout. */
 static void
-heading_update(app_t *a, double course_deg, double kmh)
+heading_update(app_t *a, double raw, double kmh, double dt)
 {
-    double raw = course_deg * (M_PI / 180.0);
     if (!a->have_heading) {
         a->heading = raw;
         a->raw_course = raw;
         a->have_heading = 1;
         return;
     }
-    if (kmh >= 3.0) {
+    if (kmh >= DR_MOVING_KMH) {
+        double alpha = dt > 0.0 ? 1.0 - exp(-dt / HEADING_TAU) : 0.0;
         a->raw_course = raw;
-        a->heading += wrap_pi(raw - a->heading) * 0.25;
+        a->heading += wrap_pi(raw - a->heading) * alpha;
     } else {
         /* Frozen. The chevron follows the map rather than the noise, so the
          * whole instrument holds still instead of twitching at the lights. */
@@ -228,12 +277,131 @@ heading_update(app_t *a, double course_deg, double kmh)
     }
 }
 
+/* --------------------------------------------------- dead reckoning (6.3) */
+
+/* Where the last fix says we are at ride-second `t`, before any correction is
+ * eased in: "pos(t) = last_fix + bearing(course) . speed . (t - t_fix)".
+ *
+ * Clamped at DR_MAX_EXTRAP. A receiver that has gone quiet has not stopped
+ * the bike, but two seconds is as far as one second's course and speed can
+ * honestly be projected -- past that the position holds where it is, and the
+ * frames stop differing, so the frame skip of 6.4 makes them free. */
+static void
+dr_predict(const app_t *a, double t, double *pe, double *pn)
+{
+    double dt = t - a->fix_t;
+    if (dt < 0.0)
+        dt = 0.0;
+    if (dt > DR_MAX_EXTRAP)
+        dt = DR_MAX_EXTRAP;
+    *pe = a->fix_e + sin(a->fix_course) * a->fix_speed * dt;
+    *pn = a->fix_n + cos(a->fix_course) * a->fix_speed * dt;
+}
+
+/* A new fix, against what we had been drawing. Within 5 m the difference is
+ * drift and gets eased across so the marker does not twitch; beyond 5 m it is
+ * a genuine correction and is taken whole, because hiding it would be lying
+ * about where the bike is. */
+static void
+dr_on_fix(app_t *a, double e, double n, double course_deg, double kmh,
+          double t)
+{
+    double course = course_deg * (M_PI / 180.0);
+    if (a->have_dr) {
+        double pe, pn;
+        dr_predict(a, t, &pe, &pn);
+        a->fix_err = hypot(pe - e, pn - n);
+        if (a->fix_err <= DR_SNAP_M) {
+            a->err_e = pe - e;
+            a->err_n = pn - n;
+            a->err_course = wrap_pi(a->fix_course - course);
+            a->ease_left = DR_EASE;
+        } else {
+            a->err_e = a->err_n = a->err_course = 0.0;
+            a->ease_left = 0;
+        }
+    } else {
+        a->fix_err = 0.0;
+        a->err_e = a->err_n = a->err_course = 0.0;
+        a->ease_left = 0;
+        a->dr_e = e;
+        a->dr_n = n;
+    }
+    a->fix_e = e;
+    a->fix_n = n;
+    a->fix_course = course;
+    a->fix_speed = kmh / 3.6;
+    a->fix_t = t;
+    a->have_dr = 1;
+    a->frames_since_fix = 0;
+}
+
+/* The position and course to draw at ride-second `t`. The correction decays
+ * 3/4, 2/4, 1/4 over the DR_EASE frames after a fix and is gone on the
+ * fourth, so a small correction is spread over exactly three frames. */
+static void
+dr_advance(app_t *a, double t, double dt)
+{
+    double pe, pn, w = 0.0;
+    if (!a->have_dr)
+        return;
+    dr_predict(a, t, &pe, &pn);
+    if (a->ease_left > 0) {
+        w = a->ease_left / (double)(DR_EASE + 1);
+        a->ease_left--;
+    }
+    a->ease_w = w;
+    a->dr_e = pe + a->err_e * w;
+    a->dr_n = pn + a->err_n * w;
+    /* Course is interpolated the same way, so a course-up map rotates
+     * continuously instead of in 1 Hz steps (6.3). */
+    heading_update(a, wrap_pi(a->fix_course + a->err_course * w),
+                   a->fix_speed * 3.6, dt);
+    a->frames_since_fix++;
+}
+
+/* Everything the pages read, at the dead-reckoned position rather than at the
+ * last fix. route_snap() runs against a SEPARATE context so a render frame
+ * can never touch the off-route latch, the countdown latch or the ETA ring --
+ * those are decisions of the fix that made them (DESIGN.md 8: nav_t is
+ * "recomputed each fix"), and re-deciding them eight times a second would
+ * make the 3-fix off-route rule of 7.3 fire in three eighths of a second. */
+static void
+render_state(app_t *a)
+{
+    const route_t *r = &a->rt;
+
+    a->rnv = a->nv;
+    if (!a->have_pos || !a->have_dr || a->nv.seg < 0)
+        return;
+    /* Anchored on the last real match, never on the previous frame's: the
+     * window hint must not be able to walk off down the route on its own. */
+    a->rctx.last_seg = a->ctx.last_seg;
+    a->rctx.have_fix = 1;
+    a->rctx.last_fix_t = 0;
+    route_snap(r, &a->rctx, a->dr_e, a->dr_n, (time_t)0, &a->rnv);
+    a->rnv.off = a->nv.off; /* the latch is the fix's, not this frame's */
+    /* The announced cue is the fix's too, so the map's bend and the panel's
+     * arrow can never disagree; only the distance to it moves. */
+    if (a->rnv.cue_i >= 0 && a->rnv.cue_i < r->ncue) {
+        a->rnv.cue_m = r->cue[a->rnv.cue_i].along_m - a->rnv.along;
+        if (a->rnv.cue_m < 0.0)
+            a->rnv.cue_m = 0.0;
+    }
+    a->rnv.togo_m = r->total_m - a->rnv.along;
+    if (a->rnv.togo_m < 0.0)
+        a->rnv.togo_m = 0.0;
+    a->rnv.pct = r->total_m > 0.0 ? 100.0 * a->rnv.along / r->total_m : 0.0;
+    if (a->rnv.pct > 100.0)
+        a->rnv.pct = 100.0;
+}
+
 /* The vertices within reach of the fix, thinned to fit. Sets win_*. */
 static void
 build_window(app_t *a)
 {
     const route_t *r = &a->rt;
-    int seg = a->nv.seg, lo, hi, step, i, m = 0, j;
+    int seg = a->rnv.seg, lo, hi, step, i, m = 0, j;
     double a0, a1;
 
     if (seg < 0)
@@ -263,19 +431,19 @@ build_window(app_t *a)
     a0 = r->cum[lo + j * step];
     a1 = (lo + (j + 1) * step <= hi) ? r->cum[lo + (j + 1) * step] : r->cum[hi];
     a->win_pos_i = j;
-    a->win_pos_f = a1 > a0 ? (a->nv.along - a0) / (a1 - a0) : 0.0;
+    a->win_pos_f = a1 > a0 ? (a->rnv.along - a0) / (a1 - a0) : 0.0;
     if (a->win_pos_f < 0.0)
         a->win_pos_f = 0.0;
     if (a->win_pos_f > 1.0)
         a->win_pos_f = 1.0;
 
     a->win_turn_i = a->win_pin_i = -1;
-    if (a->nv.cue_i >= 0) {
-        int v = r->cue[a->nv.cue_i].idx;
+    if (a->rnv.cue_i >= 0) {
+        int v = r->cue[a->rnv.cue_i].idx;
         if (v >= lo && v <= hi)
             a->win_turn_i = (v - lo + step / 2) / step;
-        if (a->nv.cue_i + 1 < r->ncue) {
-            v = r->cue[a->nv.cue_i + 1].idx;
+        if (a->rnv.cue_i + 1 < r->ncue) {
+            v = r->cue[a->rnv.cue_i + 1].idx;
             if (v >= lo && v <= hi)
                 a->win_pin_i = (v - lo + step / 2) / step;
         }
@@ -375,24 +543,24 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         int i;
         for (i = 0; i < r->ncue && i < ROUTE_MAXCUE; i++)
             a->cue_idx[i] = r->cue[i].idx;
-        fmt_km(togo, sizeof togo, a->nv.togo_m);
+        fmt_km(togo, sizeof togo, a->rnv.togo_m);
         fmt_km(total, sizeof total, r->total_m);
         fmt_clock(clock, sizeof clock, a->nv.eta);
         o.pts = r->en;
         o.npts = r->npt;
         o.cue_idx = a->cue_idx;
         o.ncue_dots = i;
-        o.pos_i = a->nv.seg < 0 ? 0 : a->nv.seg;
+        o.pos_i = a->rnv.seg < 0 ? 0 : a->rnv.seg;
         o.pos_f = 0.0;
-        if (a->nv.seg >= 0 && r->cum[a->nv.seg + 1] > r->cum[a->nv.seg])
-            o.pos_f = (a->nv.along - r->cum[a->nv.seg]) /
-                      (r->cum[a->nv.seg + 1] - r->cum[a->nv.seg]);
+        if (a->rnv.seg >= 0 && r->cum[a->rnv.seg + 1] > r->cum[a->rnv.seg])
+            o.pos_f = (a->rnv.along - r->cum[a->rnv.seg]) /
+                      (r->cum[a->rnv.seg + 1] - r->cum[a->rnv.seg]);
         o.name = r->name;
         o.total = total;
         o.togo = togo;
         o.eta = clock;
-        o.done = (int)(a->nv.pct + 0.5);
-        o.cue_i = a->nv.cue_i < 0 ? 0 : a->nv.cue_i;
+        o.done = (int)(a->rnv.pct + 0.5);
+        o.cue_i = a->rnv.cue_i < 0 ? 0 : a->rnv.cue_i;
         o.ncues = r->ncue;
         view_overview(cov, &o);
     } else {
@@ -407,7 +575,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         m.pin_i = a->win_pin_i;
         /* The marker leaves the line only once the latch has fired: one
          * noisy fix must not throw it into the verge (DESIGN.md 7.3). */
-        m.off = a->nv.off ? a->nv.off_m : 0.0;
+        m.off = a->rnv.off ? a->rnv.off_m : 0.0;
         m.spd_kmh = (int)(a->fx.speed_kmh + 0.5);
         m.course_up = a->course_up;
         /* DESIGN.md 6.1: the map turns with the SMOOTHED heading, and 1.1:
@@ -424,9 +592,13 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
 
         fmt_clock(clock, sizeof clock, time(NULL));
         remain[0] = etabuf[0] = '\0';
+        /* The PANEL's numbers stay on the fix's clock: the countdown is
+         * latched and quantised precisely so it changes slowly (1.1.1), and
+         * the metres-off figure would flicker if it were re-rounded eight
+         * times a second. Only the map moves at the frame rate. */
         p.off = a->nv.off ? (int)(a->nv.off_m + 0.5) : 0;
         p.turn_m = a->nv.cue_q; /* quantised + latched, not raw metres */
-        p.kind = a->nv.cue_i >= 0 ? r->cue[a->nv.cue_i].kind : CUE_DEST;
+        p.kind = a->rnv.cue_i >= 0 ? r->cue[a->rnv.cue_i].kind : CUE_DEST;
         fmt_remaining(remain, sizeof remain, a->nv.eta_s);
         fmt_eta(etabuf, sizeof etabuf, a->nv.eta);
         p.remain = remain;
@@ -473,7 +645,64 @@ trace_row(const app_t *a, double zoom_mpp, int presented)
                 (180.0 / M_PI));
 }
 
+/* One row per rendered FRAME rather than per fix -- the DESIGN.md 6.3 maths
+ * happens eight times a second and a per-fix trace cannot see any of it. Every
+ * quantity the extrapolation is built from is here, so tools/assert_trace.py
+ * can recompute the closed form and check the drawn position against it. */
+static FILE *g_ftrace;
+
+static void
+ftrace_open(const char *path)
+{
+    g_ftrace = fopen(path, "w");
+    if (!g_ftrace) {
+        perror(path);
+        exit(1);
+    }
+    fputs("#t\tisfix\tsince_fix\tbase_e\tbase_n\tbase_crs\tbase_spd\tdt\t"
+          "err_e\terr_n\tease_w\tdr_e\tdr_n\tcourse_deg\theading_deg\t"
+          "presented\tms\tled\toff_latched\tcue_i\tcue_m\n",
+          g_ftrace);
+}
+
+static void
+ftrace_row(const app_t *a, double t, int isfix, int presented, double ms)
+{
+    double dt = t - a->fix_t;
+    if (!g_ftrace)
+        return;
+    if (dt < 0.0)
+        dt = 0.0;
+    if (dt > DR_MAX_EXTRAP)
+        dt = DR_MAX_EXTRAP;
+    fprintf(g_ftrace,
+            "%.4f\t%d\t%ld\t%.4f\t%.4f\t%.6f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t"
+            "%.4f\t%.4f\t%.3f\t%.3f\t%d\t%.3f\t%d\t%d\t%d\t%.2f\n",
+            t, isfix, a->frames_since_fix, a->fix_e, a->fix_n,
+            a->fix_course * (180.0 / M_PI), a->fix_speed, dt, a->err_e,
+            a->err_n, a->ease_w, a->dr_e, a->dr_n,
+            a->raw_course * (180.0 / M_PI), a->heading * (180.0 / M_PI),
+            presented, ms, 0, a->nv.off, a->rnv.cue_i, a->rnv.cue_m);
+}
+
 /* --------------------------------------------------------- the fix cycle */
+
+/* The ride-clock second this epoch belongs to, WITHOUT consuming it: the
+ * frames covering the gap since the last fix have to be drawn from the old
+ * extrapolation base before that base is replaced. */
+static double
+epoch_seconds(const app_t *a)
+{
+    double secs = fix_utc_seconds(a->gps.utc), t;
+    if (a->epochs == 0)
+        return 0.0;
+    if (secs < 0.0)
+        return (double)a->epochs;
+    t = secs - a->t0;
+    if (t < -43200.0) /* midnight, once a ride */
+        t += 86400.0;
+    return t;
+}
 
 /* One completed NMEA epoch: everything the two pages consume, recomputed in
  * DESIGN.md 7's order -- snap, latch, cue, progress. Returns 1 when there was
@@ -507,7 +736,7 @@ on_epoch(app_t *a, time_t now)
     route_offroute_update(&a->ctx, &a->nv);
     route_cue_ahead(&a->rt, &a->nv);
     route_progress(&a->rt, &a->ctx, a->t, &a->nv);
-    heading_update(a, a->fx.course, a->fx.speed_kmh);
+    dr_on_fix(a, a->e, a->n, a->fx.course, a->fx.speed_kmh, a->t);
     return 1;
 }
 
@@ -520,6 +749,231 @@ live_zoom(const app_t *a)
 {
     return map_auto_zoom(a->nv.cue_m, SCR_H * 0.72);
 }
+
+/* -------------------------------------------------------- the frame clock
+ *
+ * DESIGN.md 6.3 puts the display on its own clock: 8 Hz while moving, 1 Hz
+ * when stopped, with the position extrapolated between fixes. Everything the
+ * loop needs to draw one of those frames lives here so that the replay branch
+ * and the serial branch drive the same code -- the alternative is two frame
+ * schedulers that disagree, and only one of them testable.
+ */
+
+#define STAT_BINS 1000 /* 0.1 ms each, so 100 ms and an overflow bin */
+
+typedef struct {
+    canvas_t *cv, *prev;
+    int have_fb;
+#ifdef NAV_DEVICE
+    fb_t *fb;
+#endif
+    int paced;
+    double pace0; /* monotonic seconds at ride t = 0 */
+    int have_pace0;
+
+    int stats;
+    long frames, presents;
+    double ms_sum, ms_max;
+    int hist[STAT_BINS + 1];
+    double sec_at; /* ride second the current stats bucket started */
+    long sec_frames, sec_presents;
+    double sec_ms;
+} render_ctx_t;
+
+static render_ctx_t RC;
+
+static double
+mono_now(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+static void
+sleep_s(double s)
+{
+    struct timespec ts;
+    if (s <= 0.0)
+        return;
+    if (s > 5.0)
+        s = 5.0; /* a dropout must not stall the replay for its full length */
+    ts.tv_sec = (time_t)s;
+    ts.tv_nsec = (long)((s - (double)ts.tv_sec) * 1e9);
+    nanosleep(&ts, NULL);
+}
+
+/* Hold a paced replay to the clock the sentences carry. Pacing per FRAME
+ * rather than per epoch is what makes a paced replay look like the ride: the
+ * old per-epoch sleep would have drawn eight frames and then waited a whole
+ * second with the map frozen. */
+static void
+pace_to(double t)
+{
+    if (!RC.paced)
+        return;
+    if (!RC.have_pace0) {
+        RC.pace0 = mono_now() - t;
+        RC.have_pace0 = 1;
+        return;
+    }
+    sleep_s(RC.pace0 + t - mono_now());
+}
+
+static void
+stats_flush(const app_t *a, int final)
+{
+    long skipped = RC.sec_frames - RC.sec_presents;
+    if (!RC.stats)
+        return;
+    if (RC.sec_frames > 0)
+        fprintf(stderr, "stats t=%6.1f  drawn %3ld  presented %3ld  "
+                        "skipped %3ld  render %.2f ms avg\n",
+                a->render_t, RC.sec_frames, RC.sec_presents, skipped,
+                RC.sec_ms / (double)RC.sec_frames);
+    RC.sec_frames = RC.sec_presents = 0;
+    RC.sec_ms = 0.0;
+    if (!final)
+        return;
+    if (RC.frames > 0) {
+        long want = (long)(0.95 * (double)RC.frames), seen = 0;
+        double p95 = 0.0;
+        int i;
+        for (i = 0; i <= STAT_BINS; i++) {
+            seen += RC.hist[i];
+            if (seen >= want) {
+                p95 = (i + 1) * 0.1;
+                break;
+            }
+        }
+        fprintf(stderr,
+                "stats: %ld frames, %ld presented, %ld skipped (%.0f%%), "
+                "render %.2f ms mean, %.2f ms p95, %.2f ms max\n",
+                RC.frames, RC.presents, RC.frames - RC.presents,
+                100.0 * (double)(RC.frames - RC.presents) / (double)RC.frames,
+                RC.ms_sum / (double)RC.frames, p95, RC.ms_max);
+    }
+}
+
+/* Draw one frame at ride-second `t`, present it only if it differs from the
+ * last one presented, and account for it. Returns 1 when it was presented. */
+static int
+frame_at(app_t *a, double t)
+{
+    double dt = a->have_render ? t - a->render_t : 0.0, ms;
+    struct timespec c0, c1;
+    int presented, bin, d;
+
+    pace_to(t);
+    dr_advance(a, t, dt);
+    render_state(a);
+
+    clock_gettime(CLOCK_MONOTONIC, &c0);
+    render_live(a, &COV, RC.cv);
+    clock_gettime(CLOCK_MONOTONIC, &c1);
+    ms = (double)(c1.tv_sec - c0.tv_sec) * 1e3 +
+         (double)(c1.tv_nsec - c0.tv_nsec) / 1e6;
+
+    /* DESIGN.md 6.4: a frame identical to the last is not sent. That is what
+     * makes a high nominal rate affordable -- a stationary display costs
+     * nothing regardless of it. */
+    presented = memcmp(RC.cv->bits, RC.prev->bits,
+                       (size_t)RC.cv->stride * RC.cv->h) != 0;
+    if (presented) {
+        memcpy(RC.prev->bits, RC.cv->bits, (size_t)RC.cv->stride * RC.cv->h);
+#ifdef NAV_DEVICE
+        if (RC.have_fb)
+            fb_present(RC.fb, RC.cv);
+#endif
+    }
+
+    RC.frames++;
+    RC.presents += presented;
+    RC.ms_sum += ms;
+    if (ms > RC.ms_max)
+        RC.ms_max = ms;
+    bin = (int)(ms * 10.0);
+    if (bin < 0)
+        bin = 0;
+    if (bin > STAT_BINS)
+        bin = STAT_BINS;
+    RC.hist[bin]++;
+    RC.sec_frames++;
+    RC.sec_presents += presented;
+    RC.sec_ms += ms;
+
+    a->render_t = t;
+    a->have_render = 1;
+    /* frames_since_fix is 1 only on the frame drawn immediately after a fix,
+     * which is that fix's own frame. */
+    ftrace_row(a, t, a->frames_since_fix == 1, presented, ms);
+    if (RC.stats && t - RC.sec_at >= 1.0) {
+        stats_flush(a, 0);
+        RC.sec_at = t;
+    }
+    for (d = 0; d < g_ndumps; d++)
+        if (!g_dumps[d].done && t >= g_dumps[d].at) {
+            g_dumps[d].done = 1;
+            if (canvas_dump(RC.cv, g_dumps[d].path) < 0)
+                perror(g_dumps[d].path);
+            else
+                fprintf(stderr, "wrote %s at t=%.2f\n", g_dumps[d].path, t);
+        }
+    return presented;
+}
+
+/* Every frame the display owes between the last one drawn and ride-second
+ * `until`, exclusive -- the extrapolated ones. Called with the OLD fix still
+ * in place, which is the whole point: those frames belong to it. */
+static void
+frames_before(app_t *a, double until)
+{
+    double dt;
+    if (a->hold || !a->have_render || !a->have_dr)
+        return;
+    dt = 1.0 / (a->fix_speed * 3.6 >= DR_MOVING_KMH ? a->fps : DR_STOPPED_FPS);
+    /* A long silence is not worth animating frame by frame: draw the last
+     * couple of seconds and let the rest go. Without this a 40 s dropout
+     * costs 320 identical renders. */
+    if (until - a->render_t > DR_MAX_CATCHUP)
+        a->render_t = until - DR_MAX_CATCHUP;
+    while (a->render_t + dt < until - 1e-9)
+        frame_at(a, a->render_t + dt);
+}
+
+#ifdef NAV_DEVICE
+/* On the wire there is no ride clock to read ahead of, so it is the last
+ * fix's second plus however long the monotonic clock says has passed. */
+static double
+live_ride_now(const app_t *a)
+{
+    return a->fix_t + (mono_now() - a->fix_mono);
+}
+
+static void
+live_frames(app_t *a)
+{
+    if (!a->have_dr || a->hold)
+        return;
+    frames_before(a, live_ride_now(a));
+}
+
+/* How long poll() may sleep without missing the next frame. */
+static int
+live_poll_ms(const app_t *a)
+{
+    double dt, left;
+    if (!a->have_dr || a->hold || !a->have_render)
+        return 1000;
+    dt = 1.0 / (a->fix_speed * 3.6 >= DR_MOVING_KMH ? a->fps : DR_STOPPED_FPS);
+    left = (a->render_t + dt) - live_ride_now(a);
+    if (left <= 0.001)
+        return 1;
+    if (left > 1.0)
+        return 1000;
+    return (int)(left * 1000.0);
+}
+#endif
 
 /* ------------------------------------------------------------------ keys
  *
@@ -781,21 +1235,6 @@ chooser_run(char *out, size_t outsz, fb_t *fb)
 }
 #endif /* NAV_DEVICE */
 
-/* ---------------------------------------------------------------- source */
-
-static void
-sleep_s(double s)
-{
-    struct timespec ts;
-    if (s <= 0.0)
-        return;
-    if (s > 5.0)
-        s = 5.0; /* a dropout must not stall the replay for its full length */
-    ts.tv_sec = (time_t)s;
-    ts.tv_nsec = (long)((s - (double)ts.tv_sec) * 1e9);
-    nanosleep(&ts, NULL);
-}
-
 /* ------------------------------------------------------------------ loop */
 
 static int
@@ -804,8 +1243,6 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
 {
     canvas_t *cv, *prev;
     FILE *replay = NULL;
-    int paced = 0;
-    double prev_utc = -1.0;
     char line[256];
     size_t ll = 0;
 #ifdef NAV_DEVICE
@@ -823,6 +1260,8 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
     /* Neither all-ink nor all-paper, so the first real frame always differs
      * and is always presented. */
     memset(prev->bits, 0xAA, (size_t)prev->stride * prev->h);
+    RC.cv = cv;
+    RC.prev = prev;
 
     if (replaypath) {
         replay = fopen(replaypath, "rb");
@@ -833,7 +1272,7 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
         /* Paced against the clock the sentences carry, so the panel moves at
          * the speed the ride did. Off by default under --headless: the
          * replay assertions would otherwise take as long as the ride. */
-        paced = pace_opt >= 0 ? pace_opt : !headless;
+        RC.paced = pace_opt >= 0 ? pace_opt : !headless;
     }
 
     signal(SIGINT, on_signal);
@@ -854,6 +1293,8 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
         evdev_open(1);
         fb_take(&fb);
     }
+    RC.fb = &fb;
+    RC.have_fb = have_fb;
     if (!replaypath) {
         memset(&port, 0, sizeof port);
         snprintf(port.path, sizeof port.path, "%s", devpath);
@@ -911,8 +1352,14 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
                 pfd[np].events = POLLIN;
                 np++;
             }
-            if (poll(pfd, (unsigned)np, 1000) <= 0)
+            /* Wake in time for the next frame rather than in time for the
+             * next sentence: at 8 Hz the display owes seven frames between
+             * one GGA and the next, and a 1000 ms timeout would sleep
+             * straight through all of them. */
+            if (poll(pfd, (unsigned)np, live_poll_ms(a)) <= 0) {
+                live_frames(a);
                 continue;
+            }
             for (i = 1; i < np; i++) {
                 int code, value;
                 char k;
@@ -927,6 +1374,7 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
                     if (value == 1)
                         handle_key(a, keycode_to_char(code));
             }
+            live_frames(a);
             if (!(pfd[0].revents & POLLIN))
                 continue;
             for (;;) {
@@ -963,23 +1411,21 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
 #ifdef NAV_DEVICE
         drain_keys(a);
 #endif
-        if (paced) {
-            double u = fix_utc_seconds(a->gps.utc);
-            if (u >= 0.0 && prev_utc >= 0.0) {
-                double d = u - prev_utc;
-                if (d < 0.0)
-                    d += 86400.0;
-                sleep_s(d);
-            }
-            if (u >= 0.0)
-                prev_utc = u;
-        }
+
+        /* The frames the display owes for the interval that just elapsed,
+         * drawn from the OLD fix -- they belong to it, and drawing them after
+         * on_epoch() has moved the extrapolation base would teleport the map
+         * a second forward and then walk it back. */
+        if (replay)
+            frames_before(a, epoch_seconds(a));
 
         /* The panel is redrawn either way -- the clock ticks and NO FIX has
-         * to be able to appear -- but the trace is one row per FIX, as its
-         * header promises, so a dropout leaves a gap in t rather than a run
-         * of duplicated rows. */
+         * to be able to appear -- but the per-fix trace is one row per FIX, as
+         * its header promises, so a dropout leaves a gap in t rather than a
+         * run of duplicated rows. */
         got_fix = on_epoch(a, time(NULL));
+        if (got_fix)
+            a->fix_mono = mono_now();
         if (do_print && got_fix)
             printf("t=%.0f %.6f,%.6f seg=%d along=%.0f off=%.1f%s cue=%d "
                    "in %.0fm togo=%.0f %.1f%% eta=%.0fs hdg=%.0f\n",
@@ -989,39 +1435,21 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
                    a->heading * (180.0 / M_PI));
 
         if (a->hold) {
+            pace_to(a->t);
             if (got_fix)
                 trace_row(a, live_zoom(a), 0);
         } else {
-            int presented;
-            render_live(a, &COV, cv);
-            /* DESIGN.md 6.4: a frame identical to the last is not sent. That
-             * is what makes a high nominal rate affordable -- a stationary
-             * display costs nothing regardless of it. */
-            presented =
-                memcmp(cv->bits, prev->bits, (size_t)cv->stride * cv->h) != 0;
-            if (presented) {
-                memcpy(prev->bits, cv->bits, (size_t)cv->stride * cv->h);
-#ifdef NAV_DEVICE
-                if (have_fb)
-                    fb_present(&fb, cv);
-#endif
-            }
+            int presented = frame_at(a, a->t);
             if (got_fix)
                 trace_row(a, live_zoom(a), presented);
-            for (int d = 0; d < g_ndumps; d++)
-                if (!g_dumps[d].done && a->t >= g_dumps[d].at) {
-                    g_dumps[d].done = 1;
-                    if (canvas_dump(cv, g_dumps[d].path) < 0)
-                        perror(g_dumps[d].path);
-                    else
-                        fprintf(stderr, "wrote %s at t=%.0f\n",
-                                g_dumps[d].path, a->t);
-                }
         }
     }
+    stats_flush(a, 1);
 
     if (g_trace)
         fclose(g_trace);
+    if (g_ftrace)
+        fclose(g_ftrace);
     if (replay)
         fclose(replay);
 #ifdef NAV_DEVICE
@@ -1043,8 +1471,10 @@ main(int argc, char **argv)
 {
     const char *dumppath = NULL, *routepath = NULL, *replaypath = NULL;
     const char *tracepath = NULL, *devpath = "/dev/ttyACM0";
+    const char *ftracepath = NULL;
     int page = PAGE_NAV, bench = 0, demo = 0, headless = 0, do_print = 0;
     int pace_opt = -1, north_up = 0, i;
+    double fps = DR_FPS;
     char err[320];
     canvas_t *cv;
 #ifdef NAV_DEVICE
@@ -1086,6 +1516,17 @@ main(int argc, char **argv)
             replaypath = argv[++i];
         else if (!strcmp(a, "--trace") && i + 1 < argc)
             tracepath = argv[++i];
+        else if (!strcmp(a, "--trace-frames") && i + 1 < argc)
+            ftracepath = argv[++i];
+        else if (!strcmp(a, "--stats"))
+            RC.stats = 1;
+        else if (!strcmp(a, "--fps") && i + 1 < argc) {
+            fps = atof(argv[++i]);
+            if (!(fps > 0.0) || fps > 60.0) {
+                fprintf(stderr, "bad --fps: %s\n%s", argv[i], USAGE);
+                return 2;
+            }
+        }
         else if (!strcmp(a, "--dump-at") && i + 1 < argc) {
             const char *v = argv[++i], *colon = strchr(v, ':');
             if (!colon || g_ndumps >= MAX_DUMPS) {
@@ -1161,6 +1602,8 @@ main(int argc, char **argv)
     nav_reset(&APP.nv);
     APP.page = page == PAGE_OVERVIEW ? LIVE_OVERVIEW : LIVE_NAV;
     APP.course_up = !north_up;
+    APP.fps = fps;
+    nav_init(&APP.rctx);
 
     if (!routepath) {
 #ifdef NAV_DEVICE
@@ -1203,5 +1646,7 @@ main(int argc, char **argv)
 
     if (tracepath)
         trace_open(tracepath);
+    if (ftracepath)
+        ftrace_open(ftracepath);
     return run_live(&APP, devpath, replaypath, headless, pace_opt, do_print);
 }
