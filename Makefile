@@ -26,10 +26,11 @@ REMOTE_DIR ?= beepy-src
 # libnmea    — NMEA parsing, gps state, serial port
 # gps-monitor — thin app: main loop, keymap, and the two page renderers
 
-FB_OBJS   = libbeepyfb/canvas.o libbeepyfb/font.o libbeepyfb/fbdev.o libbeepyfb/input.o
+FB_OBJS   = libbeepyfb/canvas.o libbeepyfb/font.o libbeepyfb/cover.o \
+            libbeepyfb/fbdev.o libbeepyfb/input.o
 NMEA_OBJS = libnmea/nmea.o libnmea/gps.o libnmea/serial.o
 GM_OBJS   = gps-monitor/main.o gps-monitor/view_bars.o gps-monitor/view_sky.o
-HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h)
+HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h beepy-nav/src/*.h)
 
 all: gps-monitor/gps-monitor
 
@@ -67,7 +68,8 @@ endif
 # Compile the portable objects on the Mac so parser/renderer edits get a
 # warning pass without a device round-trip. fbdev/input/serial are device-only.
 
-HOST_OBJS = host/canvas.o host/font.o host/nmea.o host/gps.o
+HOST_OBJS = host/canvas.o host/font.o host/cover.o host/nmea.o host/gps.o \
+            host/seg.o host/arrows.o
 
 host: $(HOST_OBJS)
 	@echo "host: portable objects compile clean"
@@ -77,6 +79,10 @@ host/%.o: libbeepyfb/%.c $(HDRS)
 	$(CC) $(CFLAGS) $(INC) -c -o $@ $<
 
 host/%.o: libnmea/%.c $(HDRS)
+	@mkdir -p host
+	$(CC) $(CFLAGS) $(INC) -c -o $@ $<
+
+host/%.o: beepy-nav/src/%.c $(HDRS)
 	@mkdir -p host
 	$(CC) $(CFLAGS) $(INC) -c -o $@ $<
 
