@@ -135,8 +135,15 @@ design-gate: host/beepy-nav
 	python3 tools/design_gate.py --bin host/beepy-nav
 
 # -------------------------------------------------------- Mac -> device
+#
+# --exclude-from=.gitignore is what keeps Mac build products out of the
+# device tree: rsync preserves their mtimes, so a Mach-O beepy-nav or
+# test_map lands looking newer than its sources and make happily runs it
+# ("Syntax error: "(" unexpected" is the shell trying to execute an ELF's
+# evil twin). The .gitignore patterns are anchored the same way rsync's are,
+# so the one list serves both.
 sync:
-	rsync -az -e "ssh -i $(SSHKEY)" \
+	rsync -az -e "ssh -i $(SSHKEY)" --exclude-from=.gitignore \
 		--exclude .git --exclude beepy/ --exclude beepy-buildroot/ \
 		--exclude '*.png' --exclude '*.tar.gz' --exclude sim-anim.bin \
 		--exclude osm-asok.json --exclude host/ \
