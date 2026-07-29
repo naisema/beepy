@@ -69,10 +69,20 @@ endif
 # warning pass without a device round-trip. fbdev/input/serial are device-only.
 
 HOST_OBJS = host/canvas.o host/font.o host/cover.o host/nmea.o host/gps.o \
-            host/seg.o host/arrows.o
+            host/seg.o host/arrows.o host/map.o
 
 host: $(HOST_OBJS)
 	@echo "host: portable objects compile clean"
+
+# map.c is the one beepy-nav module with no pixels in it, so it is the one
+# that can be checked by assertion instead of by frame comparison. Runs in
+# either lane; `check` runs it on the device.
+test-unit: beepy-nav/tests/test_map
+	./beepy-nav/tests/test_map
+
+beepy-nav/tests/test_map: beepy-nav/tests/test_map.c beepy-nav/src/map.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
+		beepy-nav/tests/test_map.c beepy-nav/src/map.c $(LDLIBS)
 
 host/%.o: libbeepyfb/%.c $(HDRS)
 	@mkdir -p host
@@ -99,7 +109,8 @@ sync:
 	ssh -i $(SSHKEY) $(DEVICE) 'make -C $(REMOTE_DIR) check'
 
 clean:
-	rm -f gps-monitor/gps-monitor out-*.fb *.o */*.o *.a */*.a
+	rm -f gps-monitor/gps-monitor beepy-nav/tests/test_map out-*.fb \
+		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
-.PHONY: all check goldens host tables sync clean
+.PHONY: all check goldens host test-unit tables sync clean

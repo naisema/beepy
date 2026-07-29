@@ -15,6 +15,7 @@ out-*.fb
 /gps-monitor/gps-monitor
 /beepy-nav/beepy-nav
 /beepy-nav/fbplay
+/beepy-nav/tests/test_map
 
 # Generated animation (9+ MB, regenerable via sim.py)
 sim-anim.bin
