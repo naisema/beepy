@@ -232,6 +232,71 @@ FACES = ("/System/Library/Fonts/Supplemental/Arial Bold.ttf",
          "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 _face_cache = {}
 
+# Once the generated tables exist (tools/gen_tables.py -> src/numerals.h,
+# tools/gen_labels.py -> src/labels.h), num() blits them with integer
+# advances instead of rasterizing through PIL -- the same tables, the same
+# advances and the same set-selection rule as seg.c, so mockup and C
+# numerals are identical BY CONSTRUCTION rather than by resemblance. The
+# PIL path below survives as the fallback when the headers are absent and
+# for strings outside the tables (search queries), and it is still what
+# the table generators themselves render with.
+TABLE_FILES = ("src/numerals.h", "src/labels.h")
+
+
+def load_num_tables():
+    import re
+    sets = {}
+    for path in TABLE_FILES:
+        try:
+            src = open(path).read()
+        except OSError:
+            continue
+        bits = {m.group(1): bytes(int(v, 0) for v in
+                                  re.findall(r"0x[0-9a-fA-F]+", m.group(2)))
+                for m in re.finditer(
+                    r"static const unsigned char (\w+)_bits\[\] = \{([^}]*)\}",
+                    src)}
+        for m in re.finditer(r"static const glyph_t (\w+)\[\] = \{(.*?)\};",
+                             src, re.S):
+            tab = {}
+            for e in re.finditer(
+                    r'\{\s*"([^"]+)",\s*(-?\d+),\s*(-?\d+),\s*(-?\d+),'
+                    r'\s*(-?\d+),\s*(-?\d+),\s*(\w+)_bits\s*\}', m.group(2)):
+                tab[e.group(1)] = (int(e.group(2)), int(e.group(3)),
+                                   int(e.group(4)), int(e.group(5)),
+                                   int(e.group(6)), bits[e.group(7)])
+            sets[m.group(1)] = tab
+    return sets if "NUM54" in sets else None
+
+
+NUMTAB = load_num_tables()
+
+
+def _table_layout(s, cap_px):
+    """
+    -> (ink width, [(glyph, pen offset), ...]) from the generated tables, or
+    None when the string needs the PIL fallback. Glyph selection mirrors
+    seg.c exactly: whole-string labels first, whole-string unit tags next,
+    then per-character digits from the set the cap selects -- NUM54 at
+    cap >= 54, NUM22 below. Only two sizes exist (DESIGN.md 5.2), so a mid
+    cap is a request for the nearer prepared size, not a new rasterization.
+    Glyph tuple: (w, h, dx, dy, adv, rows).
+    """
+    if NUMTAB is None:
+        return None
+    for name in ("LABELS", "UNITS22"):
+        g = NUMTAB.get(name, {}).get(s)
+        if g:
+            return g[0], [(g, 0)]
+    tab = NUMTAB["NUM54" if cap_px >= 54 else "NUM22"]
+    if not s or not all(ch in tab for ch in s):
+        return None
+    pen, out = 0, []
+    for ch in s:
+        out.append((tab[ch], pen))
+        pen += tab[ch][4]
+    return pen - out[-1][0][4] + out[-1][0][0], out
+
 
 def face(cap_px):
     """A font sized so digit cap height is cap_px at 1x (so cap_px*SS at 4x)."""
@@ -251,6 +316,9 @@ def face(cap_px):
 
 
 def num_size(c, s, cap_px):
+    t = _table_layout(s, cap_px)
+    if t is not None:
+        return t[0], cap_px
     f = face(cap_px)
     b = c.d.textbbox((0, 0), s, font=f)
     return (b[2] - b[0]) / SS, (b[3] - b[1]) / SS
@@ -273,6 +341,28 @@ def num(c, x, y, s, cap_px, ink=INK, anchor="lt"):
         w = tw(s, scale)
         bx = x if anchor == "lt" else (x - w / 2 if anchor == "ct" else x - w)
         text(c, round(bx), round(y), s, scale, ink)
+        return w
+    t = _table_layout(s, cap_px)
+    if t is not None:
+        # Table blit: integer pen advances, glyph ink drawn as exact SS x SS
+        # blocks (same as text()), (dx, dy) placing '.' and '-' at their
+        # type-correct heights. Identical arithmetic to seg.c's num_draw.
+        w, glyphs = t
+        bx = round(x if anchor == "lt"
+                   else (x - w / 2 if anchor == "ct" else x - w))
+        by = round(y)
+        for (gw, gh, gdx, gdy, _adv, rows), pen in glyphs:
+            stride = (gw + 7) // 8
+            for ry in range(gh):
+                run = -1
+                for gx in range(gw + 1):
+                    on = gx < gw and rows[ry * stride + gx // 8] & (0x80 >> (gx % 8))
+                    if on and run < 0:
+                        run = gx
+                    elif not on and run >= 0:
+                        c.rect(bx + pen + gdx + run, by + gdy + ry,
+                               bx + pen + gdx + gx - 1, by + gdy + ry, ink)
+                        run = -1
         return w
     f = face(cap_px)
     b = c.d.textbbox((0, 0), s, font=f)
@@ -986,7 +1076,10 @@ def turn_panel(c, off=None):
         arrow(c, (PANEL_W - 76) / 2, 6, 76, NAV["kind"], PAPER)
         val, unit = fmt_dist(NAV["turn"])
         cap = 64
-        while num_size(c, val, cap)[0] > PANEL_W - 10:
+        # PANEL_W - 8, not - 10: integer advances round a 3-digit NUM54
+        # string to 119 px, and a 118 px limit would demote it to the 22 px
+        # set by that single pixel. The visual margin is still 4+ px a side.
+        while num_size(c, val, cap)[0] > PANEL_W - 8:
             cap -= 2
         num(c, PANEL_W / 2, 92, val, cap, PAPER, "ct")
         num(c, PANEL_W / 2, 92 + cap + 8, unit, 24, PAPER, "ct")
@@ -1132,12 +1225,14 @@ def page_arrows():
         x += 44
     c.rect(0, 133, W - 1, 133)
     arrow(c, 4, 140, 76, "right")
-    num(c, 88, 146, "410", 40)
-    num(c, 88, 196, "M", 20)
-    text(c, 200, 150, "PANEL ARROW AND", 2)
-    text(c, 200, 172, "DISTANCE AT FULL", 2)
-    text(c, 200, 194, "SIZE, AS THE NAV", 2)
-    text(c, 200, 216, "PAGE DRAWS THEM", 2)
+    # Full size means the NAV page's size: the 54 px set (the caption says
+    # so). The unit drops to y 208 to keep clear of the taller digits.
+    num(c, 88, 146, "410", 54)
+    num(c, 88, 208, "M", 20)
+    text(c, 208, 150, "PANEL ARROW AND", 2)
+    text(c, 208, 172, "DISTANCE AT FULL", 2)
+    text(c, 208, 194, "SIZE, AS THE NAV", 2)
+    text(c, 208, 216, "PAGE DRAWS THEM", 2)
     finish(resolve(c.img), "nav-arrows")
 
 
