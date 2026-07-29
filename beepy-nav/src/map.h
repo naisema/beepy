@@ -25,7 +25,8 @@ extern const double MAP_ZOOMS[MAP_NZOOM];
 #define MAP_CORNER_RADIUS 25.0
 #define MAP_CORNER_MIN_DEG 12.0
 
-/* n world points -> n screen points. out_xy may not alias en. */
+/* n world points -> n screen points. In-place (out_xy == en) is fine: each
+ * point is read whole before it is written. */
 void map_project(const double *en, int n, double org_e, double org_n,
                  double mpp, double cx, double cy, double theta,
                  double *out_xy);
