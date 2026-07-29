@@ -465,7 +465,8 @@ NAV = dict(turn=410, kind="right", street="THANON SUKHUMVIT", spd=24,
            then_d="150M", then_kind="left",
            togo="12.6", eta="10:42", route="SUKHUMVIT LOOP",
            total="31.0", done="59", cues=11, cue_i=3,
-           sats=9, fix="3D", batt=86, clock="09:40", togo_m=12600)
+           sats=9, fix="3D", batt=86, clock="09:40", togo_m=12600,
+           remain="44 MIN", eta_txt="10:42 ETA")
 
 
 CUE_FLOOR = 10
@@ -1110,25 +1111,27 @@ def turn_panel(c, off=None):
         num(c, PANEL_W / 2, 92, val, cap, PAPER, "ct")
         num(c, PANEL_W / 2, 92 + cap + 8, unit, 24, PAPER, "ct")
 
-    c.rect(6, H - 50, PANEL_W - 7, H - 50, PAPER)
-    if not off:
-        # Next cue preview: a 20 px glyph says THEN, the distance says when.
-        arrow(c, 6, H - 44, 20, NAV["then_kind"], PAPER)
-        text(c, 34, H - 40, NAV["then_d"], 2, PAPER)
-    # Battery and clock at scale 2. Fix state earns panel space only when it is
-    # a problem: NO FIX replaces this line, inverted -- a healthy receiver is
-    # not information (DESIGN.md 1.1).
-    # Bottom line: whole-route remaining. The battery per cent held this slot
-    # and lost it (DESIGN.md 1.1), and the clock went with it: ten characters
-    # is the budget at 12 px each against a 128 px panel, and "12.6KM 09:40"
-    # is twelve. Keeping the clock would mean dropping the decimal, which
-    # prints "9KM" with 9.4 km to run.
+    # Below the rule, three centred rows: how long is left, how far is left,
+    # and when you arrive. This displaced the next-cue preview; the cue after
+    # the announced one is still marked by the teardrop on the map, so what
+    # went is the preview, not the information.
+    #
+    # Three rows and not one "bottom line", because both values cannot share
+    # a line at a readable size: the budget is ten characters (12 px each on
+    # a 128 px panel) and "12.6KM 1:42PM" is thirteen.
+    c.rect(6, H - 51, PANEL_W - 7, H - 51, PAPER)
+
+    def row(y, s):
+        if s:
+            text(c, (PANEL_W - tw(s, 2)) // 2, y, s, 2, PAPER)
+
+    row(192, NAV["remain"])
     togo = NAV["togo_m"]
     if togo < 1000:
-        line = f"{int(togo) - int(togo) % 50}M"
+        row(208, f"{int(togo) - int(togo) % 50}M")
     else:
-        line = f"{math.floor(togo / 100) / 10:.1f}KM"
-    text(c, 5, H - 19, line, 2, PAPER)
+        row(208, f"{math.floor(togo / 100) / 10:.1f}KM")
+    row(224, NAV["eta_txt"])
 
 
 def page_nav(name, basemap=False, off=None, course_up=True, dither=False,

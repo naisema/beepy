@@ -19,11 +19,11 @@ typedef struct {
     int turn_m;         /* quantised distance to the announced cue (1.1.1) --
                      * what to show, not what was measured */
     int kind;           /* its arrow kind */
-    int then_kind;      /* the cue after it */
-    const char *then_d; /* "150M" */
+    const char *remain; /* time left on the route, "44 MIN" / "1H 23M" */
+    const char *eta;    /* arrival, "ETA 1:42PM"                       */
     double togo_m;      /* whole-route remaining; < 0 = no route loaded */
     int batt;           /* only shown when there is no route            */
-    const char *clock;
+    const char *clock;  /* likewise                                     */
 } panel_t;
 
 /* The map on the right. Route geometry is metres east/north of any origin;

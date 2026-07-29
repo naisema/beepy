@@ -216,6 +216,15 @@ fmt_dist(int m, char *val, size_t n, const char **unit)
     }
 }
 
+/* One centred scale-2 row of the panel's lower stack. */
+static void
+panel_row(cov_t *c, int y, const char *s)
+{
+    if (!s || !*s)
+        return;
+    cov_text(c, (PANEL_W - cov_text_w(s, 2)) / 2, y, s, 2, COV_PAPER);
+}
+
 void
 view_turn_panel(cov_t *c, const panel_t *p)
 {
@@ -251,23 +260,21 @@ view_turn_panel(cov_t *c, const panel_t *p)
                  COV_PAPER);
     }
 
-    cov_fill_rect(c, 6, H - 50, PANEL_W - 7, H - 50, COV_PAPER);
-    if (!p->off) {
-        /* Next cue preview: a 20 px glyph says THEN, the distance says when. */
-        arrow_draw(c, 6, H - 44, 20, p->then_kind, COV_PAPER);
-        cov_text(c, 34, H - 40, p->then_d, 2, COV_PAPER);
-    }
-    /* Bottom line: whole-route remaining. The battery per cent held this slot
-     * and lost it -- while riding, how much ride is left is the question you
-     * actually have, and the big number above answers only "how far to the
-     * next junction".
+    /* Below the rule, three centred rows: how long is left, how far is left,
+     * and when you arrive. This displaced the next-cue preview, which was a
+     * 20 px glyph and a distance. The cue after the announced one is still
+     * marked -- the teardrop on the map is exactly that pin (1.1) -- so what
+     * went is the preview, not the information.
      *
-     * The clock went with it, and that was forced: ten characters is the hard
-     * budget (12 px each against a 128 px panel), and "12.6KM 09:40" is
-     * twelve. Dropping the decimal to fit the clock would print "9KM" with
-     * 9.4 km to run -- coarsest exactly where the ride is nearly over. So the
-     * decimal stays and the time of day goes; the OVERVIEW page carries ETA,
-     * which is the arrival question worth answering anyway. */
+     * Three rows and not the one "bottom line" the arrangement asks for,
+     * because both values cannot share a line at a readable size: the budget
+     * is ten characters (12 px each against a 128 px panel) and
+     * "12.6KM 1:42PM" is thirteen. Stacked, each gets its full precision and
+     * its label. 16 px cells at 192/208/224 exactly fill the space to the
+     * bottom edge; the glyphs are 14 px of ink, so the rows stay separated. */
+    cov_fill_rect(c, 6, H - 51, PANEL_W - 7, H - 51, COV_PAPER);
+
+    panel_row(c, 192, p->remain);
     if (p->togo_m >= 0.0) {
         if (p->togo_m < 1000.0)
             snprintf(buf, sizeof buf, "%dM",
@@ -275,13 +282,17 @@ view_turn_panel(cov_t *c, const panel_t *p)
         else
             snprintf(buf, sizeof buf, "%.1fKM",
                      floor(p->togo_m / 100.0) / 10.0);
-    } else if (p->batt >= 0) {
-        /* No route loaded: nothing to count down, so the old pair returns. */
-        snprintf(buf, sizeof buf, "%d%% %s", p->batt, p->clock);
+        panel_row(c, 208, buf);
+        panel_row(c, 224, p->eta);
     } else {
-        snprintf(buf, sizeof buf, "%s", p->clock);
+        /* No route: nothing to count down to, so the pair that has always
+         * been true of the device goes back in. */
+        if (p->batt >= 0) {
+            snprintf(buf, sizeof buf, "%d%%", p->batt);
+            panel_row(c, 208, buf);
+        }
+        panel_row(c, 224, p->clock);
     }
-    cov_text(c, 5, H - 19, buf, 2, COV_PAPER);
 }
 
 /* -------------------------------------------------------------- the map */
@@ -431,8 +442,8 @@ view_nav_demo(cov_t *c, int off)
      * frames show what a rider would actually see (1.1.1): 410 -> "400". */
     p.turn_m = cue_quantise(410);
     p.kind = ARROW_RIGHT;
-    p.then_kind = ARROW_LEFT;
-    p.then_d = "150M";
+    p.remain = "44 MIN";  /* 12.6 km at the design's 17 km/h city average */
+    p.eta = "10:42 ETA";
     p.togo_m = 12600; /* the design's sample state: 1.2's strip says 12.6 KM */
     p.batt = 86;
     p.clock = "09:40";
@@ -470,8 +481,8 @@ clip_panel(panel_t *p)
     p->off = 0;
     p->turn_m = cue_quantise(800);
     p->kind = ARROW_LEFT;
-    p->then_kind = ARROW_RIGHT;
-    p->then_d = "2.2KM";
+    p->remain = "44 MIN";
+    p->eta = "10:42 ETA";
     p->togo_m = 12600;
     p->batt = 86;
     p->clock = "09:40";

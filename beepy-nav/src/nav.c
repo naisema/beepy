@@ -296,15 +296,44 @@ fmt_km(char *buf, size_t n, double metres)
     snprintf(buf, n, "%.1f", metres / 1000.0);
 }
 
-/* The THEN row's distance. Takes an already-quantised value (DESIGN.md 1.1.1)
- * so it steps on the same ladder as the big countdown above it. */
+/* Time left on the route, centred under the rule. Minutes while there are
+ * fewer than sixty of them, then hours and minutes -- "97 MIN" is a number
+ * you have to convert, and this is meant to be read at a glance. */
 static void
-fmt_short(char *buf, size_t n, int q)
+fmt_remaining(char *buf, size_t n, double eta_s)
 {
-    if (q < 1000)
-        snprintf(buf, n, "%dM", q);
+    int mins;
+    if (eta_s < 0.0) {
+        /* Stopped, or too little history to average: no figure rather than a
+         * wrong one, and a dash says which. */
+        snprintf(buf, n, "-- MIN");
+        return;
+    }
+    mins = (int)(eta_s / 60.0 + 0.5);
+    if (mins < 60)
+        snprintf(buf, n, "%d MIN", mins);
     else
-        snprintf(buf, n, "%.1fKM", q / 1000.0);
+        snprintf(buf, n, "%dH %02dM", mins / 60, mins % 60);
+}
+
+/* Arrival, 12-hour, value first and the label trailing. No meridiem: on a
+ * ride you know whether it is morning, and "12:42 ETA" is nine characters
+ * against a ten-character panel -- it always fits, with no degradation rule
+ * to reason about. */
+static void
+fmt_eta(char *buf, size_t n, time_t eta)
+{
+    struct tm tm;
+    int h12;
+    if (eta == 0) {
+        snprintf(buf, n, "-- ETA");
+        return;
+    }
+    localtime_r(&eta, &tm);
+    h12 = tm.tm_hour % 12;
+    if (h12 == 0)
+        h12 = 12;
+    snprintf(buf, n, "%d:%02d ETA", h12, tm.tm_min);
 }
 
 static void
@@ -338,7 +367,7 @@ static void
 render_live(app_t *a, cov_t *cov, canvas_t *cv)
 {
     const route_t *r = &a->rt;
-    char clock[8], togo[16], total[16], then_d[16];
+    char clock[8], togo[16], total[16], remain[16], etabuf[24];
 
     cov_begin(cov);
     if (a->page == LIVE_OVERVIEW) {
@@ -383,16 +412,14 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         m.course_up = a->course_up;
 
         fmt_clock(clock, sizeof clock, time(NULL));
-        then_d[0] = '\0';
+        remain[0] = etabuf[0] = '\0';
         p.off = a->nv.off ? (int)(a->nv.off_m + 0.5) : 0;
         p.turn_m = a->nv.cue_q; /* quantised + latched, not raw metres */
         p.kind = a->nv.cue_i >= 0 ? r->cue[a->nv.cue_i].kind : CUE_DEST;
-        p.then_kind = CUE_DEST;
-        if (a->nv.cue_i >= 0 && a->nv.cue_i + 1 < r->ncue) {
-            p.then_kind = r->cue[a->nv.cue_i + 1].kind;
-            fmt_short(then_d, sizeof then_d, a->nv.then_q);
-        }
-        p.then_d = then_d;
+        fmt_remaining(remain, sizeof remain, a->nv.eta_s);
+        fmt_eta(etabuf, sizeof etabuf, a->nv.eta);
+        p.remain = remain;
+        p.eta = etabuf;
         p.togo_m = a->nv.seg >= 0 ? a->nv.togo_m : -1.0;
         p.batt = read_battery();
         p.clock = clock;
