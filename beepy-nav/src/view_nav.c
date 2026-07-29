@@ -133,7 +133,7 @@ mark_compass(cov_t *c, double x, double y, double theta, double r)
 static void
 speed_badge(cov_t *c, double x, double y, int kmh, double r)
 {
-    char s[8];
+    char s[16]; /* "%d" of an int is up to 11 chars + NUL, whatever the km/h */
     int cap;
     cov_disc(c, x, y, r + 2.2, COV_PAPER);
     cov_disc(c, x, y, r, COV_INK);
@@ -147,7 +147,7 @@ speed_badge(cov_t *c, double x, double y, int kmh, double r)
 void
 mark_scale_bar(cov_t *c, double x, double y, double mpp)
 {
-    char lbl[12];
+    char lbl[24]; /* the ladder tops out at "20KM", but %d could be anything */
     int m, px;
     map_scale_pick(mpp, &m, &px);
     cov_fill_rect(c, x - 2, y - 22, x + px + 2, y + 1, COV_PAPER);

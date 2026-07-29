@@ -48,7 +48,7 @@ chooser_scan(chooser_t *c, const char *dir)
     int i, n = 0;
 
     memset(c, 0, sizeof *c);
-    snprintf(c->dir, sizeof c->dir, "%s", dir);
+    snprintf(c->dir, sizeof c->dir, "%.*s", (int)sizeof c->dir - 1, dir);
     d = opendir(dir);
     if (!d)
         return 0;
@@ -58,7 +58,10 @@ chooser_scan(chooser_t *c, const char *dir)
             continue;
         if (e->d_name[0] == '.')
             continue;
-        snprintf(names[n], CHOOSER_NAME, "%s", e->d_name);
+        /* Deliberate truncation, stated as a precision: a 250-character
+         * route name is not going to fit on a 400 px panel either. */
+        snprintf(names[n], CHOOSER_NAME, "%.*s", CHOOSER_NAME - 1,
+                 e->d_name);
         n++;
     }
     closedir(d);
@@ -67,8 +70,11 @@ chooser_scan(chooser_t *c, const char *dir)
     qsort(names, (size_t)n, CHOOSER_NAME, cmp_name);
     for (i = 0; i < n; i++) {
         size_t len;
-        snprintf(c->path[i], sizeof c->path[i], "%s/%s", dir, names[i]);
-        snprintf(c->name[i], CHOOSER_NAME, "%s", names[i]);
+        snprintf(c->path[i], sizeof c->path[i], "%.*s/%.*s",
+                 (int)sizeof c->dir - 1, dir, CHOOSER_NAME - 1,
+                 names[i]);
+        snprintf(c->name[i], CHOOSER_NAME, "%.*s", CHOOSER_NAME - 1,
+                 names[i]);
         len = strlen(c->name[i]);
         if (len > 4)
             c->name[i][len - 4] = '\0'; /* drop .gpx: it is all of them */

@@ -273,10 +273,8 @@ push_cue(accum_t *a, int idx, int kind, const char *name)
     memset(&a->cue[a->ncue], 0, sizeof a->cue[a->ncue]);
     a->cue[a->ncue].idx = idx;
     a->cue[a->ncue].kind = kind;
-    if (name) {
-        strncpy(a->cue[a->ncue].name, name, CUE_NAME - 1);
-        a->cue[a->ncue].name[CUE_NAME - 1] = '\0';
-    }
+    if (name)
+        snprintf(a->cue[a->ncue].name, CUE_NAME, "%s", name);
     a->ncue++;
     return 0;
 }
@@ -575,8 +573,11 @@ parse_point(scan_t *s, const char *tag, accum_t *acc)
                 if (read_text(s, child, buf, sizeof buf))
                     return -1;
                 if (buf[0] && rank > name_rank) {
-                    strncpy(cue_name, buf, CUE_NAME - 1);
-                    cue_name[CUE_NAME - 1] = '\0';
+                    /* buf is deliberately twice CUE_NAME so a long
+                     * instruction is read whole and trimmed rather than cut
+                     * mid-entity; the precision is where it gets shortened. */
+                    snprintf(cue_name, sizeof cue_name, "%.*s",
+                             (int)sizeof cue_name - 1, buf);
                     name_rank = rank;
                 }
             } else {
@@ -729,8 +730,8 @@ gpx_parse(const char *xml, size_t len, route_t *r, char *err, size_t errsz)
                 char buf[ROUTE_NAME * 2];
                 if (read_text(&s, tag, buf, sizeof buf))
                     break;
-                strncpy(rname, buf, ROUTE_NAME - 1);
-                rname[ROUTE_NAME - 1] = '\0';
+                snprintf(rname, sizeof rname, "%.*s", (int)sizeof rname - 1,
+                         buf);
                 (void)in_point_container;
                 continue;
             }
@@ -759,11 +760,7 @@ gpx_parse(const char *xml, size_t len, route_t *r, char *err, size_t errsz)
     r->npt = acc.n;
     r->cue = acc.cue;
     r->ncue = acc.ncue;
-    if (rname[0])
-        strncpy(r->name, rname, ROUTE_NAME - 1);
-    else
-        strncpy(r->name, "ROUTE", ROUTE_NAME - 1);
-    r->name[ROUTE_NAME - 1] = '\0';
+    snprintf(r->name, ROUTE_NAME, "%s", rname[0] ? rname : "ROUTE");
     return 0;
 }
 

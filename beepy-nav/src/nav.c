@@ -54,9 +54,14 @@
 /* route.h numbers the cue kinds in arrows.h's order so a cue can be passed
  * straight to arrow_draw(). This is the only file that includes both, so
  * this is where the claim is checked. */
-_Static_assert(CUE_STRAIGHT == ARROW_STRAIGHT && CUE_LEFT == ARROW_LEFT &&
-                   CUE_RIGHT == ARROW_RIGHT && CUE_UTURN == ARROW_UTURN &&
-                   CUE_DEST == ARROW_DEST && CUE_N == ARROW_N,
+/* The casts are for gcc's -Wenum-compare: these are two distinct anonymous
+ * enumerations, and comparing them is exactly the point. */
+_Static_assert((int)CUE_STRAIGHT == (int)ARROW_STRAIGHT &&
+                   (int)CUE_LEFT == (int)ARROW_LEFT &&
+                   (int)CUE_RIGHT == (int)ARROW_RIGHT &&
+                   (int)CUE_UTURN == (int)ARROW_UTURN &&
+                   (int)CUE_DEST == (int)ARROW_DEST &&
+                   (int)CUE_N == (int)ARROW_N,
                "cue_t.kind is passed straight to arrow_draw()");
 
 static const char USAGE[] =
@@ -558,6 +563,46 @@ cleanup(void)
 static fb_t *g_preopened;
 #endif
 
+#ifdef NAV_DEVICE
+/* Non-blocking sweep of every key source. The replay branch of the loop is
+ * driven by the FILE, not by poll(), so without this a replay on the device
+ * ignores the keyboard completely -- no page switch and, worse, no way to
+ * quit but a signal from another terminal. Timeout 0: this is a peek
+ * between fixes, not a wait. */
+static void
+drain_keys(app_t *a)
+{
+    struct pollfd pfd[1 + MAX_EVDEV];
+    int np = 0, i;
+    if (g_tty_raw) {
+        pfd[np].fd = STDIN_FILENO;
+        pfd[np].events = POLLIN;
+        np++;
+    }
+    for (i = 0; i < evdev_count(); i++) {
+        pfd[np].fd = evdev_fd(i);
+        pfd[np].events = POLLIN;
+        np++;
+    }
+    if (np == 0 || poll(pfd, (unsigned)np, 0) <= 0)
+        return;
+    for (i = 0; i < np; i++) {
+        int code, value;
+        char k;
+        if (!(pfd[i].revents & POLLIN))
+            continue;
+        if (g_tty_raw && pfd[i].fd == STDIN_FILENO) {
+            while (read(STDIN_FILENO, &k, 1) == 1)
+                handle_key(a, k);
+            continue;
+        }
+        while (evdev_next_key(pfd[i].fd, &code, &value))
+            if (value == 1)
+                handle_key(a, keycode_to_char(code));
+    }
+}
+#endif
+
 static volatile sig_atomic_t g_signal_quit;
 
 static void
@@ -570,14 +615,45 @@ on_signal(int s)
 /* --------------------------------------------------------------- chooser */
 
 #ifdef NAV_DEVICE
-/* DESIGN.md 2: "Run with no route, it lists /home/beepy/routes/*.gpx and
- * waits for a selection -- a startup chooser, not a page."
+/* DESIGN.md 2: run with no route and it lists the .gpx files in
+ * /home/beepy/routes and waits for a selection -- "a startup chooser, not a
+ * page".
  *
  * It has to be drawn on the panel and driven by evdev, because by the time
  * this runs fbterm is SIGSTOPped and stdin is going nowhere. That is the
  * whole reason this cannot be twenty lines of fgets().
  *
  * Returns 0 with the path in `out`, or -1 when the rider quit. */
+/* One keycode. Returns 1 when the chooser is finished, setting *rc to 0 for
+ * a selection and leaving it at -1 for a quit. Shared by the evdev and the
+ * stdin paths so the two cannot drift apart. */
+static int
+chooser_key(chooser_t *ch, int code, char *out, size_t outsz, int *rc)
+{
+    switch (code) {
+    case KEY_N:
+    case KEY_DOWN:
+        chooser_move(ch, 1);
+        return 0;
+    case KEY_P:
+    case KEY_UP:
+        chooser_move(ch, -1);
+        return 0;
+    case KEY_ENTER:
+    case KEY_KPENTER:
+        if (ch->n <= 0)
+            return 0; /* nothing to load; the page already says why */
+        snprintf(out, outsz, "%s", ch->path[ch->sel]);
+        *rc = 0;
+        return 1;
+    case KEY_Q:
+    case KEY_ESC:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static int
 chooser_run(char *out, size_t outsz, fb_t *fb)
 {
@@ -592,7 +668,7 @@ chooser_run(char *out, size_t outsz, fb_t *fb)
     chooser_scan(&ch, dir);
 
     while (!done && !g_signal_quit) {
-        struct pollfd pfd[MAX_EVDEV];
+        struct pollfd pfd[1 + MAX_EVDEV];
         int np = 0, i;
         if (dirty) {
             cov_begin(&COV);
@@ -601,17 +677,25 @@ chooser_run(char *out, size_t outsz, fb_t *fb)
             fb_present(fb, cv);
             dirty = 0;
         }
+        /* evdev is the real input (DESIGN.md 2), and stdin is the same
+         * debugging affordance the main loop has: a chooser that only a
+         * physical thumb can drive cannot be verified over ssh, and the one
+         * thing it must never do is hang holding the panel. */
+        if (g_tty_raw) {
+            pfd[np].fd = STDIN_FILENO;
+            pfd[np].events = POLLIN;
+            np++;
+        }
         for (i = 0; i < evdev_count(); i++) {
             pfd[np].fd = evdev_fd(i);
             pfd[np].events = POLLIN;
             np++;
         }
         if (np == 0) {
-            /* No keyboard: the list is on screen but unusable, and looping
-             * on a poll with no fds would spin. Say so and give up rather
-             * than hang with a picture of a menu. */
-            fputs("beepy-nav: no evdev keyboard for the route chooser\n",
-                  stderr);
+            /* No keyboard at all: the list is on screen but unusable, and a
+             * poll with no fds would spin. Say so rather than hang with a
+             * picture of a menu. */
+            fputs("beepy-nav: no keyboard for the route chooser\n", stderr);
             break;
         }
         if (poll(pfd, (unsigned)np, 500) <= 0)
@@ -620,35 +704,31 @@ chooser_run(char *out, size_t outsz, fb_t *fb)
             int code, value;
             if (!(pfd[i].revents & POLLIN))
                 continue;
+            if (g_tty_raw && pfd[i].fd == STDIN_FILENO) {
+                char k;
+                while (read(STDIN_FILENO, &k, 1) == 1) {
+                    if (k == 'n' || k == 'N')
+                        code = KEY_N;
+                    else if (k == 'p' || k == 'P')
+                        code = KEY_P;
+                    else if (k == '\n' || k == '\r')
+                        code = KEY_ENTER;
+                    else if (k == 'q' || k == 'Q')
+                        code = KEY_Q;
+                    else
+                        continue;
+                    if (chooser_key(&ch, code, out, outsz, &rc))
+                        done = 1;
+                    dirty = 1;
+                }
+                continue;
+            }
             while (evdev_next_key(pfd[i].fd, &code, &value)) {
                 if (value != 1)
                     continue;
-                switch (code) {
-                case KEY_N:
-                case KEY_DOWN:
-                    chooser_move(&ch, 1);
-                    dirty = 1;
-                    break;
-                case KEY_P:
-                case KEY_UP:
-                    chooser_move(&ch, -1);
-                    dirty = 1;
-                    break;
-                case KEY_ENTER:
-                case KEY_KPENTER:
-                    if (ch.n > 0) {
-                        snprintf(out, outsz, "%s", ch.path[ch.sel]);
-                        rc = 0;
-                        done = 1;
-                    }
-                    break;
-                case KEY_Q:
-                case KEY_ESC:
+                if (chooser_key(&ch, code, out, outsz, &rc))
                     done = 1;
-                    break;
-                default:
-                    break;
-                }
+                dirty = 1;
             }
         }
     }
@@ -837,6 +917,9 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
         if (!got_epoch)
             continue;
 
+#ifdef NAV_DEVICE
+        drain_keys(a);
+#endif
         if (paced) {
             double u = fix_utc_seconds(a->gps.utc);
             if (u >= 0.0 && prev_utc >= 0.0) {
@@ -1049,6 +1132,7 @@ main(int argc, char **argv)
             return 1;
         g_fb = &chooser_fb;
         atexit(cleanup);
+        tty_raw();
         evdev_open(1);
         fb_take(&chooser_fb);
         if (chooser_run(chosen, sizeof chosen, &chooser_fb) != 0) {
