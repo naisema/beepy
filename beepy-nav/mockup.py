@@ -160,7 +160,7 @@ class Canvas:
 # Read out of gps-monitor.c rather than redrawn here, and drawn as exact SS x SS
 # blocks so the box filter reproduces it bit for bit. Small text stays crisp;
 # dithering it would only blur glyphs that are already only 5 px wide.
-FONT_SRC = "../gps-monitor/gps-monitor.c"
+FONT_SRC = "../libbeepyfb/font.c"
 
 EXTRA = {                                   # not in gps-monitor.c's table
     "%": (0x19, 0x1A, 0x02, 0x04, 0x08, 0x0B, 0x13),

@@ -11,6 +11,7 @@
 *.o
 *.a
 out-*.fb
+/host/
 /gps-monitor/gps-monitor
 /beepy-nav/beepy-nav
 /beepy-nav/fbplay

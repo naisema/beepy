@@ -1,28 +1,19 @@
-CC      ?= cc
-CFLAGS  ?= -O2 -Wall -Wextra -std=c11
-LDLIBS  ?= -lm
-PREFIX  ?= /usr/local
+# gps-monitor — the sources were split into ../libbeepyfb + ../libnmea (M1);
+# the real build lives in the top-level Makefile. This wrapper keeps
+# `make -C gps-monitor` and `make install` working.
 
-all: gps-monitor
+PREFIX ?= /usr/local
 
-gps-monitor: gps-monitor.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
+all:
+	$(MAKE) -C .. gps-monitor/gps-monitor
 
-install: gps-monitor
-	install -m755 gps-monitor $(DESTDIR)$(PREFIX)/bin/gps-monitor
-
-# Render both pages from the built-in demo data straight to raw frames, so the
-# renderer can be checked against the design mockups with no panel involved.
-check: gps-monitor
-	./gps-monitor --demo --page bars --dump out-bars.fb
-	./gps-monitor --demo --page sky  --dump out-sky.fb
-	@for f in out-bars out-sky; do \
-		s=$$(wc -c < $$f.fb); \
-		[ "$$s" = 384000 ] && echo "$$f.fb OK ($$s bytes)" \
-		                   || { echo "$$f.fb WRONG SIZE: $$s"; exit 1; }; \
-	done
+check:
+	$(MAKE) -C .. check
 
 clean:
-	rm -f gps-monitor out-bars.fb out-sky.fb
+	$(MAKE) -C .. clean
 
-.PHONY: all install check clean
+install: all
+	install -m755 gps-monitor $(DESTDIR)$(PREFIX)/bin/gps-monitor
+
+.PHONY: all check clean install
