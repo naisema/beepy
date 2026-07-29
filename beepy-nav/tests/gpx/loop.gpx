@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- mockup.py's ROUTE_M as a GPX: the staircase the NAV page was designed
+     around, so a replay along it exercises several cues of every kind and
+     the map turns through them the way the mockups show. -->
+<gpx version="1.1" creator="beepy-nav tests">
+  <metadata><name>Sukhumvit Loop</name></metadata>
+  <trk>
+    <name>Sukhumvit Loop</name>
+    <trkseg>
+      <trkpt lat="13.7293582" lon="100.5610000"/>
+      <trkpt lat="13.7338814" lon="100.5610000"/>
+      <trkpt lat="13.7361430" lon="100.5613699"/>
+      <trkpt lat="13.7398521" lon="100.5613699"/>
+      <trkpt lat="13.7398521" lon="100.5627571"/>
+      <trkpt lat="13.7431088" lon="100.5627571"/>
+      <trkpt lat="13.7438325" lon="100.5649765"/>
+      <trkpt lat="13.7463656" lon="100.5661787"/>
+      <trkpt lat="13.7481749" lon="100.5649765"/>
+      <trkpt lat="13.7488986" lon="100.5621097"/>
+      <trkpt lat="13.7484463" lon="100.5589655"/>
+      <trkpt lat="13.7469084" lon="100.5570235"/>
+      <trkpt lat="13.7445563" lon="100.5566536"/>
+      <trkpt lat="13.7425660" lon="100.5579483"/>
+      <trkpt lat="13.7422042" lon="100.5598903"/>
+    </trkseg>
+  </trk>
+</gpx>

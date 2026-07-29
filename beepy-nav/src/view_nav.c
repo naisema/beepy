@@ -21,8 +21,14 @@
 
 /* Route geometry is short but corner rounding multiplies it; one static
  * scratch set keeps it off the stack and out of malloc. Rendering is
- * single-threaded by construction (one page per frame). */
-#define MAXPTS 1024
+ * single-threaded by construction (one page per frame).
+ *
+ * 4096, not the 1024 M2 needed: a live route arrives as a windowed slice of
+ * up to 600 vertices (nav.c), and map_round_corners() can turn each sharp
+ * one into a dozen arc points. The cap is graceful -- it truncates the drawn
+ * route rather than overrunning -- but a truncated route is a lie about
+ * where the road goes, so the buffer is sized past the worst case. */
+#define MAXPTS 4096
 static double g_world[2 * MAXPTS];
 static double g_scr[2 * MAXPTS];
 static double g_segs[4 * MAXPTS];
@@ -249,8 +255,13 @@ view_turn_panel(cov_t *c, const panel_t *p)
         cov_text(c, 34, H - 40, p->then_d, 2, COV_PAPER);
     }
     /* Fix state earns panel space only when it is a problem: NO FIX replaces
-     * this line, inverted (DESIGN.md 1.1). */
-    snprintf(buf, sizeof buf, "%d%% %s", p->batt, p->clock);
+     * this line, inverted (DESIGN.md 1.1). A battery of -1 means the sysfs
+     * file was not readable -- the clock goes on alone, because "0%" would
+     * read as a dying battery rather than as a missing reading. */
+    if (p->batt >= 0)
+        snprintf(buf, sizeof buf, "%d%% %s", p->batt, p->clock);
+    else
+        snprintf(buf, sizeof buf, "%s", p->clock);
     cov_text(c, 5, H - 19, buf, 2, COV_PAPER);
 }
 
@@ -355,6 +366,18 @@ view_nav(cov_t *c, const navmap_t *m, const panel_t *p)
     view_nav_map(c, m);
     view_turn_panel(c, p);
     cov_fill_rect(c, PANEL_W, 0, PANEL_W, H - 1, COV_INK); /* the divider */
+    /* The 1 px gutter between the divider and the map (DESIGN.md 1.1 gives
+     * the map x 130-399), cleared explicitly.
+     *
+     * The map's geometry is clipped to x >= MAP_X, but the CASING is 10 px
+     * wide, so a route running down the left edge lays its outer stroke five
+     * pixels further left than any clipped coordinate. The panel covers
+     * 0-127 and the divider 128; column 129 is the one place that spill can
+     * still be seen. No mockup has a route reaching that edge, which is why
+     * this never showed -- view_cliptest() is the page that makes it show,
+     * and this is the line that answers it. Every existing golden already
+     * has this column white, so clearing it costs nothing. */
+    cov_fill_rect(c, PANEL_W + 1, 0, PANEL_W + 1, H - 1, COV_PAPER);
 }
 
 /* ------------------------------------------------------------ the demo */
@@ -398,24 +421,43 @@ view_nav_demo(cov_t *c, int off)
 
 /* DESIGN.md 10: "render at a zoom where the route leaves the map on all four
  * sides; assert no ink lands in x < 130". The turn panel is the only part of
- * this screen that is never allowed to be painted over, and a clipping bug
- * is the one thing that would destroy it -- so the page draws the MAP ALONE,
- * with no panel over the top. Any ink at all in x < 130 is then a failure,
- * with nothing to argue about and nothing to mask.
+ * this screen that is never allowed to be painted over, and a clipping bug is
+ * the one thing that would destroy it.
  *
- * The route is built so that auto-zoom lands on 6 m/px: the announced cue is
- * 800 m ahead, and map_auto_zoom() takes the coarsest rung keeping it inside
- * 0.8 * 172.8 px, which is 829 m at that rung. The visible world is then
- * ~1620 x 1440 m, and legs of +/-3000 m leave it on every side. */
+ * Auto-zoom lands on 6 m/px because the announced cue is 800 m ahead: that is
+ * the coarsest rung keeping it inside 0.8 * 172.8 px, which is 829 m there.
+ * The visible world is then e in [-810, 804] and n in [-397, 1037], and every
+ * leg below is placed to CROSS one of those bounds rather than merely to sit
+ * outside it -- a segment wholly outside is rejected by the bbox test and
+ * proves nothing about the clipper.
+ *
+ *   track  (0,-3000) -> the fix          crosses the BOTTOM
+ *   3 -> 4 (0,800) -> (2000,800)         crosses the RIGHT
+ *   5 -> 6 (2000,500) -> (-2000,500)     crosses RIGHT then LEFT
+ *   8 -> 9 (0,2500) -> (0,-100)          crosses the TOP coming back down
+ */
 static const double CLIP_ROUTE[] = {
-    0,     -3000, 0,     -100,  0,    0,     0,     800,  -3000, 800,
-    -3000, 3000,  3000,  3000,  3000, -3000, 0,     -3000};
+    0,     -3000, 0,     -1000, 0,     0,    0, 800, 2000, 800,
+    2000,  500,   -2000, 500,   -2000, 2500, 0, 2500, 0,   -100};
 #define CLIP_NPTS ((int)(sizeof CLIP_ROUTE / sizeof CLIP_ROUTE[0] / 2))
+
+static void
+clip_panel(panel_t *p)
+{
+    p->off = 0;
+    p->turn_m = 800;
+    p->kind = ARROW_LEFT;
+    p->then_kind = ARROW_RIGHT;
+    p->then_d = "2.2KM";
+    p->batt = 86;
+    p->clock = "09:40";
+}
 
 void
 view_cliptest(cov_t *c)
 {
     navmap_t m;
+    panel_t p;
     m.pts = CLIP_ROUTE;
     m.npts = CLIP_NPTS;
     m.pos_i = 2;
@@ -425,7 +467,31 @@ view_cliptest(cov_t *c)
     m.off = 0;
     m.spd_kmh = 31;
     m.course_up = 1;
-    view_nav_map(c, &m);
+    clip_panel(&p);
+    view_nav(c, &m, &p);
+}
+
+/* The same panel with NO map behind it. The test is the comparison: every
+ * pixel of x < 130 must be identical between the two, which says the map put
+ * nothing there that the panel did not. Asserting the region is merely blank
+ * would be weaker -- it would also pass if the map had erased the panel. */
+void
+view_cliptest_panel(cov_t *c)
+{
+    navmap_t m;
+    panel_t p;
+    static const double NONE[] = {0, 0, 0, 1};
+    m.pts = NONE;
+    m.npts = 2;
+    m.pos_i = 0;
+    m.pos_f = 0.0;
+    m.turn_i = 1;
+    m.pin_i = -1;
+    m.off = 0;
+    m.spd_kmh = 31;
+    m.course_up = 1;
+    clip_panel(&p);
+    view_nav(c, &m, &p);
 }
 
 /* ------------------------------------------------------- cue glyph sheet */

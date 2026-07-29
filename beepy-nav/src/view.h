@@ -89,5 +89,8 @@ void view_overview_demo(cov_t *c);
  * leaves the view on all four sides. Nothing but the panel may put ink in
  * x < 130, and this is the page that makes a failure to clip visible. */
 void view_cliptest(cov_t *c);
+/* The same page's panel with an empty map behind it: the two frames must
+ * agree pixel for pixel over x < 130. */
+void view_cliptest_panel(cov_t *c);
 
 #endif /* BEEPY_NAV_VIEW_H */
