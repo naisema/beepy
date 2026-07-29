@@ -41,6 +41,7 @@
 #include "libnmea/nmea.h"
 
 #include "arrows.h"
+#include "chooser.h"
 #include "fix.h"
 #include "map.h"
 #include "route.h"
@@ -62,7 +63,8 @@ static const char USAGE[] =
     "usage: beepy-nav --route FILE.gpx [-d DEV] [--replay F.nmea]\n"
     "       beepy-nav --demo --page PAGE [--dump FILE] [--bench N]\n"
     "\n"
-    "  --route FILE  the GPX to follow\n"
+    "  --route FILE  the GPX to follow; omitted, the routes in ~/routes\n"
+    "                (or $BEEPY_ROUTES) are offered on the panel\n"
     "  -d DEV        NMEA serial port (default /dev/ttyACM0)\n"
     "  --replay F    read NMEA from a file instead, paced to the clock the\n"
     "                sentences carry; exits cleanly at end of file\n"
@@ -76,7 +78,7 @@ static const char USAGE[] =
     "  --print       dump nav_t as text, per fix\n"
     "  --north-up    start north-up instead of course-up\n"
     "  --demo        render a static design state instead of navigating\n"
-    "  --page P      nav, nav-off, overview, arrows, cliptest,\n"
+    "  --page P      nav, nav-off, overview, arrows, chooser, cliptest,\n"
     "                cliptest-panel -- and with\n"
     "                --route it picks the page the ride opens on\n"
     "  --dump FILE   write the frame as 384000 raw XRGB bytes\n"
@@ -90,7 +92,8 @@ enum {
     PAGE_OVERVIEW,
     PAGE_ARROWS,
     PAGE_CLIPTEST,
-    PAGE_CLIPTEST_PANEL
+    PAGE_CLIPTEST_PANEL,
+    PAGE_CHOOSER
 };
 enum { LIVE_NAV, LIVE_OVERVIEW };
 
@@ -119,6 +122,16 @@ render_demo(cov_t *cov, canvas_t *cv, int page)
     case PAGE_CLIPTEST_PANEL:
         view_cliptest_panel(cov);
         break;
+    case PAGE_CHOOSER: {
+        /* Dumpable so the list can be looked at without a device -- the
+         * whole reason view_chooser() is portable and separate. */
+        chooser_t ch;
+        char dir[192];
+        chooser_default_dir(dir, sizeof dir);
+        chooser_scan(&ch, dir);
+        view_chooser(cov, &ch);
+        break;
+    }
     default:
         view_nav_demo(cov, 0);
         break;
@@ -539,6 +552,12 @@ cleanup(void)
 }
 #endif
 
+/* Set when the route chooser has already opened the panel and grabbed the
+ * keyboard, so run_live() inherits them instead of taking them again. */
+#ifdef NAV_DEVICE
+static fb_t *g_preopened;
+#endif
+
 static volatile sig_atomic_t g_signal_quit;
 
 static void
@@ -547,6 +566,97 @@ on_signal(int s)
     (void)s;
     g_signal_quit = 1;
 }
+
+/* --------------------------------------------------------------- chooser */
+
+#ifdef NAV_DEVICE
+/* DESIGN.md 2: "Run with no route, it lists /home/beepy/routes/*.gpx and
+ * waits for a selection -- a startup chooser, not a page."
+ *
+ * It has to be drawn on the panel and driven by evdev, because by the time
+ * this runs fbterm is SIGSTOPped and stdin is going nowhere. That is the
+ * whole reason this cannot be twenty lines of fgets().
+ *
+ * Returns 0 with the path in `out`, or -1 when the rider quit. */
+static int
+chooser_run(char *out, size_t outsz, fb_t *fb)
+{
+    chooser_t ch;
+    canvas_t *cv = canvas_new(SCR_W, SCR_H);
+    char dir[192];
+    int done = 0, rc = -1, dirty = 1;
+
+    if (!cv)
+        return -1;
+    chooser_default_dir(dir, sizeof dir);
+    chooser_scan(&ch, dir);
+
+    while (!done && !g_signal_quit) {
+        struct pollfd pfd[MAX_EVDEV];
+        int np = 0, i;
+        if (dirty) {
+            cov_begin(&COV);
+            view_chooser(&COV, &ch);
+            cov_resolve(&COV, cv);
+            fb_present(fb, cv);
+            dirty = 0;
+        }
+        for (i = 0; i < evdev_count(); i++) {
+            pfd[np].fd = evdev_fd(i);
+            pfd[np].events = POLLIN;
+            np++;
+        }
+        if (np == 0) {
+            /* No keyboard: the list is on screen but unusable, and looping
+             * on a poll with no fds would spin. Say so and give up rather
+             * than hang with a picture of a menu. */
+            fputs("beepy-nav: no evdev keyboard for the route chooser\n",
+                  stderr);
+            break;
+        }
+        if (poll(pfd, (unsigned)np, 500) <= 0)
+            continue;
+        for (i = 0; i < np; i++) {
+            int code, value;
+            if (!(pfd[i].revents & POLLIN))
+                continue;
+            while (evdev_next_key(pfd[i].fd, &code, &value)) {
+                if (value != 1)
+                    continue;
+                switch (code) {
+                case KEY_N:
+                case KEY_DOWN:
+                    chooser_move(&ch, 1);
+                    dirty = 1;
+                    break;
+                case KEY_P:
+                case KEY_UP:
+                    chooser_move(&ch, -1);
+                    dirty = 1;
+                    break;
+                case KEY_ENTER:
+                case KEY_KPENTER:
+                    if (ch.n > 0) {
+                        snprintf(out, outsz, "%s", ch.path[ch.sel]);
+                        rc = 0;
+                        done = 1;
+                    }
+                    break;
+                case KEY_Q:
+                case KEY_ESC:
+                    done = 1;
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
+    }
+    free(cv->bits);
+    free(cv);
+    return rc;
+}
+#endif /* NAV_DEVICE */
 
 /* ---------------------------------------------------------------- source */
 
@@ -606,7 +716,12 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 #ifdef NAV_DEVICE
-    if (!headless) {
+    if (g_preopened) {
+        /* Inherited from the route chooser, panel and grab and all. */
+        fb = *g_preopened;
+        have_fb = 1;
+        tty_raw();
+    } else if (!headless) {
         if (fb_open(&fb, "/dev/fb1") < 0)
             return 1;
         g_fb = &fb;
@@ -806,6 +921,10 @@ main(int argc, char **argv)
     int pace_opt = -1, north_up = 0, i;
     char err[320];
     canvas_t *cv;
+#ifdef NAV_DEVICE
+    char chosen[512];
+    fb_t chooser_fb;
+#endif
 
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -825,6 +944,8 @@ main(int argc, char **argv)
                 page = PAGE_CLIPTEST;
             else if (!strcmp(p, "cliptest-panel"))
                 page = PAGE_CLIPTEST_PANEL;
+            else if (!strcmp(p, "chooser"))
+                page = PAGE_CHOOSER;
             else {
                 fprintf(stderr, "unknown page: %s\n%s", p, USAGE);
                 return 2;
@@ -916,9 +1037,35 @@ main(int argc, char **argv)
     APP.course_up = !north_up;
 
     if (!routepath) {
+#ifdef NAV_DEVICE
+        /* Never under --headless or --demo: neither has a panel to draw the
+         * list on nor a key to answer with, and a program that silently
+         * waits for a keypress that cannot arrive is worse than an error. */
+        if (headless) {
+            fputs("beepy-nav: --headless needs an explicit --route\n", stderr);
+            return 2;
+        }
+        if (fb_open(&chooser_fb, "/dev/fb1") < 0)
+            return 1;
+        g_fb = &chooser_fb;
+        atexit(cleanup);
+        evdev_open(1);
+        fb_take(&chooser_fb);
+        if (chooser_run(chosen, sizeof chosen, &chooser_fb) != 0) {
+            fb_release(&chooser_fb);
+            g_fb = NULL;
+            return 0; /* the rider quit the chooser; not an error */
+        }
+        /* The panel and the grab carry straight into the ride: releasing
+         * and re-taking them would flash fbterm between the list and the
+         * first frame. */
+        g_preopened = &chooser_fb;
+        routepath = chosen;
+#else
         fputs("beepy-nav: no route (--route FILE.gpx)\n", stderr);
         fputs(USAGE, stderr);
         return 2;
+#endif
     }
     if (route_load(routepath, &APP.rt, err, sizeof err)) {
         fprintf(stderr, "beepy-nav: %s\n", err);
