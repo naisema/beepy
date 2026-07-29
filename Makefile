@@ -61,6 +61,12 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit
 	./gps-monitor/gps-monitor --demo --page sky  --dump out-sky.fb
 	cmp goldens/gm-bars.fb out-bars.fb
 	cmp goldens/gm-sky.fb  out-sky.fb
+	./beepy-nav/beepy-nav --demo --page nav     --dump out-nav-turn.fb
+	./beepy-nav/beepy-nav --demo --page nav-off --dump out-nav-off.fb
+	./beepy-nav/beepy-nav --demo --page arrows  --dump out-nav-arrows.fb
+	cmp goldens/nav-turn.fb   out-nav-turn.fb
+	cmp goldens/nav-off.fb    out-nav-off.fb
+	cmp goldens/nav-arrows.fb out-nav-arrows.fb
 	@echo "check: PASS - demo dumps byte-identical to goldens"
 
 goldens: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -69,6 +75,9 @@ ifndef GOLDEN_OK
 endif
 	./gps-monitor/gps-monitor --demo --page bars --dump goldens/gm-bars.fb
 	./gps-monitor/gps-monitor --demo --page sky  --dump goldens/gm-sky.fb
+	./beepy-nav/beepy-nav --demo --page nav     --dump goldens/nav-turn.fb
+	./beepy-nav/beepy-nav --demo --page nav-off --dump goldens/nav-off.fb
+	./beepy-nav/beepy-nav --demo --page arrows  --dump goldens/nav-arrows.fb
 	@echo "goldens regenerated - review the diff before committing"
 
 # 100 NAV renders, draw + resolve only (DESIGN.md 5.4 budgets 30 ms).
