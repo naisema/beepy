@@ -23,15 +23,14 @@
 #include "view.h"
 
 static const char USAGE[] =
-    "usage: beepy-nav --demo --page nav|nav-off|arrows [--dump FILE]\n"
-    "                 [--bench N]\n"
+    "usage: beepy-nav --demo --page PAGE [--dump FILE] [--bench N]\n"
     "\n"
-    "  --demo        render the static design state (the only source in M2)\n"
-    "  --page P      nav (turn panel + map), nav-off (off route), arrows\n"
+    "  --demo        render the static design state\n"
+    "  --page P      nav, nav-off, overview, arrows, cliptest\n"
     "  --dump FILE   write the frame as 384000 raw XRGB bytes\n"
     "  --bench N     time N draw+resolve cycles and print ms/frame\n";
 
-enum { PAGE_NAV, PAGE_NAV_OFF, PAGE_ARROWS };
+enum { PAGE_NAV, PAGE_NAV_OFF, PAGE_OVERVIEW, PAGE_ARROWS, PAGE_CLIPTEST };
 
 static void
 render(cov_t *cov, canvas_t *cv, int page)
@@ -41,8 +40,14 @@ render(cov_t *cov, canvas_t *cv, int page)
     case PAGE_NAV_OFF:
         view_nav_demo(cov, 85);
         break;
+    case PAGE_OVERVIEW:
+        view_overview_demo(cov);
+        break;
     case PAGE_ARROWS:
         view_arrows(cov);
+        break;
+    case PAGE_CLIPTEST:
+        view_cliptest(cov);
         break;
     default:
         view_nav_demo(cov, 0);
@@ -71,8 +76,12 @@ main(int argc, char **argv)
                 page = PAGE_NAV;
             else if (!strcmp(p, "nav-off"))
                 page = PAGE_NAV_OFF;
+            else if (!strcmp(p, "overview"))
+                page = PAGE_OVERVIEW;
             else if (!strcmp(p, "arrows"))
                 page = PAGE_ARROWS;
+            else if (!strcmp(p, "cliptest"))
+                page = PAGE_CLIPTEST;
             else {
                 fprintf(stderr, "unknown page: %s\n%s", p, USAGE);
                 return 2;

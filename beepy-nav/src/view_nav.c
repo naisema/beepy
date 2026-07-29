@@ -1,10 +1,11 @@
 /* beepy-nav/src/view_nav.c -- the NAV page and the cue glyph sheet.
  *
  * A transcription of mockup.py's page_nav() + turn_panel() and the marks
- * they use (position_marker, pin, compass, speed_badge, scale_bar, dashed,
- * cased_route). The M2 design gate byte-compares the panel half of these
- * frames against the mockup's own PNGs, so the literals below are the
- * design: they are copied, not re-derived.
+ * they use (mark_position, mark_pin, mark_compass, speed_badge,
+ * mark_scale_bar, mark_dashed, mark_cased_route). The M2 design gate
+ * byte-compares the panel half of these frames against the mockup's own
+ * PNGs, so the literals below are the design: they are copied, not
+ * re-derived.
  */
 #include <math.h>
 #include <stdio.h>
@@ -26,15 +27,21 @@ static double g_world[2 * MAXPTS];
 static double g_scr[2 * MAXPTS];
 static double g_segs[4 * MAXPTS];
 
-/* ------------------------------------------------------------------ marks */
+/* ------------------------------------------------------------------ marks
+ *
+ * The six mark_* routines are shared with view_overview.c and declared in
+ * view.h. They live here because this is where they were transcribed from
+ * mockup.py, and because the OVERVIEW page is the same cartography at a
+ * different zoom -- two copies would be two things to keep in step with the
+ * mockup. speed_badge() stays private: only the NAV map has one. */
 
 /* White disc, black ring, solid black chevron -- which is what the
  * reference resolves to at threshold. The white fill doubles as a halo: it
  * cuts the black route so the marker never merges into it. `ang` is the
  * residual course (raw course minus map rotation), so mid-turn the chevron
  * stays true while a smoothed course-up map catches up. */
-static void
-position_marker(cov_t *c, double x, double y, double r, double ang)
+void
+mark_position(cov_t *c, double x, double y, double r, double ang)
 {
     double k = r * 0.62, ca = cos(ang), sa = sin(ang), p[8], shape[4][2];
     int i;
@@ -61,8 +68,8 @@ position_marker(cov_t *c, double x, double y, double r, double ang)
 }
 
 /* Teardrop with a hole, tip at (x, y). */
-static void
-pin(cov_t *c, double x, double y, double r)
+void
+mark_pin(cov_t *c, double x, double y, double r)
 {
     double p[6];
     cov_disc(c, x, y - r, r + 1.6, COV_PAPER);
@@ -100,8 +107,8 @@ needle(cov_t *c, double x, double y, double nx, double ny, double px,
 
 /* Filled disc with a reversed N, plus a needle on the rim pointing to world
  * north -- on a course-up map the badge alone would be a lie. */
-static void
-compass(cov_t *c, double x, double y, double theta, double r)
+void
+mark_compass(cov_t *c, double x, double y, double theta, double r)
 {
     double nx = -sin(theta), ny = -cos(theta);
     double base = r + 2.5, tip = r + 9;
@@ -131,8 +138,8 @@ speed_badge(cov_t *c, double x, double y, int kmh, double r)
     cov_text(c, (int)rint(x - 12), (int)rint(y + 11), "KM/H", 1, COV_INK);
 }
 
-static void
-scale_bar(cov_t *c, double x, double y, double mpp)
+void
+mark_scale_bar(cov_t *c, double x, double y, double mpp)
 {
     char lbl[12];
     int m, px;
@@ -150,9 +157,9 @@ scale_bar(cov_t *c, double x, double y, double mpp)
 
 /* Ridden track. Thin, so it goes through the crisp hairline layer: a 1 px
  * diagonal has no room to anti-alias and would resolve to a broken line. */
-static void
-dashed(cov_t *c, const double *segs, int nsegs, double on, double off,
-       double width, int ink)
+void
+mark_dashed(cov_t *c, const double *segs, int nsegs, double on, double off,
+            double width, int ink)
 {
     double carry = 0.0;
     int i;
@@ -178,9 +185,9 @@ dashed(cov_t *c, const double *segs, int nsegs, double on, double off,
 }
 
 /* White casing under a black core: the route stays legible over streets. */
-static void
-cased_route(cov_t *c, const double *segs, int nsegs, double outer,
-            double inner)
+void
+mark_cased_route(cov_t *c, const double *segs, int nsegs, double outer,
+                 double inner)
 {
     cov_stroke_segs(c, segs, nsegs, outer, COV_PAPER);
     cov_stroke_segs(c, segs, nsegs, inner, COV_INK);
@@ -295,7 +302,7 @@ view_nav_map(cov_t *c, const navmap_t *m)
                            g_scr, MAXPTS);
     map_project(g_scr, ns, pos_e, pos_n, mpp, cx, cy, theta, g_scr);
     nseg = map_clip_segs(g_scr, ns, MAP_X, 0, W - 1, H - 1, g_segs, MAXPTS);
-    dashed(c, g_segs, nseg, 5, 5, 1, COV_INK);
+    mark_dashed(c, g_segs, nseg, 5, 5, 1, COV_INK);
 
     /* The route ahead, cased so it stays legible over the track. */
     g_world[0] = on_e;
@@ -309,7 +316,7 @@ view_nav_map(cov_t *c, const navmap_t *m)
                            g_scr, MAXPTS);
     map_project(g_scr, ns, pos_e, pos_n, mpp, cx, cy, theta, g_scr);
     nseg = map_clip_segs(g_scr, ns, MAP_X, 0, W - 1, H - 1, g_segs, MAXPTS);
-    cased_route(c, g_segs, nseg, 10, 6);
+    mark_cased_route(c, g_segs, nseg, 10, 6);
 
     if (m->off != 0.0) {
         /* Dotted tie-line back to the route: it says which way, without
@@ -333,13 +340,13 @@ view_nav_map(cov_t *c, const navmap_t *m)
         map_project(en, 1, pos_e, pos_n, mpp, cx, cy, theta, xy);
         if (MAP_X + 10 < xy[0] && xy[0] < W - 10 && 24 < xy[1] &&
             xy[1] < H - 10)
-            pin(c, xy[0], xy[1], 10);
+            mark_pin(c, xy[0], xy[1], 10);
     }
 
-    position_marker(c, cx, cy, 13, 0.0);
-    compass(c, MAP_X + 21, 27, theta, 11);
+    mark_position(c, cx, cy, 13, 0.0);
+    mark_compass(c, MAP_X + 21, 27, theta, 11);
     speed_badge(c, W - 33, 33, m->spd_kmh, 27);
-    scale_bar(c, MAP_X + 7, H - 8, mpp);
+    mark_scale_bar(c, MAP_X + 7, H - 8, mpp);
 }
 
 void
@@ -385,6 +392,40 @@ view_nav_demo(cov_t *c, int off)
     p.clock = "09:40";
 
     view_nav(c, &m, &p);
+}
+
+/* ----------------------------------------------------------- clip test */
+
+/* DESIGN.md 10: "render at a zoom where the route leaves the map on all four
+ * sides; assert no ink lands in x < 130". The turn panel is the only part of
+ * this screen that is never allowed to be painted over, and a clipping bug
+ * is the one thing that would destroy it -- so the page draws the MAP ALONE,
+ * with no panel over the top. Any ink at all in x < 130 is then a failure,
+ * with nothing to argue about and nothing to mask.
+ *
+ * The route is built so that auto-zoom lands on 6 m/px: the announced cue is
+ * 800 m ahead, and map_auto_zoom() takes the coarsest rung keeping it inside
+ * 0.8 * 172.8 px, which is 829 m at that rung. The visible world is then
+ * ~1620 x 1440 m, and legs of +/-3000 m leave it on every side. */
+static const double CLIP_ROUTE[] = {
+    0,     -3000, 0,     -100,  0,    0,     0,     800,  -3000, 800,
+    -3000, 3000,  3000,  3000,  3000, -3000, 0,     -3000};
+#define CLIP_NPTS ((int)(sizeof CLIP_ROUTE / sizeof CLIP_ROUTE[0] / 2))
+
+void
+view_cliptest(cov_t *c)
+{
+    navmap_t m;
+    m.pts = CLIP_ROUTE;
+    m.npts = CLIP_NPTS;
+    m.pos_i = 2;
+    m.pos_f = 0.0;
+    m.turn_i = 3;
+    m.pin_i = 4;
+    m.off = 0;
+    m.spd_kmh = 31;
+    m.course_up = 1;
+    view_nav_map(c, &m);
 }
 
 /* ------------------------------------------------------- cue glyph sheet */

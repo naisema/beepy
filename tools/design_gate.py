@@ -19,6 +19,16 @@ Acceptance, per page:
     where cover.c's per-shape composite differs from Pillow's single 4x
     buffer, and never a missing or displaced shape.
 
+Pixels the MOCKUP itself resolved at exactly 50 % coverage are exempt, and
+the exemption is computed here rather than hand-listed: this script has the
+reference's pre-resolve coverage buffer, so it writes out every coordinate
+whose downsampled value is exactly 128 and hands the list to fbdiff as
+--mask-list. Those pixels were decided by resolve()'s own `>= 128`, and a
+hair of geometry either way flips them -- they cannot distinguish a correct
+renderer from a displaced shape, which is the only thing --edges-only is
+trying to see. The count is printed so the exemption stays visible; it is
+84 pixels on the OVERVIEW page and 0 on the M2 pages.
+
 The first bullet is checked by running fbdiff twice: once unmasked for the
 total, once with --mask panel. Panel differences are the masked count, and
 the gate requires it to be zero -- the mask is used to measure the region,
@@ -45,22 +55,41 @@ PANEL_MAX = 0         # exact-by-construction: the panel must be identical
 PAGES = (
     ("nav", "nav", lambda m, n: m.page_nav(n, basemap=False)),
     ("nav-off", "nav-off", lambda m, n: m.page_nav(n, basemap=False, off=85)),
+    ("overview", "nav-overview", lambda m, n: m.page_overview()),
     ("arrows", "nav-arrows", lambda m, n: m.page_arrows()),
 )
 
 
 def references(outdir):
-    """Render mockup.py's own frames into raw .fb files. -> {name: path}"""
+    """Render mockup.py's own frames into raw .fb files. -> {name: (fb, tie)}"""
     sys.path.insert(0, NAVDIR)
     cwd = os.getcwd()
     os.chdir(NAVDIR)                      # mockup.py reads ../ and src/ by path
     try:
+        from PIL import Image
         import mockup
-        grabbed = {}
+        grabbed, covs = {}, {}
         mockup.finish = lambda img, name: grabbed.setdefault(name, img.copy())
+        # Tap resolve() for the coverage buffer on its way to the threshold.
+        plain = mockup.resolve
+
+        def spy(cov, dither=False):
+            covs["last"] = cov
+            return plain(cov, dither)
+
+        mockup.resolve = spy
         for page, mockup_name, render in PAGES:
             render(mockup, mockup_name)
             img = grabbed[mockup_name]
+            small = covs["last"].resize((W, H), Image.BOX).load()
+            tie = os.path.join(outdir, f"tie-{page}.txt")
+            with open(tie, "w") as fh:
+                fh.write("# reference pixels at exactly 50%% coverage\n")
+                for y in range(H):
+                    for x in range(W):
+                        if small[x, y] == 128:
+                            fh.write(f"{x} {y}\n")
+            grabbed[page + "!tie"] = tie
             px = img.convert("1").load()
             out = bytearray()
             for y in range(H):
@@ -70,7 +99,7 @@ def references(outdir):
             path = os.path.join(outdir, f"ref-{page}.fb")
             open(path, "wb").write(out)
             grabbed[page] = path
-        return {p: grabbed[p] for p, _, _ in PAGES}
+        return {p: (grabbed[p], grabbed[p + "!tie"]) for p, _, _ in PAGES}
     finally:
         os.chdir(cwd)
 
@@ -83,7 +112,8 @@ def fbdiff(a, b, *extra):
     n = lambda key, dflt=0: next(
         (int(w.split()[0]) for w in line.split(", ") if key in w), dflt)
     diff = int(line.split(":")[1].split()[0])
-    return diff, n("inside masks"), n("fail edges-only"), r.returncode == 0, line
+    return (diff, n("inside masks"), n("at-threshold"), n("fail edges-only"),
+            r.returncode == 0, line)
 
 
 def main(argv):
@@ -102,18 +132,21 @@ def main(argv):
     refs = references(outdir)
     bad = 0
     for page, _, _ in PAGES:
+        ref, tie = refs[page]
         got = os.path.join(outdir, f"c-{page}.fb")
         subprocess.run([binary, "--demo", "--page", page, "--dump", got],
                        check=True, capture_output=True)
-        total, _, _, _, _ = fbdiff(got, refs[page], "--max-px", str(MAX_PX))
-        rest, panel, nonedge, ok, _ = fbdiff(
-            got, refs[page], "--mask", "panel", "--max-px", str(MAX_PX),
-            "--edges-only", "--out", os.path.join(outdir, f"diff-{page}.png"))
+        total, _, tied, _, _, _ = fbdiff(got, ref, "--mask-list", tie,
+                                         "--max-px", str(MAX_PX))
+        _, panel, _, nonedge, ok, _ = fbdiff(
+            got, ref, "--mask", "panel", "--mask-list", tie,
+            "--max-px", str(MAX_PX), "--edges-only",
+            "--out", os.path.join(outdir, f"diff-{page}.png"))
         verdict = (total <= MAX_PX and panel <= PANEL_MAX and nonedge == 0
                    and ok)
         bad += not verdict
         print(f"{page:9s} total {total:4d} / {MAX_PX}   panel {panel:4d} / "
-              f"{PANEL_MAX}   non-edge {nonedge:4d}   "
+              f"{PANEL_MAX}   non-edge {nonedge:4d}   tied {tied:3d}   "
               f"{'PASS' if verdict else 'FAIL'}")
     print("design gate:", "PASS" if not bad else f"FAIL ({bad} pages)")
     return 1 if bad else 0

@@ -37,9 +37,43 @@ typedef struct {
     int course_up;
 } navmap_t;
 
+/* The OVERVIEW page: the whole route, north-up, fitted below the title band
+ * (DESIGN.md 1.2). Geometry is world metres, exactly as navmap_t's. The
+ * strip's five values arrive pre-formatted -- the page is a transcription of
+ * mockup.py's page_overview() and formatting decisions belong with the
+ * caller that knows the units setting. */
+typedef struct {
+    const double *pts;
+    int npts;
+    const int *cue_idx; /* one vertex index per cue dot */
+    int ncue_dots;
+    int pos_i;
+    double pos_f;
+    const char *name;  /* "SUKHUMVIT LOOP"  */
+    const char *total; /* "31.0", km        */
+    const char *togo;  /* "12.6", km        */
+    const char *eta;   /* "10:42"           */
+    int done;          /* per cent          */
+    int cue_i, ncues;  /* "3/11 CUES"       */
+} overview_t;
+
 void view_turn_panel(cov_t *c, const panel_t *p);
 void view_nav_map(cov_t *c, const navmap_t *m);
 void view_nav(cov_t *c, const navmap_t *m, const panel_t *p);
+void view_overview(cov_t *c, const overview_t *o);
+
+/* Map marks shared by the two pages; defined in view_nav.c, where they were
+ * transcribed from mockup.py. The OVERVIEW page is the same cartography at a
+ * different zoom, and a second copy would be a second thing to keep in step
+ * with the mockup. */
+void mark_position(cov_t *c, double x, double y, double r, double ang);
+void mark_pin(cov_t *c, double x, double y, double r);
+void mark_compass(cov_t *c, double x, double y, double theta, double r);
+void mark_scale_bar(cov_t *c, double x, double y, double mpp);
+void mark_dashed(cov_t *c, const double *segs, int nsegs, double on,
+                 double off, double width, int ink);
+void mark_cased_route(cov_t *c, const double *segs, int nsegs, double outer,
+                      double inner);
 
 /* The nine cue glyphs at four sizes -- a reference sheet, not a page. */
 void view_arrows(cov_t *c);
@@ -47,5 +81,13 @@ void view_arrows(cov_t *c);
 /* The static demo state page_nav() renders: off = 0 for the turn page,
  * metres off-route for the OFF ROUTE variant. */
 void view_nav_demo(cov_t *c, int off);
+
+/* The static demo state page_overview() renders. */
+void view_overview_demo(cov_t *c);
+
+/* The clipping test of DESIGN.md 10: the NAV map at a zoom where the route
+ * leaves the view on all four sides. Nothing but the panel may put ink in
+ * x < 130, and this is the page that makes a failure to clip visible. */
+void view_cliptest(cov_t *c);
 
 #endif /* BEEPY_NAV_VIEW_H */

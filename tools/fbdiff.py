@@ -4,11 +4,19 @@ fbdiff.py -- compare two 400x240 1-bit frames, in any of the formats this
 repo produces: 384000-byte raw XRGB dumps (fb_dump / png2fb), 12000-byte
 packed 1bpp canvases, or 400x240 PNGs.
 
-    fbdiff.py A B [--mask panel] [--mask x0,y0,x1,y1] [--max-px N]
-                  [--edges-only] [--out diff.png]
+    fbdiff.py A B [--mask panel] [--mask x0,y0,x1,y1] [--mask-list F]
+                  [--max-px N] [--edges-only] [--out diff.png]
 
 --mask panel        ignore x < 130 (the NAV turn panel + divider)
 --mask x0,y0,x1,y1  ignore a rectangle (inclusive); repeatable
+--mask-list FILE    ignore the individual pixels listed in FILE, one "x y" per
+                    line. Counted and reported separately from --mask, as
+                    "at-threshold": the intended use is the set of pixels the
+                    reference renderer itself resolved at EXACTLY 50 % coverage,
+                    where its own >= comparison broke the tie and a hair of
+                    geometry either way flips the answer. Such a pixel is not
+                    evidence of a displaced shape, which is what --edges-only
+                    is there to catch.
 --max-px N          pass if unmasked differing pixels <= N (default 0)
 --edges-only        additionally require every differing pixel to sit on an
                     ink/paper edge in BOTH frames (an opposite-colour
@@ -49,9 +57,15 @@ def on_edge(f, x, y):
 
 def main(argv):
     args, masks, max_px, edges, out = [], [], 0, False, None
+    at_thresh = set()
     it = iter(argv)
     for a in it:
-        if a == "--mask":
+        if a == "--mask-list":
+            for ln in open(next(it)):
+                ln = ln.split("#")[0].split()
+                if ln:
+                    at_thresh.add((int(ln[0]), int(ln[1])))
+        elif a == "--mask":
             m = next(it)
             masks.append((0, 0, 129, H - 1) if m == "panel"
                          else tuple(int(v) for v in m.split(",")))
@@ -70,13 +84,16 @@ def main(argv):
     def masked(x, y):
         return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in masks)
 
-    diffs, hidden, nonedge = [], 0, 0
+    diffs, hidden, tied, nonedge = [], 0, 0, 0
     for y in range(H):
         for x in range(W):
             if fa[y * W + x] == fb[y * W + x]:
                 continue
             if masked(x, y):
                 hidden += 1
+                continue
+            if (x, y) in at_thresh:
+                tied += 1
                 continue
             diffs.append((x, y))
             if edges and not (on_edge(fa, x, y) and on_edge(fb, x, y)):
@@ -100,6 +117,7 @@ def main(argv):
     ok = len(diffs) <= max_px and (not edges or nonedge == 0)
     print(f"fbdiff: {len(diffs)} differing px (limit {max_px})"
           + (f", {hidden} more inside masks" if masks else "")
+          + (f", {tied} at-threshold" if at_thresh else "")
           + (f", {nonedge} fail edges-only" if edges else "")
           + f" -> {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
