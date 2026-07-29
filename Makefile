@@ -7,9 +7,12 @@
 #           modules: font, canvas, nmea, gps (no fbdev/input/serial).
 #
 # The Mac entrypoint is `make sync`: rsync the tree to the device and run
-# `make check` there. GATE: `check` byte-compares gps-monitor's --demo dumps
-# against goldens/gm-*.fb captured from the pre-split build. Any diff is a
-# regression; goldens regenerate only deliberately (GOLDEN_OK=1 make goldens).
+# `make check` there. GATE: `check` byte-compares the --demo dumps against
+# goldens/, and runs the map unit tests. Any diff is a regression; goldens
+# regenerate only deliberately (GOLDEN_OK=1 make goldens).
+#
+# `make design-gate` is the other direction and Mac-only: it compares the
+# beepy-nav pages against beepy-nav/mockup.py's own frames (needs Pillow).
 
 CC      ?= cc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c11
@@ -117,6 +120,11 @@ host/%.o: beepy-nav/src/%.c $(HDRS)
 tables:
 	cd beepy-nav && python3 ../tools/gen_tables.py
 
+# M2 acceptance: the C pages against mockup.py's own frames. Mac lane only
+# (it renders the reference through Pillow); see tools/design_gate.py.
+design-gate: host/beepy-nav
+	python3 tools/design_gate.py --bin host/beepy-nav
+
 # -------------------------------------------------------- Mac -> device
 sync:
 	rsync -az -e "ssh -i $(SSHKEY)" \
@@ -127,8 +135,9 @@ sync:
 	ssh -i $(SSHKEY) $(DEVICE) 'make -C $(REMOTE_DIR) check'
 
 clean:
-	rm -f gps-monitor/gps-monitor beepy-nav/tests/test_map out-*.fb \
+	rm -f gps-monitor/gps-monitor beepy-nav/beepy-nav \
+		beepy-nav/tests/test_map out-*.fb \
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
-.PHONY: all check goldens host test-unit tables sync clean
+.PHONY: all check goldens host test-unit tables design-gate bench sync clean

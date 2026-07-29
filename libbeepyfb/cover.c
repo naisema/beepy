@@ -168,15 +168,27 @@ static const emit_t EMBLK = {NULL, SCR_W, SCR_H, blk_point, blk_hline};
  * the four subpixel rows averages its four samples with round-half-up
  * (horizontal pass), then the four row values average the same way
  * (vertical pass). ROWV[] is that first pass for 0..4 ink samples.
+ *
+ * Round-half-UP is toward white, and this buffer stores 0 = ink, so which
+ * way a half lands depends on the batch's colour. For an ink batch ROWV is
+ * literally Pillow's row value and (sum + 2) >> 2 its column average. For a
+ * paper batch the buffer holds the complement, and the complement of a
+ * half-up average is a half-DOWN one: ROWVP[2] is 127 rather than 128, and
+ * the column average rounds with + 1. Without the second table every
+ * axis-aligned paper edge whose coverage lands on exactly 1/2 -- the whole
+ * length of the panel arrow's stem, for one -- resolved a pixel darker than
+ * the mockup.
  */
 static const unsigned char ROWV[5] = {255, 191, 128, 64, 0};
+static const unsigned char ROWVP[5] = {255, 191, 127, 64, 0};
 static const unsigned char POPC[16] = {0, 1, 1, 2, 1, 2, 2, 3,
                                        1, 2, 2, 3, 2, 3, 3, 4};
 
 static void
 cov_commit(cov_t *c)
 {
-    int x, y, px0, py0, px1, py1;
+    const unsigned char *rowv;
+    int x, y, px0, py0, px1, py1, rnd;
     if (c->batch_ink < 0)
         return;
     if (c->bx0 > c->bx1 || c->by0 > c->by1) { /* empty batch */
@@ -187,6 +199,8 @@ cov_commit(cov_t *c)
     py0 = c->by0 / SS;
     px1 = c->bx1 / SS;
     py1 = c->by1 / SS;
+    rowv = c->batch_ink == COV_INK ? ROWV : ROWVP;
+    rnd = c->batch_ink == COV_INK ? 2 : 1;
     for (y = py0; y <= py1; y++) {
         const unsigned char *r0 = ACC[y * SS];
         const unsigned char *r1 = ACC[y * SS + 1];
@@ -199,8 +213,8 @@ cov_commit(cov_t *c)
             unsigned char *d;
             if (!(n0 | n1 | n2 | n3))
                 continue;
-            v = (ROWV[POPC[n0]] + ROWV[POPC[n1]] + ROWV[POPC[n2]] +
-                 ROWV[POPC[n3]] + 2) >>
+            v = (rowv[POPC[n0]] + rowv[POPC[n1]] + rowv[POPC[n2]] +
+                 rowv[POPC[n3]] + rnd) >>
                 2;
             d = &c->v[y][x];
             if (c->batch_ink == COV_INK)
