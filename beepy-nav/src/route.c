@@ -416,6 +416,43 @@ route_cue_ahead(const route_t *r, nav_t *nv)
     }
 }
 
+/* -------------------------------------------------- countdown (1.1.1) */
+
+int
+cue_quantise(double metres)
+{
+    int m;
+
+    if (!(metres > 0.0))
+        return CUE_NOW;
+    m = (int)metres; /* floor: never overstate what is left */
+    if (m >= 1000)
+        return m - m % 100;
+    if (m >= 200)
+        return m - m % 50;
+    if (m >= 10)
+        return m - m % 10;
+    return CUE_NOW;
+}
+
+int
+cue_latch(double metres, int cue_i, int *shown, int *shown_cue)
+{
+    int q = cue_quantise(metres);
+
+    if (cue_i != *shown_cue) {
+        *shown_cue = cue_i;
+        *shown = q;
+        return q;
+    }
+    /* Monotone non-increasing. CUE_NOW is -1, i.e. already the minimum, so
+     * the plain comparison also makes NOW absorbing until the cue changes --
+     * which is what you want: a jitter-induced 10 m must not un-say NOW. */
+    if (q < *shown)
+        *shown = q;
+    return *shown;
+}
+
 /* --------------------------------------------------------------- progress */
 
 void
@@ -469,4 +506,14 @@ route_progress(const route_t *r, navctx_t *ctx, double now, nav_t *nv)
         nv->eta_s = -1.0;
         nv->eta = 0;
     }
+
+    /* What the panel shows: quantised and latched, never the raw metres. */
+    nv->cue_q = cue_latch(nv->cue_m, nv->cue_i, &ctx->shown_q, &ctx->shown_cue);
+    /* The THEN gap is cue-to-cue, so it does not count down and needs no
+     * latch -- only the same ladder, so the two rows read alike. */
+    if (nv->cue_i >= 0 && nv->cue_i + 1 < r->ncue)
+        nv->then_q = cue_quantise(r->cue[nv->cue_i + 1].along_m
+                                  - r->cue[nv->cue_i].along_m);
+    else
+        nv->then_q = CUE_NOW;
 }

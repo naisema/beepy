@@ -468,8 +468,35 @@ NAV = dict(turn=410, kind="right", street="THANON SUKHUMVIT", spd=24,
            sats=9, fix="3D", batt=86, clock="09:40")
 
 
+def cue_quantise(m):
+    """
+    DESIGN.md 1.1.1 -- what the rider is shown, not what was measured. Floored
+    onto a ladder that coarsens with distance: 100 m steps beyond a kilometre,
+    50 m from 200 m out, 10 m inside that, NOW for the last few metres. Coarse
+    where there is nothing to do yet, fine where you are about to act.
+
+    Must stay identical to cue_quantise() in src/route.c -- the design gate
+    compares the two renderers pixel for pixel.
+    """
+    m = int(m)
+    if m >= 1000:
+        return m - m % 100
+    if m >= 200:
+        return m - m % 50
+    if m >= 10:
+        return m - m % 10
+    return CUE_NOW
+
+
+CUE_NOW = -1
+
+
 def fmt_dist(m):
-    return (f"{m}", "M") if m < 1000 else (f"{m / 1000:.1f}", "KM")
+    """Quantise, then choose the unit. NOW has none."""
+    q = cue_quantise(m)
+    if q == CUE_NOW:
+        return ("NOW", None)
+    return (f"{q}", "M") if q < 1000 else (f"{q / 1000:.1f}", "KM")
 
 
 # ------------------------------------------------------------------ geometry
@@ -1075,14 +1102,20 @@ def turn_panel(c, off=None):
     else:
         arrow(c, (PANEL_W - 76) / 2, 6, 76, NAV["kind"], PAPER)
         val, unit = fmt_dist(NAV["turn"])
-        cap = 64
-        # PANEL_W - 8, not - 10: integer advances round a 3-digit NUM54
-        # string to 119 px, and a 118 px limit would demote it to the 22 px
-        # set by that single pixel. The visual margin is still 4+ px a side.
-        while num_size(c, val, cap)[0] > PANEL_W - 8:
-            cap -= 2
-        num(c, PANEL_W / 2, 92, val, cap, PAPER, "ct")
-        num(c, PANEL_W / 2, 92 + cap + 8, unit, 24, PAPER, "ct")
+        if unit is None:
+            # NOW: a word in the distance slot, no unit under it. Sits lower
+            # than the digits because its cap is smaller (see gen_labels.py);
+            # num() resolves it from the whole-string LABELS table.
+            num(c, PANEL_W / 2, 104, val, 36, PAPER, "ct")
+        else:
+            cap = 64
+            # PANEL_W - 8, not - 10: integer advances round a 3-digit NUM54
+            # string to 119 px, and a 118 px limit would demote it to the 22 px
+            # set by that single pixel. The visual margin is still 4+ px a side.
+            while num_size(c, val, cap)[0] > PANEL_W - 8:
+                cap -= 2
+            num(c, PANEL_W / 2, 92, val, cap, PAPER, "ct")
+            num(c, PANEL_W / 2, 92 + cap + 8, unit, 24, PAPER, "ct")
 
     c.rect(6, H - 50, PANEL_W - 7, H - 50, PAPER)
     if not off:

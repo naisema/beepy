@@ -466,6 +466,55 @@ test_loaded_route(void)
     route_free(&r);
 }
 
+/* DESIGN.md 1.1.1 -- the ladder, and the latch that makes it flicker-proof. */
+static void
+test_countdown(void)
+{
+    int shown = 0, shown_cue = -99, i;
+    struct {
+        double m;
+        int q;
+    } ladder[] = {
+        {5834, 5800}, {5799.9, 5700}, {1000, 1000}, {999, 950}, {410, 400},
+        {200, 200},   {199, 190},     {194, 190},   {12, 10},   {10, 10},
+        {9, CUE_NOW}, {0, CUE_NOW},   {-5, CUE_NOW},
+    };
+
+    for (i = 0; i < (int)(sizeof ladder / sizeof ladder[0]); i++)
+        eq_int(cue_quantise(ladder[i].m), ladder[i].q, "cue_quantise");
+
+    /* Jitter on a step boundary must not move the display. 850 +/- 4 m
+     * straddles the 850 rung; the shown value may only fall. */
+    (void)cue_latch(854.0, 3, &shown, &shown_cue);
+    eq_int(shown, 850, "latch first value");
+    (void)cue_latch(846.0, 3, &shown, &shown_cue);
+    eq_int(shown, 800, "846 m steps down to 800");
+    (void)cue_latch(853.0, 3, &shown, &shown_cue); /* jitter backwards */
+    eq_int(shown, 800, "jitter must not raise the countdown");
+
+    /* A new cue resets it -- upward is legal exactly then. */
+    (void)cue_latch(1500.0, 4, &shown, &shown_cue);
+    eq_int(shown, 1500, "new cue resets the latch");
+
+    /* NOW is absorbing until the cue changes: at 8 m the rider is committed,
+     * and a 12 m jitter reading must not un-say it. */
+    (void)cue_latch(8.0, 4, &shown, &shown_cue);
+    eq_int(shown, CUE_NOW, "8 m is NOW");
+    (void)cue_latch(12.0, 4, &shown, &shown_cue);
+    eq_int(shown, CUE_NOW, "NOW is absorbing");
+
+    /* Monotonicity over a whole approach: never rises, ends at NOW. */
+    shown_cue = -99;
+    (void)cue_latch(1000.0, 7, &shown, &shown_cue);
+    for (i = 1000; i >= 0; i--) {
+        int prev = shown;
+        double noisy = i + ((i % 7) - 3); /* +/-3 m of jitter */
+        (void)cue_latch(noisy < 0.0 ? 0.0 : noisy, 7, &shown, &shown_cue);
+        check(shown <= prev, "countdown never rises while the cue holds");
+    }
+    eq_int(shown, CUE_NOW, "approach ends at NOW");
+}
+
 int
 main(void)
 {
@@ -477,6 +526,7 @@ main(void)
     test_derive_straight();
     test_progress();
     test_latch();
+    test_countdown();
     test_cue_ahead();
     test_loaded_route();
     printf("test_route: %s\n", failures ? "FAIL" : "PASS");

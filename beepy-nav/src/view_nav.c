@@ -201,10 +201,17 @@ mark_cased_route(cov_t *c, const double *segs, int nsegs, double outer,
 
 /* ------------------------------------------------------------- turn panel */
 
+/* Format an already-quantised distance (DESIGN.md 1.1.1). `m` is what the
+ * rider is shown, not what was measured -- the ladder and the anti-jitter
+ * latch live in route.c, so this only chooses the unit. CUE_NOW prints NOW
+ * and has no unit line. */
 static void
 fmt_dist(int m, char *val, size_t n, const char **unit)
 {
-    if (m < 1000) {
+    if (m == CUE_NOW) {
+        snprintf(val, n, "NOW");
+        *unit = NULL;
+    } else if (m < 1000) {
         snprintf(val, n, "%d", m);
         *unit = "M";
     } else {
@@ -238,14 +245,21 @@ view_turn_panel(cov_t *c, const panel_t *p)
     } else {
         arrow_draw(c, (PANEL_W - 76) / 2.0, 6, 76, p->kind, COV_PAPER);
         fmt_dist(p->turn_m, buf, sizeof buf, &unit);
-        /* PANEL_W - 8, not - 10: integer advances round a 3-digit NUM54
-         * string to 119 px, and a 118 px limit would demote it to the 22 px
-         * set by that single pixel. The margin is still 4+ px a side. */
-        cap = num_fit(buf, 64, PANEL_W - 8);
-        num_draw(c, PANEL_W / 2.0, 92, buf, num_set_for_cap(cap), NUM_CT,
-                 COV_PAPER);
-        num_draw(c, PANEL_W / 2.0, 92 + cap + 8, unit, UNITS_22, NUM_CT,
-                 COV_PAPER);
+        if (!unit) {
+            /* NOW: a word in the distance slot, and no unit under it. Sits a
+             * little lower than the digits do, because its cap is smaller and
+             * the slot should still look vertically settled. */
+            label_draw(c, PANEL_W / 2.0, 104, buf, NUM_CT, COV_PAPER);
+        } else {
+            /* PANEL_W - 8, not - 10: integer advances round a 3-digit NUM54
+             * string to 119 px, and a 118 px limit would demote it to the 22 px
+             * set by that single pixel. The margin is still 4+ px a side. */
+            cap = num_fit(buf, 64, PANEL_W - 8);
+            num_draw(c, PANEL_W / 2.0, 92, buf, num_set_for_cap(cap), NUM_CT,
+                     COV_PAPER);
+            num_draw(c, PANEL_W / 2.0, 92 + cap + 8, unit, UNITS_22, NUM_CT,
+                     COV_PAPER);
+        }
     }
 
     cov_fill_rect(c, 6, H - 50, PANEL_W - 7, H - 50, COV_PAPER);
@@ -407,7 +421,10 @@ view_nav_demo(cov_t *c, int off)
     m.course_up = 1;
 
     p.off = off;
-    p.turn_m = 410;
+    /* The demo carries the raw metres the design's sample state names, and
+     * quantises them here exactly as the live path does -- so the reference
+     * frames show what a rider would actually see (1.1.1): 410 -> "400". */
+    p.turn_m = cue_quantise(410);
     p.kind = ARROW_RIGHT;
     p.then_kind = ARROW_LEFT;
     p.then_d = "150M";
@@ -445,7 +462,7 @@ static void
 clip_panel(panel_t *p)
 {
     p->off = 0;
-    p->turn_m = 800;
+    p->turn_m = cue_quantise(800);
     p->kind = ARROW_LEFT;
     p->then_kind = ARROW_RIGHT;
     p->then_d = "2.2KM";

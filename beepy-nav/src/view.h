@@ -8,6 +8,7 @@
 #define BEEPY_NAV_VIEW_H
 
 #include "libbeepyfb/cover.h"
+#include "route.h" /* CUE_NOW, the countdown's last rung */
 
 #define PANEL_W 128       /* turn panel: 32% of the width */
 #define MAP_X (PANEL_W + 2)
@@ -15,7 +16,8 @@
 /* The inverted left panel. */
 typedef struct {
     int off;            /* metres off route; 0 = on route */
-    int turn_m;         /* distance to the announced cue */
+    int turn_m;         /* quantised distance to the announced cue, or CUE_NOW
+                     * (1.1.1) -- what to show, not what was measured */
     int kind;           /* its arrow kind */
     int then_kind;      /* the cue after it */
     const char *then_d; /* "150M" */

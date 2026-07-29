@@ -105,6 +105,8 @@ typedef struct {
     double eta_s; /* seconds remaining, < 0 = unknown        */
     time_t eta;   /* wall clock, 0 = unknown                 */
     double snap_e, snap_n;
+    int cue_q;    /* cue_m quantised + latched (1.1.1), or CUE_NOW */
+    int then_q;   /* same, for the distance to the cue after it     */
 } nav_t;
 
 /* Everything that must survive a fix. */
@@ -125,7 +127,27 @@ typedef struct {
 
     double t0, s0; /* trip start, for the first-10-minutes fallback */
     int have_t0;
+
+    /* Countdown latch (1.1.1): the shown value only ever decreases while
+     * approaching one cue, so GPS jitter on a step boundary cannot flicker it.
+     * Reset when the announced cue changes. */
+    int shown_q, shown_cue;
 } navctx_t;
+
+/* --------------------------------------------------- countdown (1.1.1) */
+
+/* Distance the rider is shown, not the distance measured: floored onto a
+ * ladder that coarsens with distance -- 100 m steps beyond a kilometre, 50 m
+ * from 200 m out, 10 m inside that, and CUE_NOW for the last few metres.
+ * Coarse where there is nothing to do yet, fine where you are about to act. */
+#define CUE_NOW (-1)
+
+int cue_quantise(double metres);
+
+/* Quantise and latch against jitter: monotone non-increasing while `cue_i`
+ * stays put, reset when it changes. `shown`/`shown_cue` are the caller's
+ * latch state. Returns the value to display. */
+int cue_latch(double metres, int cue_i, int *shown, int *shown_cue);
 
 /* ------------------------------------------------------------------ setup */
 

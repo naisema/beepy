@@ -23,7 +23,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gen_tables as gt                               # noqa: E402
 
 OUT = "src/labels.h"
-LABELS = [("OFF", 24), ("ROUTE", 24), ("M AWAY", 20)]
+# NOW is the countdown's last rung (DESIGN.md 1.1.1). It occupies the distance
+# slot, so it is the same typeface as the digits it replaces -- at cap 36, the
+# largest that fits the 128 px panel (54 would be 179 px wide).
+LABELS = [("OFF", 24), ("ROUTE", 24), ("M AWAY", 20), ("NOW", 36)]
 
 
 def ident_for(s):

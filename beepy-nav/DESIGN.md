@@ -66,6 +66,55 @@ Map region:
 | Scale | 1-2-5 bar, bottom-left, scale-2 label |
 | Basemap (optional, §6) | streets at 1 px, arterials at 2 px |
 
+### 1.1.1 The countdown must change slowly — quantisation and latching
+
+The distance to the cue is the one number a rider looks at while moving, so how
+*often* it changes matters as much as what it says. Rounding to 10 m — the
+first draft — changes the display every **1.3 s** at 28 km/h. That is motion in
+the corner of the eye, on the screen, exactly when attention belongs on the
+road.
+
+Displayed distance is therefore quantised, **floored** (never overstating how
+far is left, so you prepare early rather than late):
+
+| Distance to cue | Step | Reads | Changes every |
+|---|---|---|---|
+| ≥ 1000 m | 100 m | `5.8 KM` → `5.7 KM` → `5.6 KM` | 12.8 s @ 28 km/h |
+| 200–999 m | 50 m | `900 M` → `850 M` → `800 M` | 6.4 s @ 28 km/h |
+| 10–199 m | 10 m | `200 M` → `190 M` → `180 M` | 2.8 s @ 13 km/h |
+| < 10 m | — | `NOW` | once |
+
+The step tightens as the junction approaches, and that is the whole idea:
+**coarse where there is nothing to do yet, fine where you are about to act.**
+Far out, a number that ticks every second is pure distraction — nothing changes
+in your riding between 5.8 and 5.7 km. Inside 200 m you are choosing a lane and
+braking, the 10 m steps are information, and you are slower anyway, so they
+arrive no faster than the 50 m steps did at cruise.
+
+`NOW` covers the last few metres, where flooring would say `0 M` and where the
+arrow is the only thing worth looking at. Worked examples: 5834 → `5.8 KM`,
+1000 → `1.0 KM`, 999 → `950 M`, 410 → `400 M`, 205 → `200 M`, 194 → `190 M`,
+12 → `10 M`, 9 → `NOW`.
+
+**Quantisation alone is not enough — the value must also latch.** GPS jitter of
+±4 m sitting on a boundary would flicker `850`/`800` several times a second,
+which is worse than the fast-but-smooth countdown it replaces. So the shown
+value only ever *decreases* while approaching a given cue:
+
+```
+on each fix:
+    q = floor_to_step(distance_to_cue)
+    if cue_index changed:   shown = q          /* new cue, start over  */
+    else if q < shown:      shown = q          /* monotone decrease    */
+    /* q > shown is ignored: jitter, not progress */
+```
+
+The result is a strictly monotone non-increasing countdown per cue, with no
+flicker possible by construction. Moving genuinely away from the route is not
+this mechanism's problem — the off-route latch (§7.3) takes the panel over.
+
+The `THEN` distance uses the same ladder and the same latch.
+
 **The pin does not mark the announced turn.** The announced junction is already
 communicated twice — the whole left panel, and the visible bend in the route —
 so a pin there would only cover the bend. The teardrop marks the **cue after

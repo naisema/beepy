@@ -296,13 +296,17 @@ fmt_km(char *buf, size_t n, double metres)
     snprintf(buf, n, "%.1f", metres / 1000.0);
 }
 
+/* The THEN row's distance. Takes an already-quantised value (DESIGN.md 1.1.1)
+ * so it steps on the same ladder as the big countdown above it. */
 static void
-fmt_short(char *buf, size_t n, double metres)
+fmt_short(char *buf, size_t n, int q)
 {
-    if (metres < 1000.0)
-        snprintf(buf, n, "%dM", (int)(metres + 0.5));
+    if (q == CUE_NOW)
+        snprintf(buf, n, "NOW");
+    else if (q < 1000)
+        snprintf(buf, n, "%dM", q);
     else
-        snprintf(buf, n, "%.1fKM", metres / 1000.0);
+        snprintf(buf, n, "%.1fKM", q / 1000.0);
 }
 
 static void
@@ -383,14 +387,12 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         fmt_clock(clock, sizeof clock, time(NULL));
         then_d[0] = '\0';
         p.off = a->nv.off ? (int)(a->nv.off_m + 0.5) : 0;
-        p.turn_m = (int)(a->nv.cue_m + 0.5);
+        p.turn_m = a->nv.cue_q; /* quantised + latched, not raw metres */
         p.kind = a->nv.cue_i >= 0 ? r->cue[a->nv.cue_i].kind : CUE_DEST;
         p.then_kind = CUE_DEST;
         if (a->nv.cue_i >= 0 && a->nv.cue_i + 1 < r->ncue) {
             p.then_kind = r->cue[a->nv.cue_i + 1].kind;
-            fmt_short(then_d, sizeof then_d,
-                      r->cue[a->nv.cue_i + 1].along_m -
-                          r->cue[a->nv.cue_i].along_m);
+            fmt_short(then_d, sizeof then_d, a->nv.then_q);
         }
         p.then_d = then_d;
         p.batt = read_battery();
