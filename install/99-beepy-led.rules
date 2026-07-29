@@ -1,0 +1,27 @@
+# beepy-nav: let group `input` write the keyboard LED.
+#
+# DESIGN.md 3 measured these as `--w--w---- root root`, and 7.5 wants a flash
+# at 500/200/50 m from a cue. Flashing the keyboard LED is the only non-visual
+# alert this hardware has -- there is no buzzer -- and it is the single root
+# action the whole program needs. Without this rule beepy-nav degrades
+# silently to visual-only; nothing else changes.
+#
+# Why RUN= and not MODE=/GROUP=: udev can only set permissions on devices it
+# owns, and these attributes do not live under /sys/devices at all. The
+# beepy-kbd driver hangs them off firmware_kobj, so the path is
+# /sys/firmware/beepy/... and no MODE= key can reach it. What udev can do is
+# notice the i2c device that created them and run chgrp itself.
+#
+# Group `input` rather than a new group because `beepy` is already in it (the
+# evdev keyboard of DESIGN.md 2 needs it), so this grants no membership that
+# the program did not already have.
+#
+# Install:
+#   sudo install -m 644 install/99-beepy-led.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   sudo udevadm trigger --subsystem-match=i2c --action=change
+#
+# Verify:  ls -l /sys/firmware/beepy/led*   ->  --w--w---- root input
+
+ACTION=="add|change", SUBSYSTEM=="i2c", DRIVER=="beepy-kbd", \
+  RUN+="/bin/sh -c 'chgrp input /sys/firmware/beepy/led*; chmod g+w /sys/firmware/beepy/led*'"

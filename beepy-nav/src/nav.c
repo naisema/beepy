@@ -43,6 +43,7 @@
 #include "arrows.h"
 #include "chooser.h"
 #include "fix.h"
+#include "led.h"
 #include "map.h"
 #include "route.h"
 #include "view.h"
@@ -181,6 +182,15 @@ static int g_ndumps;
 #define DR_MAX_EXTRAP 2.0 /* seconds: after this the position simply holds  */
 #define DR_MAX_CATCHUP 2.0/* seconds of missed frames worth redrawing       */
 
+/* --- cue alerts, DESIGN.md 7.5 ------------------------------------------ */
+
+/* "At 500 m, 200 m and 50 m from a cue, flash the keyboard LED." Nearer means
+ * more urgent, so the count of blinks is the rung index plus one: one wink at
+ * half a kilometre, three at fifty metres, and no need to look down to tell
+ * them apart. */
+#define NAV_ALERTS 3
+static const double ALERT_M[NAV_ALERTS] = {500.0, 200.0, 50.0};
+
 /* DESIGN.md 6.1: the EWMA is a time constant, not a per-frame alpha --
  * sim.py's 0.3 at 6 fps read to first order. See the section for the
  * arithmetic and for why 0.55 rather than the exact-equivalent 0.47. */
@@ -219,6 +229,10 @@ typedef struct {
     double render_t;   /* ride seconds of the last frame drawn */
     int have_render;
     long frames_since_fix;
+
+    /* Which rungs of ALERT_M[] this cue has already used, and which fired on
+     * the fix just processed (for the frame trace). */
+    int alert_cue, alert_done, alert_fired;
 
     int page, hold, quit, course_up;
     int have_pos;
@@ -358,6 +372,40 @@ dr_advance(app_t *a, double t, double dt)
     heading_update(a, wrap_pi(a->fix_course + a->err_course * w),
                    a->fix_speed * 3.6, dt);
     a->frames_since_fix++;
+}
+
+/* DESIGN.md 7.5. Each rung fires once per cue -- `alert_done` is cleared when
+ * the announced cue changes and never otherwise, so jitter across a boundary
+ * cannot re-fire one.
+ *
+ * Nothing fires while the off-route latch is set. Off route the announced cue
+ * is not the junction you are riding towards, so a flash would be an
+ * instruction to turn where there is no turn; 7.3 takes the panel over for the
+ * same reason. The rungs are not consumed either, so they still fire once the
+ * route is regained.
+ *
+ * Returns the bitmask that fired, for the trace. */
+static int
+alerts_update(app_t *a)
+{
+    int k, fired = 0, worst = -1;
+
+    if (a->nv.cue_i != a->alert_cue) {
+        a->alert_cue = a->nv.cue_i;
+        a->alert_done = 0;
+    }
+    if (a->nv.off || a->nv.cue_i < 0)
+        return 0;
+    for (k = 0; k < NAV_ALERTS; k++) {
+        if ((a->alert_done & (1 << k)) || a->nv.cue_m > ALERT_M[k])
+            continue;
+        a->alert_done |= 1 << k;
+        fired |= 1 << k;
+        worst = k;
+    }
+    if (worst >= 0)
+        led_pulse(worst + 1, a->t);
+    return fired;
 }
 
 /* Everything the pages read, at the dead-reckoned position rather than at the
@@ -682,7 +730,8 @@ ftrace_row(const app_t *a, double t, int isfix, int presented, double ms)
             a->fix_course * (180.0 / M_PI), a->fix_speed, dt, a->err_e,
             a->err_n, a->ease_w, a->dr_e, a->dr_n,
             a->raw_course * (180.0 / M_PI), a->heading * (180.0 / M_PI),
-            presented, ms, 0, a->nv.off, a->rnv.cue_i, a->rnv.cue_m);
+            presented, ms, isfix ? a->alert_fired : 0, a->nv.off,
+            a->rnv.cue_i, a->rnv.cue_m);
 }
 
 /* --------------------------------------------------------- the fix cycle */
@@ -737,6 +786,7 @@ on_epoch(app_t *a, time_t now)
     route_cue_ahead(&a->rt, &a->nv);
     route_progress(&a->rt, &a->ctx, a->t, &a->nv);
     dr_on_fix(a, a->e, a->n, a->fx.course, a->fx.speed_kmh, a->t);
+    a->alert_fired = alerts_update(a);
     return 1;
 }
 
@@ -907,6 +957,9 @@ frame_at(app_t *a, double t)
     /* frames_since_fix is 1 only on the frame drawn immediately after a fix,
      * which is that fix's own frame. */
     ftrace_row(a, t, a->frames_since_fix == 1, presented, ms);
+    if (a->frames_since_fix == 1)
+        a->alert_fired = 0;
+    led_tick(t);
     if (RC.stats && t - RC.sec_at >= 1.0) {
         stats_flush(a, 0);
         RC.sec_at = t;
@@ -1046,6 +1099,7 @@ tty_raw(void)
 static void
 cleanup(void)
 {
+    led_off();
     if (g_tty_raw)
         tcsetattr(STDIN_FILENO, TCSANOW, &g_tty_saved);
     evdev_close();
@@ -1436,6 +1490,7 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
 
         if (a->hold) {
             pace_to(a->t);
+            led_tick(a->t);
             if (got_fix)
                 trace_row(a, live_zoom(a), 0);
         } else {
@@ -1446,6 +1501,7 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
     }
     stats_flush(a, 1);
 
+    led_off();
     if (g_trace)
         fclose(g_trace);
     if (g_ftrace)
@@ -1603,7 +1659,9 @@ main(int argc, char **argv)
     APP.page = page == PAGE_OVERVIEW ? LIVE_OVERVIEW : LIVE_NAV;
     APP.course_up = !north_up;
     APP.fps = fps;
+    APP.alert_cue = -1;
     nav_init(&APP.rctx);
+    led_init(1);
 
     if (!routepath) {
 #ifdef NAV_DEVICE
