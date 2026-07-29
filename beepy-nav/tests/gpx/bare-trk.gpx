@@ -1,0 +1,11 @@
+<gpx version="1.1" creator="test">
+  <trk>
+    <trkseg>
+      <trkpt lat="13.7375" lon="100.561"/>
+      <trkpt lat="13.7384046" lon="100.561"/>
+      <trkpt lat="13.7393093" lon="100.561"/>
+      <trkpt lat="13.7393093" lon="100.5619248"/>
+      <trkpt lat="13.7393093" lon="100.5628495"/>
+    </trkseg>
+  </trk>
+</gpx>

@@ -1,0 +1,19 @@
+<gpx version="1.1">
+  <metadata>
+    <name>Ben &amp; Jerry&apos;s &lt;Loop&gt; &quot;A&quot; &#65;&#66;</name>
+  </metadata>
+  <rte>
+    <rtept lat="13.7375" lon="100.561">
+      <sym>Straight</sym>
+      <cmt>Start &amp; go</cmt>
+    </rtept>
+    <rtept lat="13.7393093" lon="100.561">
+      <sym>Right</sym>
+      <cmt>Turn right &lt;here&gt; onto R&#38;D Road</cmt>
+    </rtept>
+    <rtept lat="13.7393093" lon="100.5628495">
+      <sym>Destination</sym>
+      <cmt>Arrive at &quot;The End&quot; &#x2014; done</cmt>
+    </rtept>
+  </rte>
+</gpx>

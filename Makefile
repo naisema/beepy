@@ -34,7 +34,8 @@ FB_OBJS   = libbeepyfb/canvas.o libbeepyfb/font.o libbeepyfb/cover.o \
 NMEA_OBJS = libnmea/nmea.o libnmea/gps.o libnmea/serial.o
 GM_OBJS   = gps-monitor/main.o gps-monitor/view_bars.o gps-monitor/view_sky.o
 NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
-            beepy-nav/src/arrows.o beepy-nav/src/map.o
+            beepy-nav/src/arrows.o beepy-nav/src/map.o beepy-nav/src/gpx.o \
+            beepy-nav/src/route.o
 HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h beepy-nav/src/*.h)
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -91,7 +92,8 @@ bench: beepy-nav/beepy-nav
 
 HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
             host/nmea.o host/gps.o \
-            host/seg.o host/arrows.o host/map.o host/view_nav.o host/nav.o
+            host/seg.o host/arrows.o host/map.o host/gpx.o host/route.o \
+            host/view_nav.o host/nav.o
 
 # beepy-nav is portable end to end (no fbdev, no evdev), so the Mac can link
 # and run it -- which is what makes the M2 design gate a fast loop.
@@ -104,15 +106,29 @@ host: $(HOST_OBJS) host/beepy-nav
 host/beepy-nav: $(HOST_NAV)
 	$(CC) $(CFLAGS) -o $@ $(HOST_NAV) $(LDLIBS)
 
-# map.c is the one beepy-nav module with no pixels in it, so it is the one
-# that can be checked by assertion instead of by frame comparison. Runs in
-# either lane; `check` runs it on the device.
-test-unit: beepy-nav/tests/test_map
+# map.c, gpx.c and route.c are the beepy-nav modules with no pixels in them,
+# so they are the ones that can be checked by assertion instead of by frame
+# comparison. Runs in either lane; `check` runs it on the device.
+UNIT_TESTS = beepy-nav/tests/test_map beepy-nav/tests/test_gpx
+
+test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
 	./beepy-nav/tests/test_map
+	./beepy-nav/tests/test_gpx
 
 beepy-nav/tests/test_map: beepy-nav/tests/test_map.c beepy-nav/src/map.c $(HDRS)
 	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
 		beepy-nav/tests/test_map.c beepy-nav/src/map.c $(LDLIBS)
+
+beepy-nav/tests/test_gpx: beepy-nav/tests/test_gpx.c beepy-nav/src/gpx.c \
+                          beepy-nav/src/route.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
+		beepy-nav/tests/test_gpx.c beepy-nav/src/gpx.c \
+		beepy-nav/src/route.c $(LDLIBS)
+
+# 25 000 points is 1.2 MB -- bigger than the rest of the repo, and it would
+# be rsynced to the device on every sync. Generated, not committed.
+beepy-nav/tests/gpx/oversize.gpx: beepy-nav/tests/gpx/gen_oversize.py
+	python3 $< $@
 
 host/%.o: libbeepyfb/%.c $(HDRS)
 	@mkdir -p host
@@ -152,7 +168,7 @@ sync:
 
 clean:
 	rm -f gps-monitor/gps-monitor beepy-nav/beepy-nav \
-		beepy-nav/tests/test_map out-*.fb \
+		$(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx out-*.fb \
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 

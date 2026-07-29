@@ -16,9 +16,14 @@ out-*.fb
 /beepy-nav/beepy-nav
 /beepy-nav/fbplay
 /beepy-nav/tests/test_map
+/beepy-nav/tests/test_gpx
+/beepy-nav/tests/test_route
 
 # Generated animation (9+ MB, regenerable via sim.py)
 sim-anim.bin
+
+# Generated GPX fixture (1.2 MB, regenerable via gen_oversize.py)
+/beepy-nav/tests/gpx/oversize.gpx
 
 # OS / tooling noise
 .DS_Store

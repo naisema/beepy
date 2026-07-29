@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<gpx version="1.1" creator="RideWithGPS">
+  <rte>
+    <name>RWGPS Cue Test</name>
+    <rtept lat="13.7375" lon="100.561">
+      <name>Start</name>
+      <cmt>Head north on Asok</cmt>
+      <desc>Head north on Asok (desc)</desc>
+      <sym>Straight</sym>
+      <type>Start</type>
+    </rtept>
+    <rtept lat="13.738857" lon="100.561"/>
+    <rtept lat="13.7402139" lon="100.561">
+      <name>Sukhumvit</name>
+      <cmt>Turn right & go east</cmt>
+      <desc>Turn right & go east (desc)</desc>
+      <sym>Right</sym>
+      <type>Cue</type>
+    </rtept>
+    <rtept lat="13.7402139" lon="100.5623871"/>
+    <rtept lat="13.7402139" lon="100.5637743">
+      <name>Soi 23</name>
+      <cmt>Slight left ahead</cmt>
+      <desc>Slight left ahead (desc)</desc>
+      <sym>Slight Left</sym>
+      <type>Cue</type>
+    </rtept>
+    <rtept lat="13.7415709" lon="100.5637743"/>
+    <rtept lat="13.7429279" lon="100.5637743">
+      <name>Finish</name>
+      <cmt>You have arrived</cmt>
+      <desc>You have arrived (desc)</desc>
+      <sym>Destination</sym>
+      <type>Cue</type>
+    </rtept>
+  </rte>
+</gpx>
