@@ -25,6 +25,12 @@ sim-anim.bin
 # Generated GPX fixture (1.2 MB, regenerable via gen_oversize.py)
 /beepy-nav/tests/gpx/oversize.gpx
 
+# Generated replay rides and their traces (regenerable via mknmea.py; the
+# seeds and options live in the Makefile, which is the actual fixture)
+/beepy-nav/tests/replay/*.nmea
+/beepy-nav/tests/replay/*.tsv
+/beepy-nav/tests/replay/*.fb
+
 # OS / tooling noise
 .DS_Store
 __pycache__/

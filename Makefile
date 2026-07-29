@@ -60,7 +60,7 @@ beepy-nav/beepy-nav: $(NAV_OBJS) libnmea/libnmea.a libbeepyfb/libbeepyfb.a
 	$(CC) $(CFLAGS) -o $@ $(NAV_OBJS) libnmea/libnmea.a \
 		libbeepyfb/libbeepyfb.a $(LDLIBS)
 
-check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit
+check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	./gps-monitor/gps-monitor --demo --page bars --dump out-bars.fb
 	./gps-monitor/gps-monitor --demo --page sky  --dump out-sky.fb
 	cmp goldens/gm-bars.fb out-bars.fb
@@ -86,6 +86,72 @@ endif
 	./beepy-nav/beepy-nav --demo --page arrows  --dump goldens/nav-arrows.fb
 	./beepy-nav/beepy-nav --demo --page overview --dump goldens/nav-overview.fb
 	@echo "goldens regenerated - review the diff before committing"
+
+# ----------------------------------------------------------- replay tests
+#
+# DESIGN.md 10 states most of the route maths as properties of a whole ride,
+# not of a frame: "% DONE climbs monotonically to 100", "TO GO decreases",
+# "the latch fires once and clears once". A golden frame cannot see any of
+# that, so these replay a synthetic ride and assert over the trace.
+#
+# The rides are generated, not committed: half a megabyte of NMEA that
+# tools/mknmea.py reproduces byte for byte from a seed is not worth carrying
+# in git or rsyncing to the device on every sync.
+#
+# Runs in either lane. Device: `make test-replay`. Mac: `make host-replay`,
+# which is the same thing pointed at the portable binary.
+
+NAV       ?= ./beepy-nav/beepy-nav
+RDIR       = beepy-nav/tests/replay
+RROUTE     = beepy-nav/tests/gpx/loop.gpx
+MKNMEA     = python3 tools/mknmea.py --gpx $(RROUTE)
+ASSERT     = python3 tools/assert_trace.py
+REPLAYS    = $(RDIR)/ride.nmea $(RDIR)/stationary.nmea $(RDIR)/detour.nmea \
+             $(RDIR)/rough.nmea
+
+$(RDIR)/ride.nmea: tools/mknmea.py $(RROUTE)
+	$(MKNMEA) --speed 25 --brake --seed 1 -o $@
+
+$(RDIR)/stationary.nmea: tools/mknmea.py $(RROUTE)
+	$(MKNMEA) --stationary 11@0 --duration 600 --seed 2 -o $@
+
+$(RDIR)/detour.nmea: tools/mknmea.py $(RROUTE)
+	$(MKNMEA) --speed 25 --detour 100:900:300 --seed 3 -o $@
+
+$(RDIR)/rough.nmea: tools/mknmea.py $(RROUTE)
+	$(MKNMEA) --speed 25 --noise 2 --dropout 100:140 --nofix 300:330 \
+		--seed 7 -o $@
+
+test-replay: $(NAV) $(REPLAYS)
+	@echo "--- T-RIDE: a ride along its own route"
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless \
+		--trace $(RDIR)/ride.tsv
+	$(ASSERT) $(RDIR)/ride.tsv --zero off_latched --monotone-up pct \
+		--monotone-down togo_m --monotone-up cue_i \
+		--always off_m "<=" 5 --final pct ">=" 99
+	@echo "--- T-STATIONARY: ten minutes at a standstill"
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/stationary.nmea --headless \
+		--trace $(RDIR)/stationary.tsv
+	$(ASSERT) $(RDIR)/stationary.tsv --max along_m 5 --max off_m 5 \
+		--constant heading_deg --zero off_latched
+	@echo "--- T-DETOUR: a 100 m excursion, latched once and cleared once"
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/detour.nmea --headless \
+		--trace $(RDIR)/detour.tsv
+	$(ASSERT) $(RDIR)/detour.tsv --latch-count off_latched 1 \
+		--final off_latched "==" 0 --monotone-up cue_i --final pct ">=" 99
+	@echo "--- T-ROUGH: jitter, a 40 s dropout and 30 s with no fix"
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/rough.nmea --headless \
+		--trace $(RDIR)/rough.tsv
+	$(ASSERT) $(RDIR)/rough.tsv --monotone-up cue_i --final pct ">=" 99
+	@echo "--- T-CLIP: a route leaving the map on all four sides"
+	$(NAV) --demo --page cliptest       --dump $(RDIR)/clip.fb
+	$(NAV) --demo --page cliptest-panel --dump $(RDIR)/clip-panel.fb
+	python3 tools/fbdiff.py $(RDIR)/clip.fb $(RDIR)/clip-panel.fb \
+		--mask 130,0,399,239 --max-px 0
+	@echo "test-replay: PASS"
+
+host-replay: host/beepy-nav $(REPLAYS)
+	$(MAKE) test-replay NAV=host/beepy-nav
 
 # 100 NAV renders, draw + resolve only (DESIGN.md 5.4 budgets 30 ms).
 bench: beepy-nav/beepy-nav
@@ -185,7 +251,9 @@ sync:
 clean:
 	rm -f gps-monitor/gps-monitor beepy-nav/beepy-nav \
 		$(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx out-*.fb \
+		$(RDIR)/*.nmea $(RDIR)/*.tsv $(RDIR)/*.fb \
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
-.PHONY: all check goldens host test-unit tables design-gate bench sync clean
+.PHONY: all check goldens host test-unit test-replay host-replay tables \
+	design-gate bench sync clean
