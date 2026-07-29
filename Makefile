@@ -109,11 +109,13 @@ host/beepy-nav: $(HOST_NAV)
 # map.c, gpx.c and route.c are the beepy-nav modules with no pixels in them,
 # so they are the ones that can be checked by assertion instead of by frame
 # comparison. Runs in either lane; `check` runs it on the device.
-UNIT_TESTS = beepy-nav/tests/test_map beepy-nav/tests/test_gpx
+UNIT_TESTS = beepy-nav/tests/test_map beepy-nav/tests/test_gpx \
+             beepy-nav/tests/test_route
 
 test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
 	./beepy-nav/tests/test_map
 	./beepy-nav/tests/test_gpx
+	./beepy-nav/tests/test_route
 
 beepy-nav/tests/test_map: beepy-nav/tests/test_map.c beepy-nav/src/map.c $(HDRS)
 	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
@@ -123,6 +125,12 @@ beepy-nav/tests/test_gpx: beepy-nav/tests/test_gpx.c beepy-nav/src/gpx.c \
                           beepy-nav/src/route.c $(HDRS)
 	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
 		beepy-nav/tests/test_gpx.c beepy-nav/src/gpx.c \
+		beepy-nav/src/route.c $(LDLIBS)
+
+beepy-nav/tests/test_route: beepy-nav/tests/test_route.c beepy-nav/src/gpx.c \
+                            beepy-nav/src/route.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
+		beepy-nav/tests/test_route.c beepy-nav/src/gpx.c \
 		beepy-nav/src/route.c $(LDLIBS)
 
 # 25 000 points is 1.2 MB -- bigger than the rest of the repo, and it would
