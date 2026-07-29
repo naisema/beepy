@@ -88,11 +88,17 @@ The fix sits at 72% of the height so roughly two thirds of the map is the road
 ahead. The map is course-up by default, north-up on a keypress.
 
 **Off route** (`nav-turn-off.png`) changes the panel, not just the map: the
-junction distance is replaced by `OFF ROUTE / 85 / M AWAY`, and the `THEN` line
-becomes `FOLLOW DOTS BACK`. A stale `410 M` next to a route you are not on is
-the worst thing this panel could say, so it is withheld rather than frozen. On
-the map the marker genuinely leaves the line, with a dotted tie-line to the
-nearest point on the route.
+junction distance is replaced by `OFF ROUTE / 85 / M AWAY`, and the `THEN` row
+goes blank. A stale `410 M` next to a route you are not on is the worst thing
+this panel could say, so it is withheld rather than frozen. On the map the
+marker genuinely leaves the line, with a dotted tie-line to the nearest point
+on the route.
+
+An earlier draft put `FOLLOW DOTS BACK` in the vacated `THEN` row. It is not
+drawn, for two reasons: at scale 2 — the panel's floor since §5.1 — sixteen
+characters need 192 px against a 128 px panel, and the instruction is
+redundant, because the tie-line already points at the route and the panel
+already says how far. The blank row is deliberate.
 
 ### 1.2 OVERVIEW — `nav-overview.png`
 
