@@ -306,10 +306,15 @@ view_nav_map(cov_t *c, const navmap_t *m)
     double be = pts[2 * pos_i + 2], bn = pts[2 * pos_i + 3];
     double on_e = ae + (be - ae) * m->pos_f;
     double on_n = an + (bn - an) * m->pos_f;
-    double heading = atan2(be - on_e, bn - on_n);
-    /* +heading, not -: map_project() rotates the world by +theta, so putting
+    /* The direction the ROUTE runs at the fix. It is the axis the off-route
+     * offset is measured against, and it is the fallback map rotation for a
+     * caller with no smoothed heading to give (the demo pages, and mockup.py,
+     * which has no receiver). */
+    double geoh = atan2(be - on_e, bn - on_n);
+    /* +theta, not -: map_project() rotates the world by +theta, so putting
      * the course at the top of the screen takes theta = heading. */
-    double theta = m->course_up ? heading : 0.0;
+    double theta =
+        m->course_up ? (m->have_heading ? m->heading : geoh) : 0.0;
     double pos_e = on_e, pos_n = on_n;
     double cx = MAP_X + (W - MAP_X) / 2.0;
     double cy = H * 0.72; /* the fix sits low: two thirds is road ahead */
@@ -317,8 +322,8 @@ view_nav_map(cov_t *c, const navmap_t *m)
     int i, k, ns, nseg;
 
     if (m->off != 0.0) {
-        pos_e += cos(heading) * m->off;
-        pos_n += -sin(heading) * m->off;
+        pos_e += cos(geoh) * m->off;
+        pos_n += -sin(geoh) * m->off;
     }
     mpp = map_auto_zoom(map_cue_distance(pts, n, on_e, on_n, pos_i, m->turn_i),
                         cy);
@@ -384,7 +389,7 @@ view_nav_map(cov_t *c, const navmap_t *m)
             mark_pin(c, xy[0], xy[1], 10);
     }
 
-    mark_position(c, cx, cy, 13, 0.0);
+    mark_position(c, cx, cy, 13, m->residual);
     mark_compass(c, MAP_X + 21, 27, theta, 11);
     speed_badge(c, W - 33, 33, m->spd_kmh, 27);
     mark_scale_bar(c, MAP_X + 7, H - 8, mpp);
@@ -435,6 +440,12 @@ view_nav_demo(cov_t *c, int off)
     m.off = off;
     m.spd_kmh = 24;
     m.course_up = 1;
+    /* A static state has no receiver and therefore no lag to show: the map
+     * rotation comes from the route and the chevron sits straight up, which
+     * is exactly what mockup.py's page_nav() draws. */
+    m.heading = 0.0;
+    m.have_heading = 0;
+    m.residual = 0.0;
 
     p.off = off;
     /* The demo carries the raw metres the design's sample state names, and
@@ -502,6 +513,9 @@ view_cliptest(cov_t *c)
     m.off = 0;
     m.spd_kmh = 31;
     m.course_up = 1;
+    m.heading = 0.0;
+    m.have_heading = 0;
+    m.residual = 0.0;
     clip_panel(&p);
     view_nav(c, &m, &p);
 }
@@ -525,6 +539,9 @@ view_cliptest_panel(cov_t *c)
     m.off = 0;
     m.spd_kmh = 31;
     m.course_up = 1;
+    m.heading = 0.0;
+    m.have_heading = 0;
+    m.residual = 0.0;
     clip_panel(&p);
     view_nav(c, &m, &p);
 }

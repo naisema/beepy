@@ -410,6 +410,17 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         m.off = a->nv.off ? a->nv.off_m : 0.0;
         m.spd_kmh = (int)(a->fx.speed_kmh + 0.5);
         m.course_up = a->course_up;
+        /* DESIGN.md 6.1: the map turns with the SMOOTHED heading, and 1.1:
+         * the chevron gets what is left over, so it keeps pointing along the
+         * road while the rotation catches up. North-up (theta 0) leaves the
+         * chevron carrying the whole course, which is what makes a north-up
+         * map readable at all. */
+        m.heading = a->heading;
+        m.have_heading = a->have_heading;
+        m.residual =
+            a->have_heading
+                ? wrap_pi(a->raw_course - (a->course_up ? a->heading : 0.0))
+                : 0.0;
 
         fmt_clock(clock, sizeof clock, time(NULL));
         remain[0] = etabuf[0] = '\0';
@@ -441,7 +452,8 @@ trace_open(const char *path)
         exit(1);
     }
     fputs("#t\tlat\tlon\tseg\talong_m\toff_m\toff_latched\tcue_i\tcue_m\t"
-          "togo_m\tpct\teta_s\theading_deg\tzoom_mpp\tpresented\n",
+          "togo_m\tpct\teta_s\theading_deg\tzoom_mpp\tpresented\t"
+          "course_deg\tresidual_deg\n",
           g_trace);
 }
 
@@ -452,10 +464,13 @@ trace_row(const app_t *a, double zoom_mpp, int presented)
         return;
     fprintf(g_trace,
             "%.3f\t%.7f\t%.7f\t%d\t%.2f\t%.2f\t%d\t%d\t%.2f\t%.2f\t%.3f\t"
-            "%.1f\t%.2f\t%.2f\t%d\n",
+            "%.1f\t%.2f\t%.2f\t%d\t%.2f\t%.2f\n",
             a->t, a->fx.lat, a->fx.lon, a->nv.seg, a->nv.along, a->nv.off_m,
             a->nv.off, a->nv.cue_i, a->nv.cue_m, a->nv.togo_m, a->nv.pct,
-            a->nv.eta_s, a->heading * (180.0 / M_PI), zoom_mpp, presented);
+            a->nv.eta_s, a->heading * (180.0 / M_PI), zoom_mpp, presented,
+            a->raw_course * (180.0 / M_PI),
+            wrap_pi(a->raw_course - (a->course_up ? a->heading : 0.0)) *
+                (180.0 / M_PI));
 }
 
 /* --------------------------------------------------------- the fix cycle */

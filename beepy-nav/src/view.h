@@ -38,6 +38,20 @@ typedef struct {
     double off; /* metres perpendicular off the route; 0 = on it */
     int spd_kmh;
     int course_up;
+
+    /* Map rotation, radians clockwise from north: the smoothed heading of
+     * DESIGN.md 6.1. `have_heading` 0 means "derive it from the route
+     * direction ahead of the fix", which is what the static demo pages and
+     * mockup.py both do -- a mockup has no receiver to smooth. */
+    double heading;
+    int have_heading;
+
+    /* The chevron's angle RELATIVE to that rotation: raw course over ground
+     * minus the map rotation (DESIGN.md 1.1). Mid-turn the smoothed map lags
+     * the bike by up to a second, and a chevron drawn straight up would point
+     * off the road you are demonstrably on. North-up, where the rotation is
+     * zero, this is simply the course. */
+    double residual;
 } navmap_t;
 
 /* The OVERVIEW page: the whole route, north-up, fitted below the title band
