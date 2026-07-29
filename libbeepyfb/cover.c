@@ -38,6 +38,10 @@
 #include "font.h"
 #include "cover.h"
 
+#ifndef M_PI /* glibc hides it under -std=c11 (strict ISO); clang does not */
+#define M_PI 3.14159265358979323846
+#endif
+
 #define SS 4
 #define SW (SCR_W * SS) /* 1600 */
 #define SH (SCR_H * SS) /*  960 */
