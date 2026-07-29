@@ -121,6 +121,15 @@ void nmea_apply(gps_t *g, char *f[], int nf)
         g->speed_kmh = isnan(kn) ? NAN : kn * 1.852;
         g->course_deg = fnum(f, nf, 8);
         set_date(g, f, nf, 9);
+    } else if (!strncmp(type, "VTG", 3)) {
+        /* Course/speed made good. Preferred over RMC's knots*1.852 when the
+         * fields are populated; empty fields leave the RMC-derived values. */
+        double crs = fnum(f, nf, 1);  /* course over ground, true, degrees */
+        double kmh = fnum(f, nf, 7);  /* speed over ground, km/h */
+        if (!isnan(crs))
+            g->course_deg = crs;
+        if (!isnan(kmh))
+            g->speed_kmh = kmh;
     } else if (!strncmp(type, "GSA", 3)) {
         int si = sys_idx(sys == 'N' ? '?' : sys);
         int m = fint(f, nf, 2);
