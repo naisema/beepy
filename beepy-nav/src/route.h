@@ -105,7 +105,7 @@ typedef struct {
     double eta_s; /* seconds remaining, < 0 = unknown        */
     time_t eta;   /* wall clock, 0 = unknown                 */
     double snap_e, snap_n;
-    int cue_q;    /* cue_m quantised + latched (1.1.1), or CUE_NOW */
+    int cue_q;    /* cue_m quantised + latched (1.1.1)            */
     int then_q;   /* same, for the distance to the cue after it     */
 } nav_t;
 
@@ -138,9 +138,10 @@ typedef struct {
 
 /* Distance the rider is shown, not the distance measured: floored onto a
  * ladder that coarsens with distance -- 100 m steps beyond a kilometre, 50 m
- * from 200 m out, 10 m inside that, and CUE_NOW for the last few metres.
- * Coarse where there is nothing to do yet, fine where you are about to act. */
-#define CUE_NOW (-1)
+ * from 200 m out, 10 m inside that. Coarse where there is nothing to do yet,
+ * fine where you are about to act. The last few metres hold at the bottom
+ * rung; the arrow is the instruction by then. */
+#define CUE_FLOOR 10
 
 int cue_quantise(double metres);
 

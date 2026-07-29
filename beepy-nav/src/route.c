@@ -288,6 +288,11 @@ nav_init(navctx_t *ctx)
 {
     memset(ctx, 0, sizeof *ctx);
     ctx->last_seg = -1;
+    /* NOT 0: cue 0 is a real cue, and a zeroed shown_cue makes the latch
+     * believe it is already counting down to it from a shown value of 0 --
+     * which, being the minimum, it can then never leave. The panel read
+     * "0 M" for an entire ride before this line existed. */
+    ctx->shown_cue = -1;
 }
 
 void
@@ -424,15 +429,18 @@ cue_quantise(double metres)
     int m;
 
     if (!(metres > 0.0))
-        return CUE_NOW;
+        return CUE_FLOOR;
     m = (int)metres; /* floor: never overstate what is left */
     if (m >= 1000)
         return m - m % 100;
     if (m >= 200)
         return m - m % 50;
-    if (m >= 10)
+    if (m >= CUE_FLOOR)
         return m - m % 10;
-    return CUE_NOW;
+    /* The last few metres hold at the bottom rung rather than counting to
+     * zero or switching to a word: at this range the arrow is the
+     * instruction, and a changing number is only noise. */
+    return CUE_FLOOR;
 }
 
 int
@@ -445,9 +453,8 @@ cue_latch(double metres, int cue_i, int *shown, int *shown_cue)
         *shown = q;
         return q;
     }
-    /* Monotone non-increasing. CUE_NOW is -1, i.e. already the minimum, so
-     * the plain comparison also makes NOW absorbing until the cue changes --
-     * which is what you want: a jitter-induced 10 m must not un-say NOW. */
+    /* Monotone non-increasing while the cue holds: jitter can only be
+     * ignored, never shown. */
     if (q < *shown)
         *shown = q;
     return *shown;
@@ -515,5 +522,5 @@ route_progress(const route_t *r, navctx_t *ctx, double now, nav_t *nv)
         nv->then_q = cue_quantise(r->cue[nv->cue_i + 1].along_m
                                   - r->cue[nv->cue_i].along_m);
     else
-        nv->then_q = CUE_NOW;
+        nv->then_q = CUE_FLOOR;
 }

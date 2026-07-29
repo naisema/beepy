@@ -476,12 +476,25 @@ test_countdown(void)
         int q;
     } ladder[] = {
         {5834, 5800}, {5799.9, 5700}, {1000, 1000}, {999, 950}, {410, 400},
-        {200, 200},   {199, 190},     {194, 190},   {12, 10},   {10, 10},
-        {9, CUE_NOW}, {0, CUE_NOW},   {-5, CUE_NOW},
+        {200, 200},   {199, 190},     {194, 190},
+        {12, 10},     {10, 10},       {9, CUE_FLOOR}, {0, CUE_FLOOR},
     };
 
     for (i = 0; i < (int)(sizeof ladder / sizeof ladder[0]); i++)
         eq_int(cue_quantise(ladder[i].m), ladder[i].q, "cue_quantise");
+
+    /* nav_init(), not a hand-set sentinel: a zeroed shown_cue collides with
+     * the real cue 0 and pins the display at 0 M for a whole ride. That is
+     * exactly the bug this test missed the first time by initialising the
+     * latch itself. */
+    {
+        navctx_t c0;
+        nav_t n0;
+        nav_init(&c0);
+        nav_reset(&n0);
+        eq_int(cue_latch(400.0, 0, &c0.shown_q, &c0.shown_cue), 400,
+               "first fix on cue 0 shows the real distance");
+    }
 
     /* Jitter on a step boundary must not move the display. 850 +/- 4 m
      * straddles the 850 rung; the shown value may only fall. */
@@ -496,12 +509,12 @@ test_countdown(void)
     (void)cue_latch(1500.0, 4, &shown, &shown_cue);
     eq_int(shown, 1500, "new cue resets the latch");
 
-    /* NOW is absorbing until the cue changes: at 8 m the rider is committed,
-     * and a 12 m jitter reading must not un-say it. */
+    /* The bottom rung holds: at 8 m the arrow is the instruction, and the
+     * number must not tick to zero or bounce back up on jitter. */
     (void)cue_latch(8.0, 4, &shown, &shown_cue);
-    eq_int(shown, CUE_NOW, "8 m is NOW");
+    eq_int(shown, CUE_FLOOR, "the last few metres hold at the bottom rung");
     (void)cue_latch(12.0, 4, &shown, &shown_cue);
-    eq_int(shown, CUE_NOW, "NOW is absorbing");
+    eq_int(shown, CUE_FLOOR, "and jitter does not raise it again");
 
     /* Monotonicity over a whole approach: never rises, ends at NOW. */
     shown_cue = -99;
@@ -512,7 +525,7 @@ test_countdown(void)
         (void)cue_latch(noisy < 0.0 ? 0.0 : noisy, 7, &shown, &shown_cue);
         check(shown <= prev, "countdown never rises while the cue holds");
     }
-    eq_int(shown, CUE_NOW, "approach ends at NOW");
+    eq_int(shown, CUE_FLOOR, "approach ends at the bottom rung");
 }
 
 int

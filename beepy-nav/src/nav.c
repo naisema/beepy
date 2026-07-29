@@ -301,9 +301,7 @@ fmt_km(char *buf, size_t n, double metres)
 static void
 fmt_short(char *buf, size_t n, int q)
 {
-    if (q == CUE_NOW)
-        snprintf(buf, n, "NOW");
-    else if (q < 1000)
+    if (q < 1000)
         snprintf(buf, n, "%dM", q);
     else
         snprintf(buf, n, "%.1fKM", q / 1000.0);
@@ -395,6 +393,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
             fmt_short(then_d, sizeof then_d, a->nv.then_q);
         }
         p.then_d = then_d;
+        p.togo_m = a->nv.seg >= 0 ? a->nv.togo_m : -1.0;
         p.batt = read_battery();
         p.clock = clock;
         view_nav(cov, &m, &p);
