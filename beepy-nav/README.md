@@ -7,6 +7,7 @@ below; this file is how to get a route onto the device and ride it.
 ```
 NAV        turn arrow, distance to the junction, and a live map
 OVERVIEW   the whole route, fitted, with progress
+FIND       type a destination; CONFIRM shows the route before you commit
 ```
 
 ---
@@ -25,6 +26,10 @@ beepy-nav --route ~/routes/my-ride.gpx
 
 # ...or run it with no arguments and pick from a list on the panel
 beepy-nav
+
+# ...or press F mid-ride and type where you want to go (needs a road pack --
+# see "Finding a destination" below)
+beepy-nav --route ~/routes/my-ride.gpx --roads ~/maps/city.roads
 ```
 
 That is the whole workflow. The panel takes over the screen while it runs and
@@ -39,9 +44,8 @@ most shared rides are), beepy-nav derives them from the shape of the road: it
 resamples the line and calls anything past 30° a turn, classified slight /
 turn / sharp / U-turn (`DESIGN.md` §7.4).
 
-There is no route *planning* on the device — it follows a route, it does not
-invent one. Searching for a destination and routing to it is designed and not
-yet built (`DESIGN.md` §1.4).
+A GPX is not the only way in any more: with a road pack loaded, `F` searches
+street names and routes to one on the device. See **Finding a destination**.
 
 ---
 
@@ -108,6 +112,7 @@ passed, total distance, distance and time remaining.
 | Key | Action |
 |---|---|
 | `Tab` | switch page: NAV ↔ OVERVIEW |
+| `F` | find a destination — see below; says `NO ROAD PACK` if there is none |
 | `R` | change route — back to the picker, without quitting |
 | `Z` / `X` | zoom the map out / in (switches to manual zoom) |
 | `A` | back to automatic zoom |
@@ -128,6 +133,23 @@ and that is unusable one-handed on a handlebar.
 `L` confirms itself for a second and a half (`ALERTS ON` / `ALERTS OFF`) —
 without that, muting is indistinguishable from a quiet stretch of route.
 
+On the **FIND** page every letter is a letter, so none of the keys above apply
+there:
+
+| Key | Action |
+|---|---|
+| A–Z, 0–9, space | type into the query |
+| `Backspace` | delete a character — and on an empty query, back out |
+| `↓` / `↑` | move the selected match |
+| `Enter` | route to it, and show CONFIRM |
+| `Esc` | back out |
+
+and on **CONFIRM** there are two, both printed on the screen: `Enter` to go and
+`Q` to cancel back to FIND.
+
+Digits *do* need the Beepy's Alt layer, which is the one place this program asks
+for it — `SOI 23` is not typeable without them.
+
 ---
 
 ## Settings
@@ -144,6 +166,7 @@ rate_5hz   = 0          # see the note below   (--rate-5hz)
 routes_dir = ~/routes   # what the panel chooser lists
 rides_dir  = ~/rides    # where ride logs go
 basemap    =            # empty: no streets    (--basemap F / --no-basemap)
+roads      =            # empty: F does nothing (--roads F / --no-roads)
 ```
 
 An unknown key or a malformed line is a warning naming the line number, never
@@ -153,6 +176,10 @@ a failure to start.
 cut for one route's corridor, so nothing can invent one for you; see *Streets
 under the route* below. If the file is missing or is not a pack you get one
 line on stderr and the map draws the way it always did.
+
+**`roads` is empty by default too**, for the same reason and with the same
+behaviour: one line on stderr if it cannot be read, and then `F` says
+`NO ROAD PACK` on the panel rather than doing nothing at all.
 
 **`rate_5hz` is off deliberately.** The receiver will accept the request and
 then fail to deliver: at 9600 baud its nine sentences an epoch need about
@@ -194,6 +221,63 @@ here — it is what keeps the black line readable crossing a dual carriageway.
 
 Cost, measured: about 7 ms a frame, taking the render p95 from 11.5 ms to
 19.1 ms against a 125 ms frame period.
+
+---
+
+## Finding a destination
+
+`F` opens FIND: type, and street names filter as you go, nearest first with a
+distance and a bearing. `Enter` routes to the selected one on the device —
+Dijkstra over the pack's road graph, `oneway` respected — and shows CONFIRM: the
+proposed route drawn whole, with its length, an estimate and the number of
+turns, against `ENTER = GO` and `Q = CANCEL`. Go, and it becomes an ordinary
+ride: the same NAV page, the same cues, the same ride log. A route you searched
+for and a GPX you downloaded are the same thing from that point on.
+
+It needs a **road pack**, built on a Mac from an OpenStreetMap extract. It is a
+different pack from the basemap of *Streets under the route* — that one is
+pictures of streets, this one is the graph and the names — and you can load
+either, both, or neither.
+
+```sh
+# 1. an extract from Overpass: `way[highway]` in a bbox, "geometry" output.
+#    A 15 km box over inner Bangkok is a 39 MB download.
+
+# 2. build the pack. --route references it to that route's start; --ref LAT,LON
+#    when there is no route to hand.
+python3 tools/mkpack.py --osm extract.json --route ride.gpx -o city.roads
+python3 tools/mkpack.py --info city.roads
+
+# 3. put it on the device
+scp city.roads beepy@beepy.local:~/maps/
+beepy-nav --route ~/routes/ride.gpx --roads ~/maps/city.roads
+```
+
+Sizes, measured: the 557-way Asok test extract is **101 KB**; a 15 km box over
+inner Bangkok — 25 484 roads, 104 815 graph nodes — is **3.8 MB**. Opening it
+costs 32 ms once, a keystroke costs 7 ms, and a route across the whole city
+takes 55 ms.
+
+### What is searchable, and what is not
+
+**Street names, and only the ones in the pack.** No POIs, no addresses, no
+postcodes. The index is `name:en` where OSM has it, otherwise `name`.
+
+**Names with no ASCII form are not indexed**, because the panel's font is
+A–Z/0–9 and there is no Thai in it. The pack counts them and the screen admits
+it: a query that finds nothing says `NOT IN THIS PACK` and how many names it
+cannot show. For the Bangkok box that is 1 012 of 5 331 names — a quarter of the
+city — so a soi signposted only in Thai is genuinely unreachable this way, and
+you will be told so rather than left guessing.
+
+**Still no rerouting once you are riding.** Going off route gets you
+`OFF ROUTE / 85 / M AWAY` and a trail back to the line, exactly as before. The
+router on the device makes rerouting *possible* for the first time; it is not
+built, and nothing on the screen pretends it is. If you want a different route,
+`F` and ask for one.
+
+**`F` does not work from the route picker** — only from a ride. Load any GPX
+first. That is a wart, not a design.
 
 ---
 
@@ -274,6 +358,8 @@ make design-gate    # the C pages against mockup.py's frames (needs Pillow)
 make host-replay    # the replay assertions, on a Mac
 make test-frames NAV=host/beepy-nav
 make test-tiles     # the basemap pack: built twice, compared (needs Pillow)
+make test-roads     # the road packs: built twice, compared against git
+make test-find NAV=host/beepy-nav   # F, a typed query, ENTER, CONFIRM, ENTER
 ```
 
 `make check` is the gate: it byte-compares the `--demo` page dumps against
@@ -284,13 +370,17 @@ display drifting from the design one small change at a time.
 Flags that exist for testing: `--replay F`, `--headless`, `--trace F`,
 `--trace-frames F`, `--stats`, `--fps N`, `--dump-at S:F`, `--key S:C`,
 `--print`, `--pace` / `--no-pace`, `--demo --page P --dump F`, `--bench N`.
+`--key` also takes names for the presses that are not characters — `enter`,
+`esc`, `bs`, `space`, `tab`, `down`, `up` — which is how the FIND page is driven
+in a headless replay.
 
 ---
 
 ## Attribution
 
-Basemap data is **© OpenStreetMap contributors**, used under the ODbL. The
-tiles are rendered from an OSM extract in this project's own cartography;
+Basemap and road-pack data are **© OpenStreetMap contributors**, used under the
+ODbL. The tiles are rendered from an OSM extract in this project's own
+cartography, and the road graph and street names are derived from the same data;
 nothing is cached from a commercial tile service, which is a licensing
 constraint and not a technical one (`DESIGN.md` §6.5).
 
