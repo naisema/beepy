@@ -27,6 +27,13 @@ enum { NUM_LT = 0, NUM_CT, NUM_RT };
 /* NUM_54 at cap >= 54, NUM_22 below -- mockup.py _table_layout(). */
 int num_set_for_cap(int cap);
 
+/* The cap a set is actually prepared at: 54, 22, or 22 for the unit words.
+ * num_fit() answers with the cap it was ASKED for, which is the number
+ * mockup.py stacks the next line at; a caller that needs to know how tall the
+ * ink really is -- because the string got demoted and the two no longer agree
+ * -- asks here. Returns 0 for NUM_LABEL, whose glyphs each have their own. */
+int num_cap(int set);
+
 /* Whole-string LABELS, then whole-string UNITS22, then the digit set the
  * cap selects: mockup.py's lookup order, for callers that have a cap but
  * not a set. Returns -1 when nothing in the tables can set the string. */

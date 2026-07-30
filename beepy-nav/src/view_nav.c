@@ -281,6 +281,25 @@ fmt_togo(char *buf, size_t n, double metres, int units)
         snprintf(buf, n, "%.1fKM", floor(metres / 100.0) / 10.0);
 }
 
+/* How far below the digits' top the unit line goes.
+ *
+ * mockup.py stacks it at the cap it ASKED num_fit() for, and where the string
+ * fits at that size the two are the same thing. Where it does not -- four-digit
+ * feet, or a cue more than 10 km out, both of which num_fit() demotes to the
+ * 22 px set -- the asked-for cap is 30 px taller than the ink that got drawn,
+ * and the unit floats away from the number it belongs to. Then, and only then,
+ * the stack closes up to the size actually used.
+ *
+ * The condition is exact rather than approximate: num_width() is the same for
+ * every cap in a set, so num_fit() either returns cap0 or falls straight
+ * through to the set below it. No mockup renders a demoted string, so every
+ * frozen frame takes the first branch and is untouched. */
+static int
+stack_cap(int cap, int cap0)
+{
+    return cap == cap0 ? cap : num_cap(num_set_for_cap(cap));
+}
+
 /* One centred scale-2 row of the panel's lower stack. */
 static void
 panel_row(cov_t *c, int y, const char *s)
@@ -306,11 +325,20 @@ view_turn_panel(cov_t *c, const panel_t *p)
          * the dotted tie-line on the map already points back. */
         label_draw(c, PANEL_W / 2.0, 10, "OFF", NUM_CT, COV_PAPER);
         label_draw(c, PANEL_W / 2.0, 44, "ROUTE", NUM_CT, COV_PAPER);
-        snprintf(buf, sizeof buf, "%d", p->off);
+        /* Metres in -- everything inside the program is -- feet on the
+         * panel when the rider asked for feet. Showing "85 M AWAY" under an
+         * otherwise imperial display would be the one number on the screen
+         * in the wrong unit, which is worse than either choice made
+         * consistently. */
+        snprintf(buf, sizeof buf, "%d",
+                 p->units == UNITS_IMPERIAL
+                     ? (int)(p->off * GEO_FT_PER_M + 0.5)
+                     : p->off);
         cap = num_fit(buf, 60, PANEL_W - 10);
         num_draw(c, PANEL_W / 2.0, 96, buf, num_set_for_cap(cap), NUM_CT,
                  COV_PAPER);
-        label_draw(c, PANEL_W / 2.0, 96 + cap + 10, "M AWAY", NUM_CT,
+        label_draw(c, PANEL_W / 2.0, 96 + stack_cap(cap, 60) + 10,
+                   p->units == UNITS_IMPERIAL ? "FT AWAY" : "M AWAY", NUM_CT,
                    COV_PAPER);
     } else {
         arrow_draw(c, (PANEL_W - 76) / 2.0, 6, 76, p->kind, COV_PAPER);
@@ -321,8 +349,8 @@ view_turn_panel(cov_t *c, const panel_t *p)
         cap = num_fit(buf, 64, PANEL_W - 8);
         num_draw(c, PANEL_W / 2.0, 92, buf, num_set_for_cap(cap), NUM_CT,
                  COV_PAPER);
-        num_draw(c, PANEL_W / 2.0, 92 + cap + 8, unit, UNITS_22, NUM_CT,
-                 COV_PAPER);
+        num_draw(c, PANEL_W / 2.0, 92 + stack_cap(cap, 64) + 8, unit, UNITS_22,
+                 NUM_CT, COV_PAPER);
     }
 
     /* Below the rule, three centred rows: how long is left, how far is left,

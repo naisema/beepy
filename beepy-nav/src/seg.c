@@ -39,6 +39,21 @@ num_set_for_cap(int cap)
 }
 
 int
+num_cap(int set)
+{
+    switch (set) {
+    case NUM_54:
+        return NUM54_CAP;
+    case NUM_22:
+        return NUM22_CAP;
+    case UNITS_22:
+        return UNITS22_CAP;
+    default:
+        return 0;
+    }
+}
+
+int
 num_lookup_set(const char *s, int cap)
 {
     int len = (int)strlen(s);

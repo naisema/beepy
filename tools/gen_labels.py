@@ -7,7 +7,7 @@ module and reuses its render pipeline, so a label is rendered exactly as
 mockup.py's PIL path renders the same string (4x supersample, 50%
 threshold, ink-box crop) and stored in the same glyph_t format.
 
-Whole words rather than a letter alphabet: only three strings exist, the
+Whole words rather than a letter alphabet: a handful of strings exist, the
 inter-letter kerning stays exactly what the typeface says, and the table
 stays tiny.
 
@@ -26,7 +26,12 @@ OUT = "src/labels.h"
 # NOW is the countdown's last rung (DESIGN.md 1.1.1). It occupies the distance
 # slot, so it is the same typeface as the digits it replaces -- at cap 36, the
 # largest that fits the 128 px panel (54 would be 179 px wide).
-LABELS = [("OFF", 24), ("ROUTE", 24), ("M AWAY", 20), ("NOW", 36)]
+# "FT AWAY" is the imperial twin of "M AWAY" and is set two caps smaller: the
+# seventh character takes the 20 px setting to ~126 px against a 128 px panel,
+# with no margin either side. Only one of the pair is ever on screen, so the
+# difference in height is not something a rider can see.
+LABELS = [("OFF", 24), ("ROUTE", 24), ("M AWAY", 20), ("FT AWAY", 17),
+          ("NOW", 36)]
 
 
 def ident_for(s):
