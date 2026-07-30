@@ -89,6 +89,7 @@ static const char USAGE[] =
     "                this is how a moving page gets into fbshow --verify)\n"
     "  --print       dump nav_t as text, per fix\n"
     "  --north-up    start north-up instead of course-up\n"
+    "  --imperial    feet and miles; --metric is the default\n"
     "  --demo        render a static design state instead of navigating\n"
     "  --page P      nav, nav-off, overview, arrows, chooser, cliptest,\n"
     "                cliptest-panel -- and with\n"
@@ -96,7 +97,8 @@ static const char USAGE[] =
     "  --dump FILE   write the frame as 384000 raw XRGB bytes\n"
     "  --bench N     time N draw+resolve cycles and print ms/frame\n"
     "\n"
-    "keys: Tab page   Q quit   H hold   O course-up/north-up\n";
+    "keys: Tab page   Q quit   H hold   O course-up/north-up\n"
+    "      Z/X zoom out/in   A auto zoom   U metric/imperial\n";
 
 enum {
     PAGE_NAV,
@@ -1051,28 +1053,82 @@ live_poll_ms(const app_t *a)
  * headless replays, which have nobody to press anything. */
 #ifdef NAV_DEVICE
 
+/* A key changes what the panel says, and the answer has to arrive with the
+ * press. Waiting for the next tick of the frame clock would mean up to a
+ * whole second at the 1 Hz stopped rate -- press U, watch nothing happen,
+ * press it again -- which is how an instrument comes to feel broken.
+ *
+ * Deliberately NOT frame_at(): this is not a frame of the ride clock. The
+ * ease of 6.3 is spread over three frames OF MOTION and a rider pressing a
+ * key must not consume one of them, the stats must not count a frame the
+ * display did not owe, and the traces stay one row per real frame. What it
+ * shares with frame_at() is the only part that matters here -- the 6.4 skip,
+ * so a key that changes nothing visible still costs no SPI. */
+static void
+key_repaint(app_t *a)
+{
+    size_t nb;
+    if (a->hold || !a->have_render || !RC.cv)
+        return;
+    render_state(a);
+    render_live(a, &COV, RC.cv);
+    nb = (size_t)RC.cv->stride * RC.cv->h;
+    if (memcmp(RC.cv->bits, RC.prev->bits, nb) == 0)
+        return;
+    memcpy(RC.prev->bits, RC.cv->bits, nb);
+    if (RC.have_fb)
+        fb_present(RC.fb, RC.cv);
+}
+
 static int
 handle_key(app_t *a, int ch)
 {
     switch (ch) {
     case '\t':
         a->page = a->page == LIVE_NAV ? LIVE_OVERVIEW : LIVE_NAV;
-        return 1;
+        break;
     case 'q':
     case 'Q':
         a->quit = 1;
-        return 1;
+        return 1; /* no repaint: the next thing that happens is the exit */
     case 'h':
     case 'H':
         a->hold = !a->hold;
-        return 1;
+        break;
     case 'o':
     case 'O':
         a->course_up = !a->course_up;
-        return 1;
+        break;
+    /* DESIGN.md 6.1: "Z/X switch to manual; A returns to auto". Stepping
+     * from live_zoom() rather than from mpp_manual is what makes the first
+     * press continuous -- the map moves ONE rung from what it was showing,
+     * instead of jumping to wherever a stale manual value was left. */
+    case 'z':
+    case 'Z':
+        a->mpp_manual = map_zoom_step(live_zoom(a), +1);
+        break;
+    case 'x':
+    case 'X':
+        a->mpp_manual = map_zoom_step(live_zoom(a), -1);
+        break;
+    case 'a':
+    case 'A':
+        a->mpp_manual = 0.0;
+        break;
+    /* 1.1.1: the ladder changes under the countdown, so the latch has to be
+     * reset -- nav_set_units() does that -- and then re-evaluated, or the
+     * panel would keep the old ladder's number until the next fix. */
+    case 'u':
+    case 'U':
+        nav_set_units(&a->ctx, a->ctx.units == UNITS_METRIC ? UNITS_IMPERIAL
+                                                            : UNITS_METRIC);
+        route_countdown_refresh(&a->rt, &a->ctx, &a->nv);
+        break;
     default:
         return 0;
     }
+    key_repaint(a);
+    return 1;
 }
 
 static int
@@ -1087,6 +1143,14 @@ keycode_to_char(int code)
         return 'h';
     case KEY_O:
         return 'o';
+    case KEY_Z:
+        return 'z';
+    case KEY_X:
+        return 'x';
+    case KEY_A:
+        return 'a';
+    case KEY_U:
+        return 'u';
     default:
         return 0;
     }
@@ -1544,7 +1608,7 @@ main(int argc, char **argv)
     const char *tracepath = NULL, *devpath = "/dev/ttyACM0";
     const char *ftracepath = NULL;
     int page = PAGE_NAV, bench = 0, demo = 0, headless = 0, do_print = 0;
-    int pace_opt = -1, north_up = 0, i;
+    int pace_opt = -1, north_up = 0, units = UNITS_METRIC, i;
     double fps = DR_FPS;
     char err[320];
     canvas_t *cv;
@@ -1620,6 +1684,10 @@ main(int argc, char **argv)
             pace_opt = 0;
         else if (!strcmp(a, "--north-up"))
             north_up = 1;
+        else if (!strcmp(a, "--imperial"))
+            units = UNITS_IMPERIAL;
+        else if (!strcmp(a, "--metric"))
+            units = UNITS_METRIC;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
             fputs(USAGE, stdout);
             return 0;
@@ -1676,6 +1744,7 @@ main(int argc, char **argv)
     APP.fps = fps;
     APP.alert_cue = -1;
     nav_init(&APP.rctx);
+    nav_set_units(&APP.ctx, units);
     led_init(1);
 
     if (!routepath) {

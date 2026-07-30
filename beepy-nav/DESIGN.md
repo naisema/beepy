@@ -207,8 +207,11 @@ This answers the one question the NAV page cannot answer at all — where does
 this go, and how much is left. Marking every cue as a dot makes "how many turns
 are coming" readable from the shape.
 
-`Z` / `X` zoom in and out from the fitted view; the fit is restored on page
-entry.
+`Z` / `X` are **not** wired to this page. They zoom the NAV map; here the fit
+is the whole point, and a page whose one job is "the whole route at once"
+gains nothing from a rider being able to lose part of it. Zooming the fitted
+view would need a pan as well — a fitted map that is bigger than its frame has
+a centre to choose — and that is two keys this device does not have spare.
 
 ### 1.3 Cue glyphs — `nav-arrows.png`
 
@@ -260,30 +263,57 @@ everything downstream is identical.
 
 ## 2. Keys
 
+During a ride — NAV and OVERVIEW, and every one of them live in a `--replay`
+session too, because a replay that cannot be paged or quit from the device is
+not a rehearsal of anything:
+
 | Key | Action |
 |---|---|
 | `Tab` | switch page (there are only two) |
-| `Z` / `X` | zoom out / in — switches the NAV map to manual zoom |
+| `Z` / `X` | zoom the NAV map out / in — one rung of §6.1's ladder, and switches it to manual |
 | `A` | return the NAV map to auto zoom |
 | `O` | course-up ↔ north-up |
 | `U` | units: metric ↔ imperial |
 | `H` | hold — freeze the display |
-| `Q` | quit (on CONFIRM: cancel back to FIND) |
-| `F` | open FIND from any page |
+| `Q` | quit |
+
+In the startup route chooser, which is a different program state and not a
+page:
+
+| Key | Action |
+|---|---|
+| `N` / `P`, `↓` / `↑` | move the selection |
+| `Enter` | load the route and start riding |
+| `Q`, `Esc` | quit without loading one |
+
+A key repaints immediately rather than waiting for the next tick of §6.3's
+frame clock: at the 1 Hz stopped rate that would be a whole second between the
+press and the answer, which is how an instrument comes to feel broken. The
+repaint is not a frame of the ride clock — it does not advance the dead
+reckoning, and it is not counted — but it does go through the §6.4 skip, so a
+key that changes nothing visible still costs no SPI.
+
+`F`, and the `FIND` page of §1.4 that it would open, are **not built**. §1.4 is
+a design for a later milestone; nothing in the shipped program reads the key.
 
 Letters, not digits: the Beepy's digit row needs the Alt/symbol modifier, which
 `gps-monitor` already found unusable one-handed. Keys come from `/dev/input/event0`
-with `EVIOCGRAB`, because `fbterm` is SIGSTOPped while the panel is owned.
+with `EVIOCGRAB`, because `fbterm` is SIGSTOPped while the panel is owned —
+with `stdin` in raw mode as a second source, so the whole keymap can be driven
+over ssh. That is not a debugging affordance to be removed later: it is the
+only way any of this is testable without a physical thumb.
 
 **There is no menu.** The route is a command-line argument:
 
 ```
-beepy-nav [-d DEV] [--north-up] [--imperial] [--replay F] ROUTE.gpx
+beepy-nav --route ROUTE.gpx [-d DEV] [--north-up] [--imperial]
+          [--replay F.nmea] [--config FILE]
 ```
 
-Run with no route, it lists `/home/beepy/routes/*.gpx` and waits for a
-selection — a startup chooser, not a page. Everything else lives in
-`/home/beepy/.config/beepy-nav.conf`, which is read once at startup.
+Run with no `--route`, it lists `$BEEPY_ROUTES` or `~/routes` (`routes_dir` in
+the config file) and waits for a selection — a startup chooser, not a page.
+Everything else lives in `~/.config/beepy-nav.conf`, which is read once at
+startup.
 
 ---
 
