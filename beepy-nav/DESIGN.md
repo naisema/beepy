@@ -319,16 +319,18 @@ is **type-to-filter** — no on-screen keyboard, no cursor chasing:
 
 The search index is the street names already in the offline pack (`name:en`
 falling back to `name`), matched token-AND, ranked by distance from the current
-fix. POIs and addresses can join the index when packed; **nothing is searchable
-that is not in the pack**, and the hit count says so honestly.
+fix. POIs and addresses can join the index when packed — they are not, as of M6,
+and street names are all there is; **nothing is searchable that is not in the
+pack**, and the hit count says so honestly (§1.4.2).
 
 **Routing is on-device Dijkstra over the pack's road graph** — ways joined on
 exact shared coordinates. Measured on the Asok extract: 2,803 nodes, and the
-824 m result matched the hand-built demo route within 3.4 m. Even at Pi Zero
-speeds a corridor pack routes instantly; a whole-city pack (~10⁵–10⁶ nodes) is
+824 m result matched the hand-built demo route within 3.4 m — **but that route
+is illegal, and §1.4.3 is the correction.** Even at Pi Zero speeds a corridor
+pack routes instantly; a whole-city pack (~10⁵–10⁶ nodes) is
 Dijkstra-in-tens-of-ms, still fine without any A*/contraction cleverness.
 Beyond pack coverage the fallback would be straight-line bearing navigation,
-labelled as such — that part is **still not built** (§1.4.3).
+labelled as such — that part is **still not built** (§1.4.6).
 
 CONFIRM is the OVERVIEW page's cartography fitted to the *proposed* route —
 start marker, cue dots, destination flag — with the strip carrying the one
