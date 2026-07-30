@@ -303,13 +303,28 @@ stack_cap(int cap, int cap0)
     return cap == cap0 ? cap : num_cap(num_set_for_cap(cap));
 }
 
-/* One centred scale-2 row of the panel's lower stack. */
+/* One centred row of the panel's lower stack, at the largest scale that fits.
+ *
+ * The scale is not decoration. Everything this row normally carries -- an ETA,
+ * a clock, a percentage -- is short and lands at scale 2, which is what 1.1
+ * asks for, and so do three of the four transients. "NO ROAD PACK" does not:
+ * it is 144 px at scale 2 against a 128 px panel, and a centred string wider
+ * than its box does not truncate, it starts at a NEGATIVE x and spills 8 px
+ * into the map on each side. That was invisible for as long as the map under
+ * it was empty -- every fixture either had no basemap or had one that did not
+ * reach the test route -- and it surfaced the day a pack covered the ground
+ * the tests ride over. So: fit, rather than trust every future caller to count
+ * characters. */
 static void
 panel_row(cov_t *c, int y, const char *s)
 {
+    int scale;
+
     if (!s || !*s)
         return;
-    cov_text(c, (PANEL_W - cov_text_w(s, 2)) / 2, y, s, 2, COV_PAPER);
+    for (scale = 2; scale > 1 && cov_text_w(s, scale) > PANEL_W; scale--)
+        ;
+    cov_text(c, (PANEL_W - cov_text_w(s, scale)) / 2, y, s, scale, COV_PAPER);
 }
 
 /* DESIGN.md 1.1: "NO FIX replaces the bottom row, inverted, when the fix is

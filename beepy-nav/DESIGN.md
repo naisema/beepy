@@ -453,6 +453,14 @@ is worthless.
 panel's transient row (§7.5's mechanism) and does nothing else: a dead key is
 indistinguishable from a broken program.
 
+It is the one transient that does not fit the panel at scale 2 — 144 px against
+128 — so the row draws it at scale 1. `panel_row()` picks the largest scale that
+fits rather than trusting the string, because a centred string wider than its
+box does not truncate: it starts at a negative x and spills into the map on both
+sides. That spill was real and shipped, and it was invisible for as long as
+every test fixture had an empty map underneath it (`T-NOTE-FITS` is the
+assertion that no longer allows that).
+
 FIND is a **page**, not a modal sub-loop. The frame clock keeps running behind
 it, `--key` drives it in a headless replay exactly as it drives `L`, and a
 cancel gives the screen back frame-for-frame (`T-FIND-CANCEL`). That is what
@@ -1170,6 +1178,45 @@ where there is least to look at anyway, and a rung the pack does not carry
 draws nothing — the same code path, and the same frame, as no pack at all.
 `--zooms` overrides this for anyone who wants the coarse end.
 
+#### Two areas, one pack
+
+A corridor is what a *route* needs. What a rider needs before choosing a route
+is different: the MAP page opens on where you are (§1.5), which may be nowhere
+near any GPX. So `mktiles.py` also cuts by area — `--ref LAT,LON --radius M`
+for a disc around home, `--bbox LAT0,LON0,LAT1,LON1` for a country — and the
+selection is the only thing that changes; everything downstream is identical.
+
+Those two wants pull in opposite directions. Every residential street within
+20 km of home is 17,000 tiles at the fine rungs; the same classes across
+Thailand at 1.5 m/px would be roughly half a million, which is not a basemap,
+it is a mistake. But major roads across Thailand at 15 m/px and coarser is
+30,000 tiles, and *that* is what makes the map useful when you are 200 km from
+home. The answer is not one build that compromises: it is **two builds and a
+join**, because the zoom rungs are already independent grids — each carries its
+own `mpp`, origin and extent — so nothing in the format objects to a pack whose
+1.5 m/px rung covers a city and whose 60 m/px rung covers a country.
+
+`tools/mergetiles.py` performs the join. It is a separate tool rather than a
+flag because the inputs come from different extracts filtered to different road
+classes, and no single invocation could sensibly want both.
+
+**The one rule is a shared projection frame.** A tile is addressed as
+`floor(e/mpp)` in the *pack's own* frame, so tiles cut against a different
+reference name different ground, and a merge across references would produce a
+pack that is well-formed and wrong. That is not recoverable after the fact, so
+the tool refuses — and `mktiles --frame LAT,LON` exists to set the reference
+independently of the region being cut, which is how the fine build is placed in
+the coarse build's frame. A rung present in two inputs is taken from the first
+and the choice is printed: rungs are whole grids, and interleaving two of them
+would mean deciding per tile which map wins, which is a merge of cartography
+and not of files.
+
+What the join must not do is disturb the rungs it carries over, so that is what
+`make test-tiles` asserts: the frozen `nav-tiles` golden, drawn from a pack that
+now also holds two coarser rungs, comes back byte-identical; and a pack joined
+to itself is itself, byte for byte, which is where an off-by-one in the index
+rewrite would show.
+
 #### Reading it on the device
 
 `beepy-nav/src/tile.c`, wired to `basemap = PATH` in `~/.config/beepy-nav.conf`
@@ -1531,6 +1578,7 @@ view_nav 200, view_overview 160, nav main 180 ≈ **1450 lines**.
 | **T-ROADS-OPTIONAL** | the FIND page with no pack, and with an unreadable one, are the same frame — and neither is the frame with the pack. Unlike the basemap the difference here is the whole page, because a search with nothing to search cannot honestly show a hit; which is what makes the golden evidence about `search.c` and not only about the layout |
 | **T-FIND** | the whole pre-ride flow from a headless replay: `F`, seven keystrokes, ENTER to route, ENTER to go. Asserted on the state machine rather than on pixels, because the frames move with the ride — the router ran on the device's own graph and found the place that was *typed*, `main()` installed the result by the same line that loads a GPX, and the three screens differ by at least 4 000 pixels each |
 | **T-FIND-NOPACK** | `F` with no pack differs from an un-keyed run *only* inside the panel's bottom row, and is byte-identical two seconds later — the §7.5 transient mechanism, and the proof that the key is neither dead nor destructive |
+| **T-NOTE-FITS** | the same claim as T-FIND-NOPACK with the **committed** pack named on the command line instead of whatever the config points at. That distinction is the whole test: the runs above inherit `beepy-nav.conf`, every config to date named a pack that did not reach this route, and under an empty map `NO ROAD PACK` spilling 8 px past the panel into the map was white on white. `tests/tiles/asok.tiles` does cover this ground and puts 154 px of street in the strip the overflow landed on. Found by merging a basemap that finally covered the ground the tests ride over — which is the third time a pair here has quietly stopped being a pair because one half read the device's config |
 | **T-FIND-CANCEL** | two runs of one ride, one of which opened FIND and pressed `Esc`. Twenty seconds later they are the same frame: the page borrowed the screen and gave it back, which is the property that lets FIND be a page inside the ride loop rather than a modal detour |
 | Search semantics | `tests/test_search.c` over a twelve-node hand-written pack (`tests/roads/names.json`), so every branch of the indexer has a case: `name:en` preferred, an ASCII `name` as the fallback, a Thai name dropped **and counted**, an unnamed way still routable, a footway not routable at all. Plus token-AND as substrings, order-independence, case folding, an empty query matching nothing, a miss matching nothing, ranking by distance to the nearest candidate point, and a hit count that is the total rather than the length of the list |
 | Pack reader, the paths that refuse | one byte changed in the committed fixture at a time — magic, version, header size, coordinate scale, a section pointed inside the header — plus two truncations, and every accessor called on a `NULL` pack. Each must refuse with a message, because "no search" is a state the whole feature degrades to |

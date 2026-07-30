@@ -532,6 +532,25 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK)
 		--mask 0,216,127,239 --max-px 0
 	! python3 tools/fbdiff.py $(RDIR)/nopack-a.fb $(RDIR)/plain-a.fb --max-px 0
 	python3 tools/fbdiff.py $(RDIR)/nopack-b.fb $(RDIR)/plain-b.fb --max-px 0
+	@echo "--- T-NOTE-FITS: a note stays inside the panel, over a drawn map"
+#	The pair above asserts "changes nothing outside the panel" -- but only as
+#	strongly as the map under the note is interesting, and for a long time it
+#	was not: these runs take whatever basemap the config names, and every
+#	config to date named a pack that did not reach this route. Under an empty
+#	map, "NO ROAD PACK" spilling 8 px past PANEL_W into it was white on white.
+#	So the same claim again with the COMMITTED pack named explicitly, which
+#	does cover this ground and puts 154 px of street in the strip the overflow
+#	would have landed on. No config, and nothing to configure.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless $(FPS8) \
+		--basemap $(TILEPACK) --no-roads \
+		--dump-at 120.5:$(RDIR)/notemap-plain.fb
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless $(FPS8) \
+		--basemap $(TILEPACK) --no-roads --key 120:f \
+		--dump-at 120.5:$(RDIR)/notemap-note.fb
+	python3 tools/fbdiff.py $(RDIR)/notemap-note.fb $(RDIR)/notemap-plain.fb \
+		--mask 0,216,127,239 --max-px 0
+	! python3 tools/fbdiff.py $(RDIR)/notemap-note.fb \
+		$(RDIR)/notemap-plain.fb --max-px 0
 	@echo "--- T-FIND-CANCEL: Esc leaves no trace of the page at all"
 #	Two runs of the same ride, one of which opened FIND and backed out of it.
 #	Twenty seconds later they are the same frame, so the page borrowed the
@@ -705,7 +724,46 @@ test-tiles: host/beepy-nav $(TILEPACK)
 	./host/beepy-nav --demo --page nav-tiles \
 		--basemap out-tiles-1.tiles --dump out-nav-tiles-rebuilt.fb
 	cmp goldens/nav-tiles.fb out-nav-tiles-rebuilt.fb
-	rm -f out-tiles-1.tiles out-tiles-2.tiles
+#	tools/mergetiles.py joins packs cut over different areas so one basemap can
+#	be detailed where you ride and coarse across a country. The claim that has
+#	to hold is that joining changes NOTHING about the rungs it carries over: the
+#	same golden, drawn from a pack that now also holds two coarser rungs, has to
+#	come back byte-identical. If the tile offsets were rewritten wrongly the
+#	frame moves, and no other assertion here would notice.
+	@echo "--- T-TILES-MERGE: a joined pack draws the same golden"
+	python3 tools/mktiles.py --osm $(TILEOSM) --route $(TILEROUTE) \
+		--corridor 1000 --zooms 10,15 -o out-tiles-coarse.tiles --quiet
+	python3 tools/mergetiles.py $(TILEPACK) out-tiles-coarse.tiles \
+		-o out-tiles-merged-1.tiles --quiet
+	python3 tools/mergetiles.py $(TILEPACK) out-tiles-coarse.tiles \
+		-o out-tiles-merged-2.tiles --quiet
+	cmp out-tiles-merged-1.tiles out-tiles-merged-2.tiles
+	python3 tools/mktiles.py --info out-tiles-merged-1.tiles | \
+		grep -q "5 zooms  41 tiles"
+	./host/beepy-nav --demo --page nav-tiles \
+		--basemap out-tiles-merged-1.tiles --dump out-nav-tiles-merged.fb
+	cmp goldens/nav-tiles.fb out-nav-tiles-merged.fb
+#	Joining a pack to itself is the degenerate case, and it is the one that
+#	catches an off-by-one in the index rewrite: every rung is already present,
+#	so the output must be the input, byte for byte.
+	@echo "--- T-TILES-MERGE-IDEMPOTENT: a pack joined to itself is itself"
+	python3 tools/mergetiles.py $(TILEPACK) $(TILEPACK) \
+		-o out-tiles-merged-3.tiles --quiet
+	cmp $(TILEPACK) out-tiles-merged-3.tiles
+#	DESIGN.md 6.5: a tile is addressed as floor(e / mpp) in the PACK's frame,
+#	so joining packs cut against different references would silently name
+#	different ground. The tool has to refuse rather than produce a plausible
+#	pack, and that refusal is a behaviour, so it is tested.
+	@echo "--- T-TILES-MERGE-FRAME: a different reference is refused"
+	python3 tools/mktiles.py --osm $(TILEOSM) --ref $(ROADREF) --radius 800 \
+		--zooms 10 -o out-tiles-elsewhere.tiles --quiet
+	! python3 tools/mergetiles.py $(TILEPACK) out-tiles-elsewhere.tiles \
+		-o out-tiles-bad.tiles 2>/dev/null
+	test ! -f out-tiles-bad.tiles
+	rm -f out-tiles-1.tiles out-tiles-2.tiles out-tiles-coarse.tiles \
+		out-tiles-merged-1.tiles out-tiles-merged-2.tiles \
+		out-tiles-merged-3.tiles out-tiles-elsewhere.tiles \
+		out-nav-tiles-merged.fb
 	@echo "test-tiles: PASS"
 
 # ---------------------------------------------------- the road pack fixture

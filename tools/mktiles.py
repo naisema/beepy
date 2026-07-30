@@ -448,6 +448,12 @@ def main(argv=None):
                          "projection reference either way")
     ap.add_argument("--radius", type=float, default=None, metavar="M",
                     help="half-side of the --ref square, metres")
+    ap.add_argument("--frame", metavar="LAT,LON",
+                    help="projection reference, when it must differ from the "
+                         "region's own centre -- which is what merging two "
+                         "packs into one needs, since tile addressing is "
+                         "relative to the frame and only packs that share one "
+                         "can be joined (tools/mergetiles.py)")
     ap.add_argument("--zooms", default=None, metavar="LIST",
                     help="comma-separated m/px, or 'all'; default follows "
                          "--corridor (see pick_zooms)")
@@ -497,6 +503,29 @@ def main(argv=None):
         min_e, min_n, max_e, max_n = -r, -r, r, r
         sel = Box(min_e, min_n, max_e, max_n)
         extent = r
+
+    if a.frame:
+        # Re-express the region in the requested frame. The SELECTION is
+        # unchanged -- the same ways, the same rectangle on the ground -- but
+        # every metre, and so every tile boundary, is now measured from the
+        # shared reference.
+        fla, flo = (float(v) for v in a.frame.split(","))
+        old = frame
+        frame = Frame(fla, flo)
+        # Corner round-trip: metres -> lat/lon in the old frame -> metres in
+        # the new one. Frame has no inverse, so go through the ratio it used.
+        def relocate(e, n):
+            la = old.lat0 + n / M_PER_DEG_LAT
+            lo = old.lon0 + e / (M_PER_DEG_LON *
+                                 math.cos(math.radians(old.lat0)))
+            return frame.met(la, lo)
+        (min_e, min_n) = relocate(min_e, min_n)
+        (max_e, max_n) = relocate(max_e, max_n)
+        if a.route:
+            route_en = [relocate(e, n) for e, n in route_en]
+            sel = Corridor(route_en, a.corridor)
+        else:
+            sel = Box(min_e, min_n, max_e, max_n)
 
     ways = read_osm(a.osm)
     kept = []

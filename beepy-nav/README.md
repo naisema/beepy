@@ -244,9 +244,9 @@ A pack works on the MAP page too, with no route in sight: put one in the config
 streets around where you are standing — the pack's own reference point becomes
 the world origin, so it lines up with a position it was never told about.
 
-`mktiles.py` still wants a `--route` to cut its corridor along; there is no
-`--ref LAT,LON` for it the way `mkpack.py` has one. To cover an *area* rather
-than a line, give it a two-point GPX at the centre and a wide `--corridor`.
+`mktiles.py` cuts three ways: `--route ride.gpx` for a corridor along a ride,
+`--ref LAT,LON --radius M` for a disc around a place, and `--bbox` for a
+rectangle. Only the selection differs; everything after it is the same.
 
 ```sh
 # 1. get an extract from Overpass -- roads within a few km of the route
@@ -266,6 +266,48 @@ from it — a wider corridor gets coarser rungs, because a basemap that runs out
 halfway across the screen looks broken; `--zooms 4,6,10` or `--zooms all`
 overrides. A ±2 km corridor around a 4 km route is about **1.1 MB**, and a rung
 the pack does not carry simply draws no streets, exactly as no pack does.
+
+#### Detailed at home, coarse across a country — one pack
+
+Only one basemap can be loaded at a time, so "every street near home" and
+"major roads countrywide" have to end up in the same file. They cannot come
+from the same build: every street within 20 km of home is 17,000 tiles at the
+close rungs, and the same detail across Thailand would be about half a million.
+
+So: build them separately and join them. Each zoom rung in a pack is its own
+grid with its own extent, so one pack happily holds a 1.5 m/px rung covering a
+city and a 60 m/px rung covering a country.
+
+```sh
+# a nationwide extract cannot come from Overpass -- start from a Geofabrik
+# .osm.pbf and convert it to the JSON the tools read
+python3 tools/pbf2osm.py thailand.osm.pbf --bbox 5.5,97.3,20.6,105.7 \
+        --classes coarse --no-names -o th-coarse.json
+
+# coarse: major roads, whole country, from 15 m/px out. The frame falls out
+# of the bbox centre -- note it, because the fine build has to match it.
+python3 tools/mktiles.py --osm th-coarse.json --bbox 5.5,97.3,20.6,105.7 \
+        --zooms 15,25,40,60,100,150,250 -o coarse.tiles
+
+# fine: every road within 20 km of home, up to 10 m/px -- but placed in the
+# coarse build's frame, which is what --frame is for
+python3 tools/mktiles.py --osm region.json --ref 13.8851,100.3785 --radius 20000 \
+        --frame 13.05,101.50 --zooms 1.5,2.5,4,6,10 -o fine.tiles
+
+python3 tools/mergetiles.py fine.tiles coarse.tiles -o thailand-nav.tiles
+```
+
+**Both inputs must share a projection reference.** Tiles are addressed relative
+to the pack's own reference point, so packs cut against different ones describe
+different ground; `mergetiles.py` refuses rather than produce a plausible wrong
+pack, and `mktiles --frame` is how you avoid that. A zoom rung present in both
+inputs is taken from the first, and it says so — which is why the two builds
+above are given disjoint rungs.
+
+That pair comes to **364 MB** for all twelve rungs: full street detail across
+Greater Bangkok, and every motorway, trunk, primary and secondary road in
+Thailand when you zoom out. Ordinary, and it fits many times over on the SD
+card.
 
 Streets go **under** everything: basemap, then the ridden track, then the cased
 route, then the markers. That white casing round the route is doing its job
