@@ -1,10 +1,11 @@
 # beepy-nav
 
-A two-page GPS route navigator for the Beepy: follow a GPX route, show the next
-turn. `DESIGN.md` is the specification and the reasoning behind every choice
-below; this file is how to get a route onto the device and ride it.
+A GPS navigator for the Beepy: see where you are, follow a GPX route, show the
+next turn. `DESIGN.md` is the specification and the reasoning behind every choice
+below; this file is how to get it running and ride with it.
 
 ```
+MAP        where you are, with no route loaded -- what it opens on
 NAV        turn arrow, distance to the junction, and a live map
 OVERVIEW   the whole route, fitted, with progress
 FIND       type a destination; CONFIRM shows the route before you commit
@@ -18,22 +19,28 @@ Everything below assumes the program is installed (see **Install**) and a GPS
 receiver is on `/dev/ttyACM0`.
 
 ```sh
-# 1. put a route on the device
-scp my-ride.gpx beepy.local:routes/
-
-# 2. on the device, ride it
-beepy-nav --route ~/routes/my-ride.gpx
-
-# ...or run it with no arguments and pick from a list on the panel
+# 1. run it with no arguments: it opens on the MAP page and shows you where
+#    you are, with the streets under you if a basemap is configured
 beepy-nav
 
-# ...or press F mid-ride and type where you want to go (needs a road pack --
-# see "Finding a destination" below)
-beepy-nav --route ~/routes/my-ride.gpx --roads ~/maps/city.roads
+# 2. from there:  R  picks a route from ~/routes
+#                 F  types a destination and routes to it
+#                 Q  quits
+
+# ...or go straight to a route you already have
+scp my-ride.gpx beepy.local:routes/
+beepy-nav --route ~/routes/my-ride.gpx
+
+# ...or with the packs named on the command line rather than in the config
+beepy-nav --basemap ~/packs/home.tiles --roads ~/packs/home.roads
 ```
 
 That is the whole workflow. The panel takes over the screen while it runs and
 gives it back when you press `Q`.
+
+Before the first fix the MAP page says `WAITING FOR FIX` and how many satellites
+the receiver can see. A cold receiver indoors can sit there for minutes; near a
+window it is usually seconds.
 
 ### Where a GPX comes from
 
@@ -50,6 +57,41 @@ street names and routes to one on the device. See **Finding a destination**.
 ---
 
 ## Reading the screen
+
+### The MAP page — what you get with no route
+
+```
+   ┌────────────────────────────────────────┐
+   │ (N)                            ( 24 )  │   compass · speed
+   │                                 KM/H   │
+   │                                        │
+   │                  ▲                     │   you, at the centre
+   │                  └┄┄┄┄┄┄               │   ┄ where you have been
+   │                                        │
+   │ ├─500M─┤                               │
+   ├────────────────────────────────────────┤
+   │ 13.88510 100.37850                     │   where you are, in degrees
+   │ F FIND   R ROUTES   Q QUIT             │
+   └────────────────────────────────────────┘
+```
+
+The full width, because with no route there is no next turn and nothing to put a
+panel there for. Same map as the NAV page — course-up, `O` for north-up, `Z`/`X`
+to zoom, `A` back to the default 6 m/px — with two differences:
+
+- **you sit at the centre**, not low down. The NAV page keeps you low so two
+  thirds of the map is the road ahead; with no route there is no ahead.
+- **the dashed line is the whole session**, not the part of a route you have
+  covered. It survives changing route, and when it fills up (a few thousand
+  points, about 10 km at its 5 m spacing) it thins itself rather than forgetting
+  where you started.
+
+If the fix is lost after you have had one, the last known position stays on
+screen with an inverted `NO FIX` beside the coordinates — the same rule the NAV
+panel follows, in the one row this page has for it.
+
+`Tab` does nothing here: there is no OVERVIEW without a route. The hint row is
+the page's whole keymap, so if a key is not on that line it does not do anything.
 
 ### The NAV page
 
@@ -111,21 +153,22 @@ passed, total distance, distance and time remaining.
 
 | Key | Action |
 |---|---|
-| `Tab` | switch page: NAV ↔ OVERVIEW |
+| `Tab` | switch page: NAV ↔ OVERVIEW (nothing on MAP — there is no route to overview) |
 | `F` | find a destination — see below; says `NO ROAD PACK` if there is none |
-| `R` | change route — back to the picker, without quitting |
+| `R` | pick a route — from MAP, or to change route mid-ride |
 | `Z` / `X` | zoom the map out / in (switches to manual zoom) |
-| `A` | back to automatic zoom |
+| `A` | back to automatic zoom (on MAP: back to the 6 m/px default) |
 | `O` | course-up ↔ north-up |
 | `U` | metric ↔ imperial |
 | `L` | cue alerts on ↔ off, for this ride only |
 | `H` | hold — freeze the display |
 | `Q` | quit, and give the console back |
 
-`R` only does something when there is a picker to go back to — that is, when
-you started with a bare `beepy-nav` rather than `--route`. It closes the
-current ride log and opens a new one for the next route, because a different
-route is a different ride.
+`R` only does something when there is a picker to go back to — that is, when you
+started with a bare `beepy-nav` rather than `--route`. Quitting the picker with
+`Q` comes back to MAP rather than out of the program, so opening the list and
+changing your mind costs nothing. Loading a route closes the current ride log and
+opens a new one, because a different route is a different ride.
 
 Letters and not digits, because the Beepy's digit row needs the Alt modifier
 and that is unusable one-handed on a handlebar.
@@ -189,12 +232,21 @@ it is not done behind your back (`DESIGN.md` §6.3).
 
 ---
 
-## Streets under the route
+## Streets under the map
 
 Optional, off by default, and it needs one command on a Mac. The device carries
 no map data and no renderer for it — what it reads is a **tile pack**: 1-bit
 256×256 tiles of OpenStreetMap street geometry, pre-rendered per zoom rung,
 cut to a corridor along one route.
+
+A pack works on the MAP page too, with no route in sight: put one in the config
+(`basemap = /home/beepy/packs/home.tiles`) and a bare `beepy-nav` shows you the
+streets around where you are standing — the pack's own reference point becomes
+the world origin, so it lines up with a position it was never told about.
+
+`mktiles.py` still wants a `--route` to cut its corridor along; there is no
+`--ref LAT,LON` for it the way `mkpack.py` has one. To cover an *area* rather
+than a line, give it a two-point GPX at the centre and a wide `--corridor`.
 
 ```sh
 # 1. get an extract from Overpass -- roads within a few km of the route
@@ -235,7 +287,7 @@ ride: the same NAV page, the same cues, the same ride log. A route you searched
 for and a GPX you downloaded are the same thing from that point on.
 
 It needs a **road pack**, built on a Mac from an OpenStreetMap extract. It is a
-different pack from the basemap of *Streets under the route* — that one is
+different pack from the basemap of *Streets under the map* — that one is
 pictures of streets, this one is the graph and the names — and you can load
 either, both, or neither.
 

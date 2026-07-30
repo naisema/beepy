@@ -1,25 +1,28 @@
 # beepy-nav — design
 
-A two-page GPS route navigator for the Beepy, built on the parser and
+A GPS route navigator for the Beepy — three pages, built on the parser and
 framebuffer renderer already proven by `gps-monitor`.
 
-Status: **implemented through DESIGN phase 3 and running on the device.**
+Status: **implemented through DESIGN phase 6 and running on the device.**
 `mockup.py` remains the pixel reference — `make design-gate` byte-compares the
 C renderer against it, and both are frozen into `goldens/nav-*.fb`, which
 `make check` verifies on the device.
 
 ```
+MAP        where you are, with no route loaded -- what it opens on
 NAV        turn arrow, distance to the junction, and a live map
 OVERVIEW   the whole route, fitted, with progress
 ```
 
 Plus one pre-ride flow — **FIND → CONFIRM** — that produces the route the two
-pages then follow: type a destination on the Beepy's own keyboard, see the
-routed overview, press ENTER to go.
+ride pages then follow: type a destination on the Beepy's own keyboard, see the
+routed overview, press ENTER to go. `F` reaches it from MAP, which is what makes
+the whole flow one sitting: open, see where you are, search, go.
 
-That is the entire program. It follows a route and shows you where you are on
-it. It is not a cycle computer: **no data-field pages, no elevation profile, no
-menu page, no ride recording, no satellite page.** An earlier draft had all of
+That is the entire program. It shows you where you are, and follows a route when
+you have one. It is not a cycle computer: **no data-field pages, no elevation
+profile, no menu page, no ride recording, no satellite page.** An earlier draft
+had all of
 those and they are gone — see §14 for what was removed and what that bought.
 (One thing came back, deliberately and in a much smaller form: §7.6's raw NMEA
 log, which records the receiver rather than the ride and exists so that a
@@ -502,8 +505,117 @@ corners of a 15 km box. §1.4's "tens of ms" prediction was close.
   restriction, not a solution.
 - **No POIs and no addresses.** Street names only.
 - **`F` does not work from the route picker**, which §2 calls "a different
-  program state and not a page". A rider who wants to search must load some GPX
-  first, and that is a real wart.
+  program state and not a page". This *was* the wart that forced a rider to load
+  some GPX before they could search. §1.5 removes the force without removing the
+  wart: the program now opens on MAP, which is a page, and `F` works there — so
+  the picker is somewhere a rider goes on purpose rather than somewhere they are
+  put on the way in. The key is still not bound inside it.
+
+### 1.5 MAP — where you are, with no route — `nav-map.png`
+
+**The product owner's words: "I want current location in map screen after open
+beepy-nav program."** Until this page, the only way to see anything at all was
+to pick a GPX first — so the very first thing anyone does with a GPS, look at
+where they are, was the one thing this program could not do. That is not a
+missing feature, it is a missing front door.
+
+Full width, x 0–399. **There is no turn panel**, because with no route there is
+no next turn: an inverted third of the screen holding nothing would be worse
+than none, and the map wants the pixels.
+
+| Element | Drawn as |
+|---|---|
+| Everything cartographic | exactly §1.1's marks — position, compass, speed badge, scale bar, dashed track, tile blit. Not a second copy: `mark_*` is one set of routines, and this page calls them |
+| Position | at **(map centre, 0.5 × the map's height)** |
+| Breadcrumb | the track travelled this session, 1 px dashed |
+| Bottom strip, inverted, 42 px | scale 2: the position as decimal degrees (`13.88510 100.37850`), then `F FIND   R ROUTES   Q QUIT` |
+| Before the first fix | no map at all: a centred `WAITING FOR FIX` at scale 3, the satellite count under it, and a 24 px strip carrying the hint row alone |
+
+**Centred, not 0.72.** §1.1 puts the fix low on purpose — two thirds of the map
+is then road *ahead* of the route. With no route there is no ahead, and a
+where-am-I screen wants equal ground on every side of the marker. It is the
+centre of the *map*, which ends where the strip starts (y 0–197), and not
+0.5 × 240: the strip is opaque, so half of a height that includes it would put
+the marker below the middle of everything the rider can see.
+
+**Course-up by default, `O` toggles**, and below §6.1's 3 km/h the heading holds
+— the same rule for the same reason, because the reason (a stationary receiver's
+reported course is noise) has nothing to do with routes. `Z`/`X`/`A` and `U`
+work too. What auto-zoom cannot do here is *fit the next cue*, since there is no
+cue: the ladder gets a **default rung of 6 m/px** instead, which shows the
+2.4 × 1.2 km around you, and `A` returns to it.
+
+**The world frame is a pack's own reference.** Everywhere else the origin is the
+route's first point, and `tiles_bind_route()` translates a tile pack into that
+frame (§6.5). With no route there is no first point, so the order is: the
+basemap pack's own reference — which makes that translation exactly zero and
+the streets land where they were rendered — else the road pack's, so the map and
+`F`'s distances are measured from one origin (§1.4.1), else the first fix, when
+there is neither pack. This is the case `tiles_bind_route()` was written for and
+had never been given.
+
+**The breadcrumb is the session's, not the route's.** §1.1's dashed track is the
+part of a route already covered and dies with the route; this is where the rider
+has actually been, and it survives `R` and a routed destination. It is kept in
+**lat/lon**, not in world metres, because the frame changes the moment a route
+loads and a breadcrumb in metres would silently bend at every route change —
+the same argument §1.4.1 makes for the road pack keeping its own frame.
+Points nearer than **5 m** to the last are dropped, because a receiver at a
+standstill jitters by metres and ten minutes at a traffic light would otherwise
+fill the buffer with a scribble the size of the marker. **When it fills at 2 048
+points, every second point is dropped and recording carries on:** the whole
+session survives at coarsening resolution rather than its beginning being
+forgotten, which is the right trade for a mark whose job is "roughly where have
+I been". At the 5 m floor the first halving is 10 km of riding away. It is not
+corner-rounded, which §1.1's track is — a GPX is a chain of survey chords and
+reads as a polygon drawn raw, while a GPS trace is already a dense wander and
+rounding it would invent bends the rider did not take.
+
+**Before the first fix, no map.** There is nothing to centre one on, and a map
+drawn about a guessed position is the one thing a navigator must never put on a
+screen. So: no marker, no compass, no scale bar, no streets — a centred
+`WAITING FOR FIX`, and the satellite count beneath it *only when the receiver is
+talking at all* (a count of zero is news; no count is different news). The
+message does not move when the count appears, because a line that jumps as the
+receiver warms up reads as a glitch rather than as progress. The strip loses its
+first row and keeps the hint at the same y (H − 19) — **the strip grows a row
+when there is something to put in it**, so the one line a rider navigates by
+never moves.
+
+**A fix LOST after having had one is §1.1.2's case, not this one.** The last
+known position stays drawn — it is still the last thing known, and the marker
+froze two seconds ago at `DR_MAX_EXTRAP` — and an inverted `NO FIX` appears
+*beside* the coordinates rather than over them. That is the one difference from
+the turn panel's treatment: there, the row `NO FIX` takes had a competing value
+in it; here the value it would displace is exactly the position the warning is
+about, and covering it up would throw away the last thing worth reading.
+
+**One frame is drawn before the first sentence arrives.** Every other frame is
+owed to §6.3's clock, and that clock does not start until there is a fix to
+extrapolate from — so with a receiver that is cold, unplugged, or half a second
+from its first `GGA`, the panel went on showing whatever `fbterm` left on it. On
+a `--route` ride that was survivable; here it is the entire first impression.
+
+**`Tab` is not bound.** Its promise is "switch page (there are only two)", and
+both of those are pages *of a ride* — OVERVIEW with no route would have to draw
+a route it does not have. It is left unbound rather than made a no-op with a
+message, and the strip is why: this page advertises its own keymap on the hint
+row, so a key that is not on that line was never claimed. That is the honest
+form of "does nothing", and the one case §2's "a dead key is indistinguishable
+from a broken program" does not cover.
+
+**`R` is a page change now, not an exit.** It opens the picker, and quitting the
+picker comes *back* to MAP rather than dropping to a shell — a rider who opens
+the list and changes their mind has not asked to leave. `Q` on MAP is how the
+program ends, and the strip says so.
+
+Verification is four goldens (`nav-map`, `nav-map-nofix`, `nav-map-wait`,
+`nav-map-tiles`), the first three in the design gate against `mockup.py`'s own
+frames, plus **T-MAP**: the same replay ride with no `--route` at all, asserting
+that 5 505 frames render, that the breadcrumb grows past 300 points, that the
+drawn position still matches §6.3's closed form, and that **nothing in the trace
+is NaN** — which needed a new assertion, because every other one in
+`assert_trace.py` is a comparison and every comparison against NaN is false.
 
 ---
 
@@ -517,6 +629,7 @@ not a rehearsal of anything:
 |---|---|
 | `Tab` | switch page (there are only two) |
 | `F` | open FIND (§1.4); with no road pack it says so and nothing else |
+| `R` | change route — back to the picker, without leaving the program |
 | `Z` / `X` | zoom the NAV map out / in — one rung of §6.1's ladder, and switches it to manual |
 | `A` | return the NAV map to auto zoom |
 | `O` | course-up ↔ north-up |
@@ -525,6 +638,18 @@ not a rehearsal of anything:
 | `H` | hold — freeze the display |
 | `Q` | quit |
 
+On the MAP page of §1.5, which is what the program is when there is no route.
+Its own hint row lists the three that matter, and that row is load-bearing: a
+key absent from it was never claimed by the page.
+
+| Key | Action |
+|---|---|
+| `F` | open FIND — the whole point of the flow: open, see where you are, search, go |
+| `R` | open the route picker; `Q` there comes back to MAP, it does not exit |
+| `Q` | quit |
+| `O`, `Z` / `X`, `A`, `U`, `H`, `L` | as above; `A` returns to the 6 m/px default rung rather than to a cue fit |
+| `Tab` | **not bound** — there is no OVERVIEW without a route (§1.5) |
+
 In the startup route chooser, which is a different program state and not a
 page:
 
@@ -532,7 +657,7 @@ page:
 |---|---|
 | `N` / `P`, `↓` / `↑` | move the selection |
 | `Enter` | load the route and start riding |
-| `Q`, `Esc` | quit without loading one |
+| `Q`, `Esc` | back to MAP without loading one |
 
 A key repaints immediately rather than waiting for the next tick of §6.3's
 frame clock: at the 1 Hz stopped rate that would be a whole second between the
@@ -570,10 +695,14 @@ a keymap that quietly rots: what a key *does* is portable C, and only where
 the press comes *from* is device-specific. `make test-frames` uses it to drive
 `L` mid-ride and assert what happens.
 
-Run with no `--route`, it lists `$BEEPY_ROUTES` or `~/routes` (`routes_dir` in
-the config file) and waits for a selection — a startup chooser, not a page.
-Everything else lives in `~/.config/beepy-nav.conf`, which is read once at
-startup.
+Run with no `--route`, it **opens on the MAP page of §1.5** — where you are,
+with nothing loaded. `R` from there lists `$BEEPY_ROUTES` or `~/routes`
+(`routes_dir` in the config file) and waits for a selection: still a chooser and
+not a page, but no longer the front door. That is the one change §1.5 makes to
+the startup flow; `--route FILE` and `--replay` are untouched, and a routed
+destination from FIND → CONFIRM reaches the ride pages by the identical path it
+always did. Everything else lives in `~/.config/beepy-nav.conf`, which is read
+once at startup.
 
 ### 2.1 `~/.config/beepy-nav.conf`
 
@@ -1297,7 +1426,9 @@ constant and a live clock does not land on a replay's frame grid.
 
 ## 8. Data model
 
-Only what the two pages consume:
+Only what the pages consume. The MAP page of §1.5 consumes a strict subset of
+this — `fix_t`, the smoothed heading, and its own breadcrumb — and no `nav_t` at
+all, because every field of `nav_t` is a statement about a route:
 
 ```c
 typedef struct {                 /* live, from NMEA */
@@ -1343,8 +1474,15 @@ libnmea/       nmea.c serial.c gps.c               sentences -> fix_t
 gps-monitor/   view_bars.c view_sky.c main.c       unchanged behaviour
 beepy-nav/     seg.c arrows.c gpx.c route.c map.c tile.c
                search.c router.c
-               view_nav.c view_overview.c view_find.c view_confirm.c nav.c
+               view_nav.c view_overview.c view_find.c view_confirm.c
+               view_map.c nav.c
 ```
+
+`view_map.c` (the §1.5 MAP page) owns no marks of its own: it calls
+`view_nav.c`'s `mark_*`, including `mark_speed_badge()`, which was private until
+this page needed the same instrument. Two pages have one now and there is still
+exactly one of it — the alternative is two things to keep in step with
+`mockup.py`, which is the argument the shared marks were extracted under.
 
 `tile.c` (the §6.5 basemap reader) is deliberately linkable on its own: it needs
 libbeepyfb for the blit and nothing at all from the navigator, which is what
@@ -1385,7 +1523,9 @@ view_nav 200, view_overview 160, nav main 180 ≈ **1450 lines**.
 | Ride log survives a kill | `kill -9` the navigator mid-ride against a live port, then `--replay` the partial `.nmea` it left. The file must load, the fixes must be the ones that were on the wire, and the loss must be at most the sentence in flight — the flush cadence of §7.6, measured rather than argued |
 | A field failure becomes a test | `tools/ride2fixture.sh LOG ROUTE NAME` turns a log into a `tests/rides/` case, and cross-checks the replayed per-fix trace against the `.tsv` the device itself wrote from the same bytes. They must agree exactly on every route-maths column |
 | **T-LIVE** | 200 s of the real u-blox 7, recorded on the device (§3.1). It carries what no generated fixture does: an empty course field on every epoch, `GLL` and `TXT` sentences, and 15 m of indoor multipath the off-route latch must sit through. Asserted: the latch never fires, `off_m` stays under 40 m and exceeds 10 m somewhere, the heading never moves, the ETA stays unknown, and the drawn position still matches §6.3's closed form to 0.005 m |
-| **T-BASEMAP-OPTIONAL** | the five `nav-*` goldens are rendered with **no** pack and must stay byte-identical, which is the whole claim §6.5 makes for the tile layer. Beside them, the same `nav-tiles` page with no pack and with an unreadable one must be the same frame, and neither may equal the frame with the pack — otherwise "draws nothing" would pass by drawing nothing ever |
+| **T-BASEMAP-OPTIONAL** | the five `nav-*` goldens are rendered with **no** pack and must stay byte-identical, which is the whole claim §6.5 makes for the tile layer. Beside them, the same `nav-tiles` page with no pack and with an unreadable one must be the same frame, and neither may equal the frame with the pack — otherwise "draws nothing" would pass by drawing nothing ever. "No pack" is spelled `--no-basemap`, and that was a correction: the device's own `beepy-nav.conf` names a basemap, the demo path never calls `tiles_bind_route()`, and so the pack was being asked about the Asok state's metres *in its own frame* and drawing whatever happens to be there. The absent half of the pair had quietly stopped being absent. The three frozen MAP states hard-code `NULL` for the same reason |
+| **T-MAP** | the §1.5 page from a headless replay with **no `--route` at all** — the mode nothing else in the suite ran. 5 505 frames render (before this page the loop assumed a route, and `route_snap()` on an empty one indexes a segment that is not there, so "it did not crash" is a real assertion), the breadcrumb grows past 300 points, the drawn position still matches §6.3's closed form, and two frames three minutes apart differ everywhere *except* the hint row — the map moved and the line the rider navigates by did not. Plus `--finite`, which is new: every other assertion here is a comparison and every comparison against NaN is false, so a column that had gone NaN would make `--max`, `--always` and `--monotone-*` all pass |
+| **T-MAP-BASEMAP** | the basemap on the MAP page, whose world frame is the **pack's own reference** rather than a route's first point — the case `tiles_bind_route()` was written for and had never been given. A golden of its own, because a pair that merely said "the frames differ" would pass on streets drawn 200 m out; plus the absent/unreadable pair, plus the assertion that a pack reaches the map and never the `WAITING FOR FIX` frame, which has no position to draw one about |
 | **T-ONEWAY** | 200 seeded random src/dst pairs plus three hand-picked ones over the real Asok graph, with **every hop of every result** checked against the pack's own directed adjacency: zero violations, and 142 of the 200 routable inside a corridor extract (asserted, so the test cannot pass by never routing). The three hand-picked pairs are the ones where the *undirected* shortest path provably rides a oneway backwards — including §1.4's own 824 m reference route, 22 hops the wrong way up Ratchadaphisek — and each is checked **both ways**: illegal on a pack built with `--ignore-oneway`, legal on the real one. Without that second pack the assertion could not fail |
 | **T-ROADS-DETERMINISM** | `tools/mkpack.py` run twice on the same extract is byte-identical and equal to the committed `tests/roads/*.roads`, for the tile packs' reason and one more: T-ONEWAY's three pairs are **node indices**, and they mean nothing if the numbering moves |
 | **T-ROADS-OPTIONAL** | the FIND page with no pack, and with an unreadable one, are the same frame — and neither is the frame with the pack. Unlike the basemap the difference here is the whole page, because a search with nothing to search cannot honestly show a hit; which is what makes the golden evidence about `search.c` and not only about the layout |
@@ -1446,12 +1586,16 @@ purpose.
 | 3 | Off route, alerts, units, zoom and orientation keys, 8 Hz dead reckoning | detour replay; frame timing under `--replay` |
 | 4 | Optional raster basemap and its build tooling | `fbshow --verify` on the panel at three rungs, and T-BASEMAP-OPTIONAL: the pre-basemap goldens are unchanged |
 | 5 | FIND + on-device router (Dijkstra, oneway-aware) + CONFIRM | routed path vs a reference route; oneway violations = 0 |
+| 6 | MAP: where you are, with no route (§1.5) | four goldens, three of them in the design gate, and T-MAP — a whole replay with no `--route` at all |
 
 Phase 5 landed with one surprise worth carrying in this table: the reference
 route it was to be checked against **was itself illegal**, so "routed path vs a
 reference route" became two assertions rather than one (§1.4.3).
 
-Phase 2 is the first genuinely useful build: it navigates.
+Phase 2 is the first genuinely useful build: it navigates. Phase 6 is the one
+that makes it usable *before* you have decided where to go — which, in the
+product owner's words, is "current location in map screen after open beepy-nav
+program", and was the first thing anyone asked for that this program could not do.
 
 ---
 
