@@ -267,6 +267,43 @@ halfway across the screen looks broken; `--zooms 4,6,10` or `--zooms all`
 overrides. A ±2 km corridor around a 4 km route is about **1.1 MB**, and a rung
 the pack does not carry simply draws no streets, exactly as no pack does.
 
+#### Updating the maps
+
+OpenStreetMap changes daily and the packs are a snapshot, so refreshing them is
+one command on the Mac:
+
+```sh
+tools/mkmaps.sh                 # download, rebuild everything, install
+tools/mkmaps.sh --no-download   # reuse the .osm.pbf already downloaded
+tools/mkmaps.sh --no-install    # build only, touch nothing on the device
+```
+
+About 25 minutes, and nearly all of it is the 310 MB download — the rendering
+is seconds. It writes to `maps/`, verifies each pack's digest after the copy,
+and only then moves it into place, so an interrupted transfer never leaves the
+navigator pointed at half a file. **A running navigator holds its packs open;
+restart it to see new data.**
+
+The area it builds is set by four values at the top of the script —
+`HOME_LL`, `HOME_RADIUS`, `COUNTRY`, and the two zoom lists. Change those to
+move it somewhere else. They are in one place on purpose: the fine and coarse
+builds must agree on a projection frame or the merge below refuses them, and
+the script derives that frame from `COUNTRY` rather than trusting anyone to
+retype it.
+
+What comes out, and what each is for:
+
+| file | built from | what it does |
+|---|---|---|
+| `thailand-nav.tiles` | both extracts | the streets drawn under the map, everywhere |
+| `region.roads` | the region extract only | what `F` searches and what routes are computed over |
+
+Note the asymmetry: the **basemap is nationwide, the routing is not**. You can
+see roads 400 km away and cannot route to them, because the graph is cut from
+the region extract. Widening `HOME_PAD` widens what is searchable, at about
+10 MB of pack per 1 000 km² — measured on Greater Bangkok, so take it as an
+upper bound; open country is far cheaper.
+
 #### Detailed at home, coarse across a country — one pack
 
 Only one basemap can be loaded at a time, so "every street near home" and
