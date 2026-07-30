@@ -1,4 +1,5 @@
 /* beepy-nav/src/config.c -- see config.h. */
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,7 @@ cfg_defaults(navcfg_t *c)
     c->north_up = 0;   /* course-up: DESIGN.md 1.1 */
     c->rate_5hz = 0;   /* 6.3 calls it "a refinement rather than a dependency" */
     c->led_alerts = 1; /* 7.5; led.c already copes with an unwritable LED */
+    c->nplace = 0;
     c->routes_dir[0] = '\0';
     c->rides_dir[0] = '\0';  /* 7.6; ridelog_default_dir() decides */
     c->basemap[0] = '\0';    /* 6.5; no pack, and no path to guess  */
@@ -128,6 +130,54 @@ cfg_load(navcfg_t *c, const char *path, int loud)
             else
                 complain(path, lineno, "units must be metric or imperial, not",
                          val);
+        } else if (!strcmp(key, "place")) {
+            /* `place = HOME 13.8851,100.3785`. Repeated, and accumulating
+             * rather than overwriting -- the one key in this file where a
+             * second line adds instead of replacing, because a list of
+             * favourites is what it is for.
+             *
+             * Never fatal, like everything else here: a place that will not
+             * parse warns with its line number and is dropped, and the rest of
+             * the list still loads. A rider with a typo in WORK still gets
+             * HOME. */
+            char nm[CFG_PLACE_NAME];
+            double la, lo;
+            char *sp = val;
+            size_t nl;
+            while (*sp && *sp != ' ' && *sp != '\t')
+                sp++;
+            nl = (size_t)(sp - val);
+            if (!nl || !*sp) {
+                complain(path, lineno, "wants NAME LAT,LON, not", val);
+            } else if (nl >= (size_t)CFG_PLACE_NAME) {
+                complain(path, lineno, "place name is too long", val);
+            } else if (c->nplace >= CFG_PLACES_MAX) {
+                complain(path, lineno, "too many places, ignoring", val);
+            } else {
+                memcpy(nm, val, nl);
+                nm[nl] = '\0';
+                while (*sp == ' ' || *sp == '\t')
+                    sp++;
+                if (sscanf(sp, "%lf , %lf", &la, &lo) != 2 &&
+                    sscanf(sp, "%lf %lf", &la, &lo) != 2) {
+                    complain(path, lineno, "is not LAT,LON", sp);
+                } else if (la < -90.0 || la > 90.0 || lo < -180.0 ||
+                           lo > 180.0) {
+                    /* A swapped pair is the mistake this catches: 100,13 in
+                     * Thailand is a latitude that does not exist, and without
+                     * this it would silently become a place in the ocean. */
+                    complain(path, lineno, "is not a lat,lon on Earth", sp);
+                } else {
+                    size_t i;
+                    for (i = 0; i < nl; i++)
+                        nm[i] = (char)toupper((unsigned char)nm[i]);
+                    snprintf(c->place[c->nplace].name, CFG_PLACE_NAME, "%s",
+                             nm);
+                    c->place[c->nplace].lat = la;
+                    c->place[c->nplace].lon = lo;
+                    c->nplace++;
+                }
+            }
         } else if (!strcmp(key, "routes_dir") || !strcmp(key, "rides_dir") ||
                    !strcmp(key, "basemap") || !strcmp(key, "roads")) {
             /* Four paths, one rule. Not lowercased: on the device's f2fs and

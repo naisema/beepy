@@ -549,6 +549,73 @@ corners of a 15 km box. §1.4's "tens of ms" prediction was close.
   the picker is somewhere a rider goes on purpose rather than somewhere they are
   put on the way in. The key is still not bound inside it.
 
+#### 1.4.6 Saved places — `nav-find-saved.png`
+
+Two destinations get used far more than any others, and typing them every time
+is the kind of small friction that stops a feature being used at all. So the
+config file names them:
+
+```
+place = HOME 13.8851,100.3785
+place = WORK 13.7338,100.5601
+```
+
+Repeated, accumulating, **kept in file order rather than sorted** — the order is
+the rider's, and sorting would quietly overrule it. Up to eight, because the
+FIND page shows four rows and two screens of favourites is already more than
+anyone navigates to by memory; past that, type the name.
+
+**They live on the FIND page's empty state, which was four blank rows.** That is
+the whole of the interface change: press `F` and the list is already there, with
+distance and bearing, before anything is typed. Type, and it becomes the
+ordinary search — with saved places that still match kept at the **top**, above
+the pack's hits and marked with a `*`. Not merged into the ranking: burying
+`HOME` at rank 9 of 29,546 because a soi happens to be nearer would be a search
+that technically worked.
+
+The title bar counts what the page is showing — `2 SAVED` before a key is
+pressed, `163 HITS` after. `0 HITS` over two visible rows would be the page
+calling itself a failure. (Once a query is typed the count is the *pack's*
+matches; the starred rows are the rider's own list and are not in it.)
+
+**It cost no new page, no new key and no new format**, and the reason is §1.4's:
+a `place_t` is already a name, a coordinate, and a distance and bearing from
+wherever the rider is. A saved place is one of those, so the page draws it the
+same, `N`/`P` select it the same, and `ENTER` hands `router_to()` the same three
+fields — reaching the graph through the same nearest-node snap a POI does
+(§1.4). The one thing that had to be shared rather than copied is the *matching
+rule*: `search_name_matches()` is exported from `search.c` so that a name which
+is not in the pack is filtered by exactly the test that a name in it gets. Two
+implementations of "does this match" would drift on the first day someone
+changed one.
+
+**The file is never fatal, here as everywhere in §2.1.** A place that will not
+parse warns with its line number and is dropped, and the rest of the list still
+loads — a rider with a typo in `WORK` still gets `HOME`. A latitude outside
+±90° is refused specifically, because `100,13` in Thailand is a swapped pair and
+without that check it would silently become a place in the Gulf.
+
+**And the first saved place is the map's centre before there has ever been a
+fix** (§1.5). Indoors a receiver may never get one, and the waiting screen was
+blank; now it draws the streets around somewhere the rider named. **No marker** —
+that line is not crossed. Everything else on that screen exists to refuse to
+claim a position, and a chevron over those streets would be exactly the lie the
+argument was about. The map is a picture of a place; `WAITING FOR FIX` above it
+still says nobody knows where the rider is.
+
+That message needed a paper bar behind it, which the empty waiting screen never
+did: ink text over a street grid is ink on ink, and the first render of this
+state was genuinely unreadable. It is 1.1's own treatment for the one thing on a
+page that must not be mistaken for content, and it is drawn *only* when there is
+a map under it — so every frozen golden of the empty state stays byte-identical.
+
+Verification is two goldens — `nav-find-saved` (the list, in file order, before
+a key is pressed) and `nav-map-wait-home` (a map drawn, no marker), neither of
+which the existing `nav-find` and `nav-map-wait` can stand for — plus
+**T-SAVED**: the opened page differs from the same page with no places
+configured, typing keeps a saved place that still matches while bringing pack
+hits in beside it, and `ENTER` routes to a coordinate that is in no pack at all.
+
 ### 1.5 MAP — where you are, with no route — `nav-map.png`
 
 **The product owner's words: "I want current location in map screen after open

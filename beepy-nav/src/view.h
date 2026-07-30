@@ -137,6 +137,12 @@ typedef struct {
     /* Waiting state only: satellites seen, or < 0 when the receiver has not
      * said anything at all yet. */
     int sats;
+    /* Waiting state only: the first saved place (DESIGN.md 1.4.6), in world
+     * metres, to centre the basemap on before there has ever been a fix. 0
+     * leaves the waiting screen exactly as it was -- which is what every
+     * frozen golden and every rider with no saved places gets. */
+    int have_home;
+    double home_e, home_n;
 } livemap_t;
 
 /* The breadcrumb's cap, and what happens when it fills: see view_map.c. It is
@@ -195,6 +201,11 @@ typedef struct {
      * nothing, the page says how much of the pack it cannot show rather than
      * letting the rider conclude the place does not exist. */
     int ndropped;
+    /* How many of the rows above are the rider's saved places (DESIGN.md
+     * 1.4.6) rather than pack hits. They come first, and with no query typed
+     * they are all there is -- which is what the title bar counts, because
+     * "0 HITS" over a list of two would read as a failure. */
+    int nsaved;
 } find_t;
 
 /* The CONFIRM page (DESIGN.md 1.4): the OVERVIEW page's cartography fitted to
@@ -295,6 +306,7 @@ void view_find_demo(cov_t *c, roads_t *g, int zero);
  * proposed rather than under way. */
 void view_confirm_demo(cov_t *c);
 void view_quit_demo(cov_t *c, int riding);
+void view_map_wait_home_demo(cov_t *c, struct tiles *t);
 
 /* The clipping test of DESIGN.md 10: the NAV map at a zoom where the route
  * leaves the view on all four sides. Nothing but the panel may put ink in

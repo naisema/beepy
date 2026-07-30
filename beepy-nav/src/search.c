@@ -550,6 +550,27 @@ hit_before(const place_t *a, const place_t *b)
     return strcmp(a->name, b->name) < 0;
 }
 
+/* 1.4's matching rule, on its own, so that a name which is NOT in the pack --
+ * a saved place from the config (1.4.6) -- is filtered by exactly the same
+ * test as one that is. Two implementations of "does this match" would drift on
+ * the first day someone changed the rule in one of them. */
+int
+search_name_matches(const char *name, const char *query)
+{
+    char tok[MAX_TOKENS][MAX_TOKEN];
+    int ntok, t;
+
+    if (!name || !*name)
+        return 0;
+    ntok = tokenise(query, tok);
+    if (ntok <= 0)
+        return 0;
+    for (t = 0; t < ntok; t++)
+        if (!strstr(name, tok[t]))
+            return 0;
+    return 1;
+}
+
 int
 search_places(const roads_t *g, const char *query, double from_e, double from_n,
               place_t *out, int max)
@@ -572,6 +593,10 @@ search_places(const roads_t *g, const char *query, double from_e, double from_n,
         unsigned int k;
         place_t h;
 
+        /* The same test search_name_matches() exports, spelled inline only
+         * because the tokens are already split and re-splitting them once per
+         * name in the pack would be 29 546 needless tokenise() calls. The two
+         * must agree; that they do is asserted in tests/test_search.c. */
         for (t = 0; t < ntok; t++)
             if (!strstr(nm, tok[t]))
                 break;

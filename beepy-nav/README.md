@@ -156,7 +156,7 @@ passed, total distance, distance and time remaining.
 | Key | Action |
 |---|---|
 | `Tab` | switch page: NAV ↔ OVERVIEW (nothing on MAP — there is no route to overview) |
-| `F` | find a destination — see below; says `NO ROAD PACK` if there is none |
+| `F` | find a destination — opens on your saved places; says `NO ROAD PACK` if there is no pack |
 | `R` | pick a route — from MAP, or to change route mid-ride |
 | `Z` / `X` | zoom the map out / in (switches to manual zoom) |
 | `A` | back to automatic zoom (on MAP: back to the 6 m/px default) |
@@ -231,7 +231,11 @@ routes_dir = ~/routes   # what the panel chooser lists
 rides_dir  = ~/rides    # where ride logs go
 basemap    =            # empty: no streets    (--basemap F / --no-basemap)
 roads      =            # empty: F does nothing (--roads F / --no-roads)
+place      =            # repeats: NAME LAT,LON -- see Saving Home and Work
 ```
+
+`place` is the one key here that **accumulates** rather than replaces: each line
+adds another saved destination, up to eight, kept in the order you wrote them.
 
 An unknown key or a malformed line is a warning naming the line number, never
 a failure to start.
@@ -385,6 +389,31 @@ proposed route drawn whole, with its length, an estimate and the number of
 turns, against `ENTER = GO` and `Q = CANCEL`. Go, and it becomes an ordinary
 ride: the same NAV page, the same cues, the same ride log. A route you searched
 for and a GPX you downloaded are the same thing from that point on.
+
+### Saving Home and Work
+
+Two places get used more than all the others, so name them in the config and
+they are always one keypress away:
+
+```
+place = HOME 13.8851,100.3785
+place = WORK 13.7338,100.5601
+```
+
+Press `F` and they are **already listed**, with distance and bearing, before you
+type anything — the page used to open blank. Start typing and it becomes the
+ordinary search, with any saved place that still matches kept at the top and
+marked `*`. Up to eight of them, and the order in the file is the order on
+screen, so put the one you use most first.
+
+The **first** one is also where the map centres before the receiver has a fix.
+Indoors it may never get one, and the waiting screen used to be empty; now it
+shows the streets around home with `WAITING FOR FIX` over them — and **no
+position marker**, because nobody knows where you are yet.
+
+Getting the coordinates: stand somewhere and read them off the MAP page's bottom
+row, or right-click the spot in any online map. Latitude first. A typo warns on
+startup with its line number and that one place is dropped; the rest still load.
 
 **What you can search for:** street names *and* destinations — schools,
 stations, markets, shops, hospitals, parks, temples. Anything OpenStreetMap

@@ -114,6 +114,47 @@ map_wait(cov_t *c, const livemap_t *m)
     char buf[32];
     double cy = (H - MAPP_STRIP_WAIT) / 2.0;
 
+    /* DESIGN.md 1.4.6: with a saved place to centre on, the streets are drawn
+     * even though there is no fix -- indoors a receiver may never get one, and
+     * an rider who knows the map around home can at least see where the
+     * program thinks home is.
+     *
+     * NO MARKER, and that is the line this page will not cross. Everything
+     * else on the waiting screen exists to refuse to claim a position, and a
+     * chevron over these streets would be exactly the lie that argument was
+     * about. The map is a picture of somewhere the rider named; the WAITING
+     * FOR FIX above it still says nobody knows where they are. */
+    if (m->tiles && m->have_home) {
+        tileview_t tv;
+        tv.mpp = m->mpp_manual > 0.0 ? m->mpp_manual : MAP_MPP_DEFAULT;
+        tv.cx = W / 2.0;
+        tv.cy = cy;
+        tv.theta = 0.0; /* north-up: there is no course to be up */
+        tv.org_e = m->home_e;
+        tv.org_n = m->home_n;
+        tv.x0 = 0;
+        tv.y0 = 0;
+        tv.x1 = W - 1;
+        tv.y1 = H - MAPP_STRIP_WAIT - 1;
+        tiles_blit(c, m->tiles, &tv);
+    }
+
+    /* Over a drawn map the message needs a floor to stand on: ink text on a
+     * street grid is ink on ink, and the first render of this state was
+     * genuinely unreadable. A PAPER bar, which is 1.1's own treatment for the
+     * one thing on a page that must not be mistaken for content -- and it
+     * doubles as the separation between "a picture of somewhere" and "a
+     * sentence about what is not known". Sized to the wider line so it is the
+     * same bar whether or not a satellite count has appeared yet.
+     *
+     * Not drawn without a map under it: on the empty waiting screen a white
+     * bar on white is invisible, and every frozen golden of that state stays
+     * byte-identical because this whole block is skipped. */
+    if (m->tiles && m->have_home) {
+        int tw = cov_text_w(WAIT, 3);
+        cov_fill_rect(c, (W - tw) / 2.0 - 8, cy - 32, (W + tw) / 2.0 + 8,
+                      cy + 30, COV_PAPER);
+    }
     cov_text(c, (W - cov_text_w(WAIT, 3)) / 2, (int)(cy - 24), WAIT, 3,
              COV_INK);
     /* The satellite count only when the receiver is talking at all: a count of
@@ -287,6 +328,30 @@ view_map_wait_demo(cov_t *c)
      * point of the state: a page with a position it is not allowed to use. */
     m.have_pos = 0;
     m.tiles = NULL;
+    m.have_home = 0;
+    view_map(c, &m);
+}
+
+/* The same waiting state with a saved place to centre on (DESIGN.md 1.4.6).
+ *
+ * A state of its own rather than a flag, for view_map_wait_demo()'s reason
+ * turned around: that golden's whole claim is that NO map is drawn, and this
+ * one's is that a map IS -- and still no marker. Neither can stand for the
+ * other, and a single frame could only assert one of them.
+ *
+ * The centre is the pack's own origin, so the streets it draws are the ones
+ * mktiles.py cut around and the frame is reproducible from the fixture alone.
+ */
+void
+view_map_wait_home_demo(cov_t *c, struct tiles *t)
+{
+    livemap_t m;
+    map_demo_state(&m);
+    m.have_pos = 0;
+    m.tiles = t;
+    m.have_home = 1;
+    m.home_e = 0.0;
+    m.home_n = 0.0;
     view_map(c, &m);
 }
 

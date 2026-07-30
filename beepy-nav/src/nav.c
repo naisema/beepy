@@ -145,6 +145,7 @@ enum {
     PAGE_CONFIRM,
     PAGE_QUIT,
     PAGE_QUIT_MAP,
+    PAGE_MAP_WAIT_HOME,
     PAGE_CLIPTEST,
     PAGE_CLIPTEST_PANEL,
     PAGE_CHOOSER
@@ -262,6 +263,14 @@ static int g_have_odo;
  * because the QUIT page reads it: "RIDE LOG SAVED" is the fact that decides
  * whether ending the ride loses anything, and the page is rendered well above
  * the point the log used to be declared. */
+/* The rider's saved places (DESIGN.md 1.4.6). At file scope beside the packs
+ * and for the same reason: they outlive every route, R zeroes app_t, and the
+ * FIND page wants them on a page opened long after main() handed control to
+ * the ride loop. Copied out of navcfg_t rather than pointed at, because that
+ * lives on main()'s stack. */
+static cfgplace_t g_place[CFG_PLACES_MAX];
+static int g_nplace;
+
 static ridelog_t RIDELOG;
 
 static double g_crumb[2 * CRUMB_MAX]; /* lat, lon pairs, oldest first */
@@ -375,6 +384,9 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
         break;
     case PAGE_QUIT_MAP:
         view_quit_demo(cov, 0);
+        break;
+    case PAGE_MAP_WAIT_HOME:
+        view_map_wait_home_demo(cov, g_tiles);
         break;
     case PAGE_CLIPTEST:
         view_cliptest(cov);
@@ -521,6 +533,7 @@ typedef struct {
     int qn;
     place_t hit[FIND_ROWS];
     int nhits;  /* the TOTAL, which is what the title bar shows */
+    int nsaved; /* how many of the rows above are saved places (1.4.6)  */
     int nshown; /* how many of them are on screen               */
     int sel;
     /* What CONFIRM is drawing: a fully prepared route_t, so the page it is
@@ -978,6 +991,16 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         /* "The satellite count if the receiver is talking at all" -- epoch_seq
          * counts epochs seen, fix or not, so this is exactly that condition. */
         lm.sats = a->epoch_seq > 0 ? a->fx.sats : -1;
+        /* The first saved place, for the waiting screen (1.4.6). First and not
+         * "the one called HOME": the file's order is the rider's order, and a
+         * program that searched for a magic name would silently do nothing for
+         * anyone who called theirs FLAT or MUM. */
+        lm.have_home = 0;
+        if (g_nplace > 0 && g_have_ref) {
+            geo_project(g_ref_lat, g_ref_lon, g_place[0].lat, g_place[0].lon,
+                        &lm.home_e, &lm.home_n);
+            lm.have_home = 1;
+        }
         view_map(cov, &lm);
         cov_resolve(cov, cv);
         return;
@@ -991,6 +1014,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         f.sel = a->sel;
         f.units = a->ctx.units;
         f.ndropped = roads_ndropped(g_roads);
+        f.nsaved = a->nsaved;
         view_find(cov, &f);
         cov_resolve(cov, cv);
         return;
@@ -1798,6 +1822,43 @@ find_origin(const app_t *a, double *e, double *n)
         *e = *n = 0.0;
 }
 
+/* One saved place (1.4.6) rendered as an ordinary search hit.
+ *
+ * A place_t is exactly what a saved place already is -- a name, a coordinate,
+ * and a distance and bearing from wherever the rider is -- so nothing
+ * downstream needs to know which list a row came from. The FIND page draws it
+ * the same, N/P select it the same, and ENTER hands router_to() the same three
+ * fields. That is why favourites cost no new page and no new key.
+ *
+ * `place` is -1: it indexes the pack's own table and a saved place is not in
+ * it. Nothing reads that field for routing; it is set for the same reason the
+ * pack sets it, so a debugger can tell the two apart. */
+static void
+saved_as_hit(const app_t *a, const cfgplace_t *cp, double from_e, double from_n,
+             place_t *out)
+{
+    double e, n;
+
+    /* Through the pack's own projection when there is one, so a saved place
+     * and a searched one are measured in the same frame -- otherwise HOME and
+     * the street outside it would disagree about how far away they are. With
+     * no pack there is nothing to route over anyway, and geo_project() from
+     * the world reference keeps the distance honest for the display. */
+    if (g_roads)
+        roads_project(g_roads, cp->lat, cp->lon, &e, &n);
+    else
+        geo_project(g_ref_lat, g_ref_lon, cp->lat, cp->lon, &e, &n);
+    out->name = cp->name;
+    out->e = e;
+    out->n = n;
+    out->lat = cp->lat;
+    out->lon = cp->lon;
+    out->dist_m = hypot(e - from_e, n - from_n);
+    out->bearing = atan2(e - from_e, n - from_n);
+    out->place = -1;
+    (void)a;
+}
+
 /* Re-run the search. Called on every keystroke that changes the query, which is
  * what makes this type-to-filter and not type-then-search: the whole cost is
  * one pass over the name table (DESIGN.md 1.4). */
@@ -1805,9 +1866,29 @@ static void
 find_update(app_t *a)
 {
     double e, n;
+    int i, ns = 0;
+
     find_origin(a, &e, &n);
-    a->nhits = search_places(g_roads, a->query, e, n, a->hit, FIND_ROWS);
-    a->nshown = a->nhits < FIND_ROWS ? a->nhits : FIND_ROWS;
+    /* Saved places first, and above the pack's own hits rather than mixed into
+     * their ranking. They are the rider's list: two of them at the top of an
+     * empty page is the whole feature, and burying HOME at rank 9 of 29 546
+     * because a soi happens to be nearer would be a search that technically
+     * worked. An EMPTY query matches nothing in the pack (search.h) but shows
+     * every saved place -- which is what fills a page that used to open blank.
+     */
+    for (i = 0; i < g_nplace && ns < FIND_ROWS; i++) {
+        if (a->qn > 0 && !search_name_matches(g_place[i].name, a->query))
+            continue;
+        saved_as_hit(a, &g_place[i], e, n, &a->hit[ns]);
+        ns++;
+    }
+    a->nsaved = ns;
+    a->nhits = search_places(g_roads, a->query, e, n, a->hit + ns,
+                             FIND_ROWS - ns);
+    /* The title counts what the page is showing. With no query typed there is
+     * nothing to have hit, so it counts the saved list instead and says so --
+     * "2 SAVED" rather than a "0 HITS" that would read as a failure. */
+    a->nshown = ns + (a->nhits < FIND_ROWS - ns ? a->nhits : FIND_ROWS - ns);
     if (a->sel >= a->nshown)
         a->sel = a->nshown > 0 ? a->nshown - 1 : 0;
 }
@@ -2850,6 +2931,8 @@ main(int argc, char **argv)
         cfg_default_path(cfgpath, sizeof cfgpath);
         cfg_load(&cfg, cfgpath, 0);
     }
+    memcpy(g_place, cfg.place, sizeof g_place);
+    g_nplace = cfg.nplace;
 
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -2889,6 +2972,8 @@ main(int argc, char **argv)
                 page = PAGE_QUIT;
             else if (!strcmp(p, "quit-map"))
                 page = PAGE_QUIT_MAP;
+            else if (!strcmp(p, "map-wait-home"))
+                page = PAGE_MAP_WAIT_HOME;
             else if (!strcmp(p, "cliptest"))
                 page = PAGE_CLIPTEST;
             else if (!strcmp(p, "cliptest-panel"))

@@ -83,7 +83,14 @@ view_find(cov_t *c, const find_t *f)
 
     cov_fill_rect(c, 0, 0, W - 1, FIND_TITLE_H - 1, COV_INK);
     cov_text(c, 6, 5, "FIND", 2, COV_PAPER);
-    snprintf(buf, sizeof buf, "%d HIT%s", f->nhits, f->nhits == 1 ? "" : "S");
+    /* What the page is showing, which before a key is pressed is the saved
+     * list and not a search. "0 HITS" over two visible rows would be the page
+     * calling itself a failure. */
+    if (f->query && !*f->query && f->nsaved > 0)
+        snprintf(buf, sizeof buf, "%d SAVED", f->nsaved);
+    else
+        snprintf(buf, sizeof buf, "%d HIT%s", f->nhits,
+                 f->nhits == 1 ? "" : "S");
     rtext(c, W - 6, 5, buf, 2, COV_PAPER);
 
     /* The query, in the 24 px table of DESIGN.md 5.2's mechanism (see
@@ -104,7 +111,12 @@ view_find(cov_t *c, const find_t *f)
         if (on)
             cov_fill_rect(c, 0, y - FIND_SEL_UP, W - 1, y + FIND_SEL_DN,
                           COV_INK);
-        snprintf(buf, sizeof buf, "%.*s", FIND_NAME_CHARS,
+        /* A star on the rider's own places, so a list that mixes them with
+         * pack hits -- which is what typing does -- still says which is which.
+         * It costs two characters of the name, and the names people save are
+         * short by construction: they chose them. */
+        snprintf(buf, sizeof buf, "%s%.*s", i < f->nsaved ? "* " : "",
+                 i < f->nsaved ? FIND_NAME_CHARS - 2 : FIND_NAME_CHARS,
                  f->hit[i].name ? f->hit[i].name : "");
         cov_text(c, 8, y, buf, 2, ink);
         {

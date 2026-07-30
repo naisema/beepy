@@ -115,6 +115,12 @@ const char *roads_place_name(const roads_t *g, int i);
  * title bar's number a "live hit count" and a count that stops at the size of
  * the visible list is not one -- the mockup's own hit count was capped at its
  * limit, and that is the one place this port does not follow it. */
+/* 1.4's matching rule as a predicate, for names that are not in the pack --
+ * the saved places of 1.4.6. Same tokenise-and-substring test search_places()
+ * applies, exported rather than copied. An empty query matches nothing, which
+ * is what makes "no query" and "no match" the same answer here. */
+int search_name_matches(const char *name, const char *query);
+
 int search_places(const roads_t *g, const char *query, double from_e,
                   double from_n, place_t *out, int max);
 

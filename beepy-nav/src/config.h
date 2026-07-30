@@ -20,6 +20,19 @@
 #include <stddef.h>
 
 #define CFG_PATH_MAX 256
+/* How many saved places the file may name. Eight because the FIND page shows
+ * four rows at a time and two screens of them is already more than anyone
+ * navigates to by memory -- past that, type the name. */
+#define CFG_PLACES_MAX 8
+#define CFG_PLACE_NAME 20
+
+/* A place worth keeping: DESIGN.md 1.4.6. Name is uppercased on the way in,
+ * because everything searchable on this device is uppercase and a saved place
+ * sits in the same list as the pack's own names. */
+typedef struct {
+    char name[CFG_PLACE_NAME];
+    double lat, lon;
+} cfgplace_t;
 
 typedef struct {
     int units;      /* UNITS_METRIC (default) / UNITS_IMPERIAL   */
@@ -46,6 +59,14 @@ typedef struct {
      * on the panel and does nothing else -- the same shape as basemap above,
      * and for the same reason: nothing can invent an extract. */
     char roads[CFG_PATH_MAX];
+    /* Saved places (DESIGN.md 1.4.6): `place = HOME 13.8851,100.3785`, one per
+     * line, kept IN FILE ORDER rather than sorted. The order is the rider's --
+     * whatever they put first is what the FIND page offers first, and sorting
+     * would quietly overrule that. The first one is also the map's centre
+     * before there has ever been a fix (1.5), which is why "home first" is
+     * worth documenting rather than enforcing. */
+    cfgplace_t place[CFG_PLACES_MAX];
+    int nplace;
 } navcfg_t;
 
 void cfg_defaults(navcfg_t *c);

@@ -41,6 +41,10 @@ ROADOSM    ?= beepy-nav/osm-asok.json
 ROADNAMESIN ?= beepy-nav/tests/roads/names.json
 ROADPOIS   ?= beepy-nav/tests/roads/pois.json
 ROADREF    ?= 13.740,100.560
+# The saved-places fixture (DESIGN.md 1.4.6). A config file and not flags,
+# because the feature IS a config file -- a test that set the places another
+# way would not be testing the thing riders use.
+SAVEDCONF  ?= beepy-nav/tests/saved.conf
 
 DEVICE  ?= beepy@beepy.local
 SSHKEY  ?= $(HOME)/.ssh/id_rsa
@@ -138,6 +142,15 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 #	loaded, and 1.6's whole claim is that the page tells the truth about what
 #	is being left -- a golden of the riding state would say nothing about the
 #	other truth.
+#	DESIGN.md 1.4.6, and two states neither of which the other can stand for:
+#	the FIND page before a key is pressed, which used to be four blank rows and
+#	is now the rider's own list; and the waiting screen with somewhere to
+#	centre on, whose claim is that a map IS drawn where nav-map-wait's is that
+#	one is NOT -- and that neither draws a marker.
+	./beepy-nav/beepy-nav --demo --page find --config $(SAVEDCONF) \
+		--roads $(ROADPACK) --dump out-nav-find-saved.fb
+	./beepy-nav/beepy-nav --demo --page map-wait-home \
+		--basemap $(TILEPACK) --dump out-nav-map-wait-home.fb
 	./beepy-nav/beepy-nav --demo --page quit     --dump out-nav-quit.fb
 	./beepy-nav/beepy-nav --demo --page quit-map --dump out-nav-quit-map.fb
 	cmp goldens/nav-turn.fb     out-nav-turn.fb
@@ -154,6 +167,8 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	cmp goldens/nav-find.fb     out-nav-find.fb
 	cmp goldens/nav-find-none.fb out-nav-find-none.fb
 	cmp goldens/nav-confirm.fb  out-nav-confirm.fb
+	cmp goldens/nav-find-saved.fb out-nav-find-saved.fb
+	cmp goldens/nav-map-wait-home.fb out-nav-map-wait-home.fb
 	cmp goldens/nav-quit.fb     out-nav-quit.fb
 	cmp goldens/nav-quit-map.fb out-nav-quit-map.fb
 #	The five goldens above nav-tiles are rendered with NO pack, and that is
@@ -243,6 +258,10 @@ endif
 	./beepy-nav/beepy-nav --demo --page find-none \
 		--roads $(ROADPACK) --dump goldens/nav-find-none.fb
 	./beepy-nav/beepy-nav --demo --page confirm --dump goldens/nav-confirm.fb
+	./beepy-nav/beepy-nav --demo --page find --config $(SAVEDCONF) \
+		--roads $(ROADPACK) --dump goldens/nav-find-saved.fb
+	./beepy-nav/beepy-nav --demo --page map-wait-home \
+		--basemap $(TILEPACK) --dump goldens/nav-map-wait-home.fb
 	./beepy-nav/beepy-nav --demo --page quit     --dump goldens/nav-quit.fb
 	./beepy-nav/beepy-nav --demo --page quit-map --dump goldens/nav-quit-map.fb
 	@echo "goldens regenerated - review the diff before committing"
@@ -545,6 +564,38 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK)
 		--mask 0,216,127,239 --max-px 0
 	! python3 tools/fbdiff.py $(RDIR)/nopack-a.fb $(RDIR)/plain-a.fb --max-px 0
 	python3 tools/fbdiff.py $(RDIR)/nopack-b.fb $(RDIR)/plain-b.fb --max-px 0
+	@echo "--- T-SAVED: F opens on the rider's own list, and routes to it"
+#	DESIGN.md 1.4.6. Three claims, and the third is the one that makes the
+#	feature worth its config key: the page that used to open blank now opens on
+#	the saved list, typing turns it back into a search WITHOUT losing a saved
+#	place that still matches, and ENTER routes to a coordinate that is in no
+#	pack at all -- the same off-graph snap T-FIND-POI asserts, reached a
+#	different way.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
+		--config $(SAVEDCONF) --roads $(ROADPACK) \
+		--key 10:f --dump-at 12:$(RDIR)/saved-list.fb \
+		--key 14:w --key 15:o --key 16:r \
+		--dump-at 18:$(RDIR)/saved-typed.fb \
+		--key 20:enter --key 22:enter 2> $(RDIR)/saved.log
+#	The empty page is not empty any more -- against the same page with no
+#	places configured, which is the only comparison that isolates the feature
+#	from the layout.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
+		--roads $(ROADPACK) --key 10:f \
+		--dump-at 12:$(RDIR)/saved-none.fb 2>/dev/null
+	python3 tools/fbdiff.py $(RDIR)/saved-list.fb $(RDIR)/saved-none.fb \
+		--min-px 500
+#	Typing keeps the saved place that matches and brings pack hits in beside
+#	it, so the two frames differ -- a filter that dropped WORK would look
+#	identical to one that never had it.
+	python3 tools/fbdiff.py $(RDIR)/saved-typed.fb $(RDIR)/saved-list.fb \
+		--min-px 500
+	grep -q "routed to WORK" $(RDIR)/saved.log
+	grep -q "beepy-nav: WORK -- " $(RDIR)/saved.log
+#	The ORDER -- HOME above WORK, which is the file's order and not
+#	alphabetical -- is frozen by goldens/nav-find-saved.fb and needs no
+#	assertion of its own here. A `cmp` against a live replay frame would only
+#	be comparing distances that legitimately differ.
 	@echo "--- T-QUIT-CONFIRM: Q asks, and a cancel gives the frame back"
 #	DESIGN.md 1.6. Q used to end the program on one press. The claim now is
 #	three-part and each part can fail on its own: Q opens a page (so the frame
