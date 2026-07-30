@@ -132,22 +132,49 @@ typedef struct {
      * approaching one cue, so GPS jitter on a step boundary cannot flicker it.
      * Reset when the announced cue changes. */
     int shown_q, shown_cue;
+
+    /* Which ladder the latch is counting on. A units toggle mid-ride changes
+     * the scale under it, so it has to be reset -- 400 (metres) is not a value
+     * 1312 (feet) may only decrease from. nav_set_units() does both. */
+    int units;
 } navctx_t;
 
 /* --------------------------------------------------- countdown (1.1.1) */
+
+/* Which ladder, and which unit the quantised value is counted in. Everything
+ * INSIDE the program is metres; units are a display decision and they reach no
+ * further than the countdown ladder and the strings. */
+enum { UNITS_METRIC = 0, UNITS_IMPERIAL = 1 };
+
+#define GEO_FT_PER_M 3.280839895013123
+#define GEO_FT_PER_MILE 5280
 
 /* Distance the rider is shown, not the distance measured: floored onto a
  * ladder that coarsens with distance -- 100 m steps beyond a kilometre, 50 m
  * from 200 m out, 10 m inside that. Coarse where there is nothing to do yet,
  * fine where you are about to act. The last few metres hold at the bottom
- * rung; the arrow is the instruction by then. */
-#define CUE_FLOOR 10
+ * rung; the arrow is the instruction by then.
+ *
+ * The imperial ladder keeps that SHAPE rather than converting the numbers
+ * (DESIGN.md 1.1.1's second table): 0.1 mi steps beyond a mile, 100 ft from
+ * 500 ft out, 50 ft inside that, holding at 50 ft. Converting 100 m would give
+ * a 328 ft step, which is not a number anybody reads at a glance. */
+#define CUE_FLOOR 10    /* metres */
+#define CUE_FLOOR_FT 50 /* feet   */
 
+/* Returns metres under UNITS_METRIC and FEET under UNITS_IMPERIAL -- the
+ * caller formats and labels it (view_nav.c's fmt_dist). */
+int cue_quantise_u(double metres, int units);
+
+/* The metric ladder alone; what mockup.py's cue_quantise() implements, and
+ * what the frozen demo frames are drawn from. */
 int cue_quantise(double metres);
 
 /* Quantise and latch against jitter: monotone non-increasing while `cue_i`
  * stays put, reset when it changes. `shown`/`shown_cue` are the caller's
  * latch state. Returns the value to display. */
+int cue_latch_u(double metres, int cue_i, int *shown, int *shown_cue,
+                int units);
 int cue_latch(double metres, int cue_i, int *shown, int *shown_cue);
 
 /* ------------------------------------------------------------------ setup */
@@ -176,6 +203,13 @@ int route_load(const char *path, route_t *r, char *err, size_t errsz);
 
 void nav_init(navctx_t *ctx);
 void nav_reset(nav_t *nv);
+
+/* Switch ladders and reset the countdown latch. Idempotent. */
+void nav_set_units(navctx_t *ctx, int units);
+
+/* Re-run just the countdown of route_progress() -- what a units toggle needs
+ * between fixes, without disturbing the ETA ring or the off-route latch. */
+void route_countdown_refresh(const route_t *r, navctx_t *ctx, nav_t *nv);
 
 /* DESIGN.md 7.2: project onto the segments in a +/-100-point window around
  * the last match, widening to the whole route on the first fix or after 30 s

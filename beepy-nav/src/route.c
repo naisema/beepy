@@ -296,6 +296,18 @@ nav_init(navctx_t *ctx)
 }
 
 void
+nav_set_units(navctx_t *ctx, int units)
+{
+    if (ctx->units == units)
+        return;
+    ctx->units = units;
+    /* The latch is monotone within one ladder and meaningless across two: a
+     * shown 400 (metres) would forbid 1312 (feet) forever. -1 is "no cue yet",
+     * which re-seeds it on the next evaluation. */
+    ctx->shown_cue = -1;
+}
+
+void
 nav_reset(nav_t *nv)
 {
     memset(nv, 0, sizeof *nv);
@@ -424,9 +436,26 @@ route_cue_ahead(const route_t *r, nav_t *nv)
 /* -------------------------------------------------- countdown (1.1.1) */
 
 int
-cue_quantise(double metres)
+cue_quantise_u(double metres, int units)
 {
     int m;
+
+    if (units == UNITS_IMPERIAL) {
+        int ft;
+        if (!(metres > 0.0))
+            return CUE_FLOOR_FT;
+        ft = (int)(metres * GEO_FT_PER_M); /* floor, as the metric rung does */
+        /* The same three-rung shape as below, in the units a rider who thinks
+         * in feet actually reads: tenths of a mile beyond a mile (528 ft), a
+         * hundred feet from five hundred out, fifty inside that. */
+        if (ft >= GEO_FT_PER_MILE)
+            return ft - ft % (GEO_FT_PER_MILE / 10);
+        if (ft >= 500)
+            return ft - ft % 100;
+        if (ft >= CUE_FLOOR_FT)
+            return ft - ft % 50;
+        return CUE_FLOOR_FT;
+    }
 
     if (!(metres > 0.0))
         return CUE_FLOOR;
@@ -444,9 +473,15 @@ cue_quantise(double metres)
 }
 
 int
-cue_latch(double metres, int cue_i, int *shown, int *shown_cue)
+cue_quantise(double metres)
 {
-    int q = cue_quantise(metres);
+    return cue_quantise_u(metres, UNITS_METRIC);
+}
+
+int
+cue_latch_u(double metres, int cue_i, int *shown, int *shown_cue, int units)
+{
+    int q = cue_quantise_u(metres, units);
 
     if (cue_i != *shown_cue) {
         *shown_cue = cue_i;
@@ -458,6 +493,12 @@ cue_latch(double metres, int cue_i, int *shown, int *shown_cue)
     if (q < *shown)
         *shown = q;
     return *shown;
+}
+
+int
+cue_latch(double metres, int cue_i, int *shown, int *shown_cue)
+{
+    return cue_latch_u(metres, cue_i, shown, shown_cue, UNITS_METRIC);
 }
 
 /* --------------------------------------------------------------- progress */
@@ -514,13 +555,21 @@ route_progress(const route_t *r, navctx_t *ctx, double now, nav_t *nv)
         nv->eta = 0;
     }
 
+    route_countdown_refresh(r, ctx, nv);
+}
+
+void
+route_countdown_refresh(const route_t *r, navctx_t *ctx, nav_t *nv)
+{
     /* What the panel shows: quantised and latched, never the raw metres. */
-    nv->cue_q = cue_latch(nv->cue_m, nv->cue_i, &ctx->shown_q, &ctx->shown_cue);
+    nv->cue_q = cue_latch_u(nv->cue_m, nv->cue_i, &ctx->shown_q,
+                            &ctx->shown_cue, ctx->units);
     /* The THEN gap is cue-to-cue, so it does not count down and needs no
      * latch -- only the same ladder, so the two rows read alike. */
     if (nv->cue_i >= 0 && nv->cue_i + 1 < r->ncue)
-        nv->then_q = cue_quantise(r->cue[nv->cue_i + 1].along_m
-                                  - r->cue[nv->cue_i].along_m);
+        nv->then_q = cue_quantise_u(r->cue[nv->cue_i + 1].along_m
+                                        - r->cue[nv->cue_i].along_m,
+                                    ctx->units);
     else
-        nv->then_q = CUE_FLOOR;
+        nv->then_q = ctx->units == UNITS_IMPERIAL ? CUE_FLOOR_FT : CUE_FLOOR;
 }
