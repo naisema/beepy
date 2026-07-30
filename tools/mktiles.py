@@ -230,6 +230,27 @@ class Corridor:
         return False
 
 
+class Box:
+    """
+    A rectangular region, in metres, with Corridor's interface.
+
+    A corridor is the right shape for one ride and the wrong shape for an area:
+    cutting a province with --route needs a fake GPX and a half-width wider than
+    the province, which is how home.tiles was built and why its corners were
+    empty. This is the honest alternative -- an explicit extent, no route.
+    """
+
+    def __init__(self, min_e, min_n, max_e, max_n):
+        self.b = (min_e, min_n, max_e, max_n)
+
+    def near(self, p):
+        min_e, min_n, max_e, max_n = self.b
+        return min_e <= p[0] <= max_e and min_n <= p[1] <= max_n
+
+    def bounds(self):
+        return self.b
+
+
 # ----------------------------------------------------------------- the pack
 
 def pick_zooms(corridor_m):
@@ -306,28 +327,37 @@ def build_zoom(ways_en, mpp, region, verbose):
         by1 = max(p[1] for p in chain)
         chains.append((wgt, chain, bx0, by0, bx1, by1))
 
+    # Bucket each chain into the tiles its bounding box spans, so a tile only
+    # ever looks at ways that can reach it.
+    #
+    # The obvious loop -- every tile against every way -- is fine for a route
+    # corridor and hopeless for a country: a nationwide 15 m/px rung is about
+    # 100k tiles against 100k ways, ten billion bbox tests, hours of Python.
+    # This is the same rejection test, done once per way instead of once per
+    # (way, tile) pair. A long motorway registers in many buckets, which is the
+    # cost, and it is bounded by the road's own length.
+    buckets = {}
+    for item in chains:
+        wgt, chain, bx0, by0, bx1, by1 = item
+        pad = wgt  # a 2 px line reaches a pixel past its centreline
+        for ty in range((by0 - pad) // TILE_H, (by1 + pad) // TILE_H + 1):
+            for tx in range((bx0 - pad) // TILE_W, (bx1 + pad) // TILE_W + 1):
+                if tx0 <= tx <= tx1 and ty0 <= ty <= ty1:
+                    buckets.setdefault((tx, ty), []).append(item)
+
     tiles = {}
-    for iy in range(ny):
-        for ix in range(nx):
-            ox, oy = (tx0 + ix) * TILE_W, (ty0 + iy) * TILE_H
-            img = None
-            draw = None
-            for wgt, chain, bx0, by0, bx1, by1 in chains:
-                pad = wgt  # a 2 px line reaches a pixel past its centreline
-                if (bx1 + pad < ox or bx0 - pad >= ox + TILE_W or
-                        by1 + pad < oy or by0 - pad >= oy + TILE_H):
-                    continue
-                if img is None:
-                    img = Image.new("1", (TILE_W, TILE_H), 0)
-                    draw = ImageDraw.Draw(img)
-                draw.line([(x - ox, y - oy) for x, y in chain], fill=1,
-                          width=wgt, joint="curve" if wgt > 1 else None)
-            if img is None:
-                continue
-            raw = img.tobytes()
-            if not any(raw):
-                continue
-            tiles[(ix, iy)] = raw
+    for (tx, ty), here in buckets.items():
+        ix, iy = tx - tx0, ty - ty0
+        ox, oy = tx * TILE_W, ty * TILE_H
+        img = Image.new("1", (TILE_W, TILE_H), 0)
+        draw = ImageDraw.Draw(img)
+        for wgt, chain, bx0, by0, bx1, by1 in here:
+            draw.line([(x - ox, y - oy) for x, y in chain], fill=1,
+                      width=wgt, joint="curve" if wgt > 1 else None)
+        raw = img.tobytes()
+        if not any(raw):
+            continue
+        tiles[(ix, iy)] = raw
     if verbose:
         print(f"  {mpp:6.1f} m/px  grid {nx}x{ny} at ({tx0},{ty0})  "
               f"{len(tiles)} tiles", file=sys.stderr)
@@ -406,6 +436,14 @@ def main(argv=None):
     ap.add_argument("-o", "--out", help="pack to write")
     ap.add_argument("--corridor", type=float, default=2000.0,
                     metavar="M", help="corridor half-width, metres (2000)")
+    ap.add_argument("--bbox", metavar="LAT0,LON0,LAT1,LON1",
+                    help="cut a rectangle instead of a route corridor -- what "
+                         "an area pack wants (no --route needed)")
+    ap.add_argument("--ref", metavar="LAT,LON",
+                    help="centre of a square region, with --radius; the "
+                         "projection reference either way")
+    ap.add_argument("--radius", type=float, default=None, metavar="M",
+                    help="half-side of the --ref square, metres")
     ap.add_argument("--zooms", default=None, metavar="LIST",
                     help="comma-separated m/px, or 'all'; default follows "
                          "--corridor (see pick_zooms)")
@@ -416,33 +454,62 @@ def main(argv=None):
     if a.info:
         info(a.info)
         return 0
-    if not (a.osm and a.route and a.out):
-        ap.error("--osm, --route and -o are all required")
+    nsel = sum(1 for x in (a.route, a.bbox, a.ref) if x)
+    if not (a.osm and a.out) or nsel != 1:
+        ap.error("--osm, -o and exactly one of --route / --bbox / --ref")
+    if a.ref and a.radius is None:
+        ap.error("--ref needs --radius M")
 
-    route_ll = read_gpx(a.route)
-    frame = Frame(route_ll[0][0], route_ll[0][1])
-    route_en = [frame.met(la, lo) for la, lo in route_ll]
+    if a.route:
+        route_ll = read_gpx(a.route)
+        frame = Frame(route_ll[0][0], route_ll[0][1])
+        route_en = [frame.met(la, lo) for la, lo in route_ll]
+        sel = Corridor(route_en, a.corridor)
+        # The grid covers the corridor, not the extract: a way kept because one
+        # end reached in stays whole, and its far end is simply outside it.
+        min_e = min(p[0] for p in route_en) - a.corridor
+        max_e = max(p[0] for p in route_en) + a.corridor
+        min_n = min(p[1] for p in route_en) - a.corridor
+        max_n = max(p[1] for p in route_en) + a.corridor
+        extent = a.corridor
+    elif a.bbox:
+        la0, lo0, la1, lo1 = (float(v) for v in a.bbox.split(","))
+        if la1 < la0:
+            la0, la1 = la1, la0
+        if lo1 < lo0:
+            lo0, lo1 = lo1, lo0
+        # Reference at the centre, so metres stay small and symmetric across
+        # the region -- the tangent-plane error of DESIGN.md 6.1 grows with
+        # distance from the reference, and a corner reference doubles it.
+        frame = Frame((la0 + la1) / 2.0, (lo0 + lo1) / 2.0)
+        c0, c1 = frame.met(la0, lo0), frame.met(la1, lo1)
+        min_e, min_n, max_e, max_n = c0[0], c0[1], c1[0], c1[1]
+        sel = Box(min_e, min_n, max_e, max_n)
+        extent = max(max_e - min_e, max_n - min_n) / 2.0
+    else:
+        la, lo = (float(v) for v in a.ref.split(","))
+        frame = Frame(la, lo)
+        r = a.radius
+        min_e, min_n, max_e, max_n = -r, -r, r, r
+        sel = Box(min_e, min_n, max_e, max_n)
+        extent = r
 
     ways = read_osm(a.osm)
-    corr = Corridor(route_en, a.corridor)
     kept = []
     for _, wgt, geom in ways:
-        en = [frame.met(la, lo) for la, lo in geom]
-        if any(corr.near(p) for p in en):
+        en = [frame.met(la_, lo_) for la_, lo_ in geom]
+        if any(sel.near(p) for p in en):
             kept.append((wgt, en))
 
-    # The grid covers the corridor, not the extract: a way kept because one end
-    # reached in stays whole, and its far end is simply outside the grid.
-    min_e = min(p[0] for p in route_en) - a.corridor
-    max_e = max(p[0] for p in route_en) + a.corridor
-    min_n = min(p[1] for p in route_en) - a.corridor
-    max_n = max(p[1] for p in route_en) + a.corridor
     region = (min_e, min_n, max_e, max_n)
 
-    zlist = parse_zooms(a.zooms) if a.zooms else pick_zooms(a.corridor)
+    zlist = parse_zooms(a.zooms) if a.zooms else pick_zooms(extent)
     if not a.quiet:
-        print(f"mktiles: {len(ways)} ways, {len(kept)} within "
-              f"{a.corridor:.0f} m of {os.path.basename(a.route)}; "
+        what = (f"within {a.corridor:.0f} m of {os.path.basename(a.route)}"
+                if a.route else
+                f"inside {(max_e - min_e) / 1000:.0f}x"
+                f"{(max_n - min_n) / 1000:.0f} km")
+        print(f"mktiles: {len(ways)} ways, {len(kept)} {what}; "
               f"reference {frame.lat0:.7f},{frame.lon0:.7f}", file=sys.stderr)
         print(f"mktiles: zooms {', '.join(f'{z:g}' for z in zlist)}",
               file=sys.stderr)
@@ -452,7 +519,7 @@ def main(argv=None):
         tx0, ty0, nx, ny, tiles = build_zoom(kept, mpp, region, not a.quiet)
         built.append((mpp, tx0, ty0, nx, ny, tiles))
 
-    ntiles = write_pack(a.out, frame, a.corridor, built)
+    ntiles = write_pack(a.out, frame, extent, built)
     size = os.path.getsize(a.out)
     if not a.quiet:
         sha = hashlib.sha256(open(a.out, "rb").read()).hexdigest()
