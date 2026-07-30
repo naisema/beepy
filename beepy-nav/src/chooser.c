@@ -19,7 +19,11 @@
  * at. Rows are 22 px, which is the glyph cell (16) plus breathing space. */
 #define ROW_H 22
 #define TITLE_H 24
-#define FOOT_H 20
+/* 26 px, not 20: the hint below the list is scale 2 like everything else on
+ * this page. It was the one line left at scale 1, and it is the line that
+ * tells a rider which keys do anything -- the worst thing to make them lean
+ * in for. 26 chars x 12 px = 312 px of the 400 wide, so it fits whole. */
+#define FOOT_H 26
 #define ROWS ((H - TITLE_H - FOOT_H) / ROW_H)
 
 static int
@@ -128,6 +132,6 @@ view_chooser(cov_t *c, const chooser_t *ch)
     }
 
     cov_fill_rect(c, 0, H - FOOT_H, W - 1, H - 1, COV_INK);
-    cov_text(c, 6, H - FOOT_H + 3, "N/P MOVE  ENTER GO  Q QUIT", 1,
+    cov_text(c, 6, H - FOOT_H + 5, "N/P MOVE  ENTER GO  Q QUIT", 2,
              COV_PAPER);
 }

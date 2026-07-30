@@ -108,9 +108,9 @@ static const char USAGE[] =
     "  --dump FILE   write the frame as 384000 raw XRGB bytes\n"
     "  --bench N     time N draw+resolve cycles and print ms/frame\n"
     "\n"
-    "keys: Tab page   Q quit   H hold   O course-up/north-up\n"
-    "      Z/X zoom out/in   A auto zoom   U metric/imperial\n"
-    "      L cue alerts on/off\n";
+    "keys: Tab page   R change route   Q quit   H hold\n"
+    "      O course-up/north-up   Z/X zoom out/in   A auto zoom\n"
+    "      U metric/imperial   L cue alerts on/off\n";
 
 enum {
     PAGE_NAV,
@@ -123,6 +123,11 @@ enum {
     PAGE_CHOOSER
 };
 enum { LIVE_NAV, LIVE_OVERVIEW };
+
+/* run_live()'s "the rider wants a different route", distinct from any exit
+ * status: main() loops back to the picker rather than returning it. Outside
+ * the NAV_DEVICE guard because main() tests it in both lanes. */
+#define RUN_PICK_AGAIN 100
 
 /* The coverage buffer is 96 KB; keep it out of the stack. */
 static cov_t COV;
@@ -276,6 +281,11 @@ typedef struct {
     int alert_cue, alert_done, alert_fired;
 
     int page, hold, quit, course_up;
+    /* R: leave this route and go back to the picker, without leaving the
+     * program. Distinct from quit, because the panel, the evdev grab and the
+     * process all survive it -- only the route does not. */
+    int pick_again;
+    int can_pick; /* a picker exists to go back to */
 
     int rate_5hz; /* ask the receiver for 5 Hz at startup (DESIGN.md 6.3) */
 
@@ -1386,6 +1396,16 @@ handle_key(app_t *a, int ch)
     case '\t':
         a->page = a->page == LIVE_NAV ? LIVE_OVERVIEW : LIVE_NAV;
         break;
+    case 'r':
+    case 'R':
+        /* Only where there is a picker to go back to: a --route on the command
+         * line or a replay has no list behind it, and a key that silently does
+         * nothing is worse than one that is not bound. */
+        if (a->can_pick) {
+            a->pick_again = 1;
+            a->quit = 1;
+        }
+        break;
     case 'q':
     case 'Q':
         a->quit = 1;
@@ -1476,6 +1496,8 @@ keycode_to_char(int code)
     switch (code) {
     case KEY_TAB:
         return '\t';
+    case KEY_R:
+        return 'r';
     case KEY_Q:
         return 'q';
     case KEY_H:
@@ -1531,7 +1553,14 @@ cleanup(void)
 /* Set when the route chooser has already opened the panel and grabbed the
  * keyboard, so run_live() inherits them instead of taking them again. */
 #ifdef NAV_DEVICE
-static fb_t *g_preopened;
+/* The panel has exactly ONE owner, at file scope, because it outlives every
+ * function that draws on it: the picker hands it to the ride, R hands it back,
+ * and cleanup() may release it from a signal at any moment in between. An
+ * earlier version kept it in run_live()'s frame and pointed g_fb at that --
+ * which dangles the instant the ride returns to the picker, so a Ctrl-C landing
+ * in the list would have released a dead stack slot. */
+static fb_t g_panel;
+static int g_panel_open;
 #endif
 
 #ifdef NAV_DEVICE
@@ -1718,9 +1747,8 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
     char line[256];
     size_t ll = 0;
 #ifdef NAV_DEVICE
-    fb_t fb;
     port_t port;
-    int have_fb = 0, have_port = 0;
+    int have_port = 0;
 #endif
 
     cv = canvas_new(SCR_W, SCR_H);
@@ -1750,23 +1778,21 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 #ifdef NAV_DEVICE
-    if (g_preopened) {
-        /* Inherited from the route chooser, panel and grab and all. */
-        fb = *g_preopened;
-        have_fb = 1;
+    if (g_panel_open) {
+        /* Inherited from the route picker, panel and grab and all. */
         tty_raw();
     } else if (!headless) {
-        if (fb_open(&fb, "/dev/fb1") < 0)
+        if (fb_open(&g_panel, "/dev/fb1") < 0)
             return 1;
-        g_fb = &fb;
-        have_fb = 1;
+        g_panel_open = 1;
+        g_fb = &g_panel;
         atexit(cleanup);
         tty_raw();
         evdev_open(1);
-        fb_take(&fb);
+        fb_take(&g_panel);
     }
-    RC.fb = &fb;
-    RC.have_fb = have_fb;
+    RC.fb = &g_panel;
+    RC.have_fb = g_panel_open;
     if (!replaypath) {
         memset(&port, 0, sizeof port);
         snprintf(port.path, sizeof port.path, "%s", devpath);
@@ -1966,13 +1992,18 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
 #ifdef NAV_DEVICE
     if (have_port)
         port_close(&port);
-    if (have_fb)
-        fb_release(&fb);
-    g_fb = NULL;
+    /* On R the panel and the grab stay exactly where they are -- one owner,
+     * handed back to the picker untouched. Releasing and re-taking would flash
+     * fbterm between the two screens, and re-taking can fail. */
+    if (!a->pick_again && g_panel_open) {
+        fb_release(&g_panel);
+        g_panel_open = 0;
+        g_fb = NULL;
+    }
 #endif
     fprintf(stderr, "beepy-nav: %ld fixes, %.1f%% done, %d full scans\n",
             a->epochs, a->nv.pct, a->ctx.full_scans);
-    return 0;
+    return a->pick_again ? RUN_PICK_AGAIN : 0;
 }
 
 /* ------------------------------------------------------------------ main */
@@ -1993,7 +2024,6 @@ main(int argc, char **argv)
     canvas_t *cv;
 #ifdef NAV_DEVICE
     char chosen[512];
-    fb_t chooser_fb;
 #endif
 
     /* The config file first, so the flags below can override it. --config
@@ -2191,40 +2221,72 @@ main(int argc, char **argv)
             fputs("beepy-nav: --headless needs an explicit --route\n", stderr);
             return 2;
         }
-        if (fb_open(&chooser_fb, "/dev/fb1") < 0)
+        if (fb_open(&g_panel, "/dev/fb1") < 0)
             return 1;
-        g_fb = &chooser_fb;
+        g_panel_open = 1;
+        g_fb = &g_panel;
         atexit(cleanup);
         tty_raw();
         evdev_open(1);
-        fb_take(&chooser_fb);
-        if (chooser_run(chosen, sizeof chosen, &chooser_fb, routes) != 0) {
-            fb_release(&chooser_fb);
+        fb_take(&g_panel);
+        if (chooser_run(chosen, sizeof chosen, &g_panel, routes) != 0) {
+            fb_release(&g_panel);
+            g_panel_open = 0;
             g_fb = NULL;
-            return 0; /* the rider quit the chooser; not an error */
+            return 0; /* the rider quit the picker; not an error */
         }
         /* The panel and the grab carry straight into the ride: releasing
          * and re-taking them would flash fbterm between the list and the
          * first frame. */
-        g_preopened = &chooser_fb;
         routepath = chosen;
+        APP.can_pick = 1; /* R has somewhere to go back to */
 #else
         fputs("beepy-nav: no route (--route FILE.gpx)\n", stderr);
         fputs(USAGE, stderr);
         return 2;
 #endif
     }
-    if (route_load(routepath, &APP.rt, err, sizeof err)) {
-        fprintf(stderr, "beepy-nav: %s\n", err);
-        return 1;
-    }
-    fprintf(stderr, "beepy-nav: %s -- %d points, %.2f km, %d cues\n",
-            APP.rt.name, APP.rt.npt, APP.rt.total_m / 1000.0, APP.rt.ncue);
+    /* Ride, and come back here if the rider pressed R. The picker keeps the
+     * panel and the grab across the hand-off in both directions, so changing
+     * route never drops to fbterm and never re-opens the framebuffer. */
+    for (;;) {
+        int rc;
 
-    if (tracepath)
-        trace_open(tracepath);
-    if (ftracepath)
-        ftrace_open(ftracepath);
-    return run_live(&APP, devpath, replaypath, headless, pace_opt, do_print,
-                    no_log ? NULL : rides);
+        if (route_load(routepath, &APP.rt, err, sizeof err)) {
+            fprintf(stderr, "beepy-nav: %s\n", err);
+            return 1;
+        }
+        fprintf(stderr, "beepy-nav: %s -- %d points, %.2f km, %d cues\n",
+                APP.rt.name, APP.rt.npt, APP.rt.total_m / 1000.0, APP.rt.ncue);
+
+        if (tracepath)
+            trace_open(tracepath);
+        if (ftracepath)
+            ftrace_open(ftracepath);
+
+        rc = run_live(&APP, devpath, replaypath, headless, pace_opt, do_print,
+                      no_log ? NULL : rides);
+        if (rc != RUN_PICK_AGAIN)
+            return rc;
+
+#ifdef NAV_DEVICE
+        /* A different route is a different ride: the old one's state cannot
+         * carry over. route_free() and a zeroed app_t are the whole reset --
+         * the snap window, the off-route run, the speed ring, the countdown
+         * latch and the ride clock all live in there. The ride log closed
+         * with the ride, and the next one opens its own. */
+        route_free(&APP.rt);
+        memset(&APP, 0, sizeof APP);
+        APP.can_pick = 1;
+        if (chooser_run(chosen, sizeof chosen, &g_panel, routes) != 0) {
+            fb_release(&g_panel);
+            g_panel_open = 0;
+            g_fb = NULL;
+            return 0; /* quit from the picker: the rider is done */
+        }
+        routepath = chosen;
+#else
+        return 0;
+#endif
+    }
 }

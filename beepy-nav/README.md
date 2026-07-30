@@ -108,6 +108,7 @@ passed, total distance, distance and time remaining.
 | Key | Action |
 |---|---|
 | `Tab` | switch page: NAV ↔ OVERVIEW |
+| `R` | change route — back to the picker, without quitting |
 | `Z` / `X` | zoom the map out / in (switches to manual zoom) |
 | `A` | back to automatic zoom |
 | `O` | course-up ↔ north-up |
@@ -115,6 +116,11 @@ passed, total distance, distance and time remaining.
 | `L` | cue alerts on ↔ off, for this ride only |
 | `H` | hold — freeze the display |
 | `Q` | quit, and give the console back |
+
+`R` only does something when there is a picker to go back to — that is, when
+you started with a bare `beepy-nav` rather than `--route`. It closes the
+current ride log and opens a new one for the next route, because a different
+route is a different ride.
 
 Letters and not digits, because the Beepy's digit row needs the Alt modifier
 and that is unusable one-handed on a handlebar.
