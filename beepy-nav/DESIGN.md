@@ -3,8 +3,10 @@
 A two-page GPS route navigator for the Beepy, built on the parser and
 framebuffer renderer already proven by `gps-monitor`.
 
-Status: **design for review. No C written. The mockups in this directory are
-rendered and geometrically exact** (`mockup.py`, native 400×240, 1-bit).
+Status: **implemented through DESIGN phase 3 and running on the device.**
+`mockup.py` remains the pixel reference — `make design-gate` byte-compares the
+C renderer against it, and both are frozen into `goldens/nav-*.fb`, which
+`make check` verifies on the device.
 
 ```
 NAV        turn arrow, distance to the junction, and a live map
@@ -43,15 +45,39 @@ Turn panel, top to bottom:
 | Turn arrow, white | 76×76, centred, y 6 |
 | Distance, bold typeface, white | up to 64 px cap height, centred, y 92 |
 | Unit (`M` / `KM` / `FT` / `MI`) | 24 px cap height, centred, below the digits |
-| Rule | y 190 |
-| Next cue: 20 px arrow + distance | scale 2, y 196 |
-| `86% 09:40` | scale 2, y 221 |
+| Rule | y 189 |
+| Time remaining, centred | scale 2, y 192 |
+| Whole-route distance remaining, centred | scale 2, y 208 |
+| Arrival, centred | scale 2, y 224 |
 
 Nothing on the panel is smaller than scale 2 (16 px) — scale-1 text was
-unreadable on the physical panel at handlebar distance. That size costs
-content: the strip shows battery and clock only. **GPS state earns panel space
-only when it is a problem** — `NO FIX` replaces the battery/clock line,
-inverted, when the fix is lost; a healthy receiver is not information.
+unreadable on the physical panel at handlebar distance. That size is also what
+fixes the layout: the budget is **ten characters** at 12 px each against a
+128 px panel, and `12.6KM 10:42 ETA` is far past it. So the three values are
+stacked rather than paired on one line, each keeping its full precision. The
+16 px cells at 192/208/224 fill the space to the bottom edge exactly; glyphs
+are 14 px of ink, so the rows stay separated without gaps.
+
+The battery per cent and the clock **held the bottom line and lost it**. While
+riding, how much ride is left is the question you actually have, and the big
+number above answers only "how far to the next junction". Battery and clock
+return only when no route is loaded, when there is nothing to count down.
+
+Formats: minutes below an hour then `1H 23M`, because `97 MIN` is a number you
+have to convert; arrival as 12-hour with the value first and the label
+trailing (`10:42 ETA`), with no meridiem — on a ride you know whether it is
+morning, and nine characters always fit with no degradation rule to reason
+about. Both read `--` when there is too little history to average, rather than
+a guess.
+
+**The next-cue preview is gone from the panel** — it was a 20 px glyph and a
+distance in this space. The cue after the announced one is still marked: the
+teardrop pin on the map is exactly that (below). What went is the preview, not
+the information.
+
+**GPS state earns panel space only when it is a problem** — `NO FIX` replaces
+the bottom row, inverted, when the fix is lost; a healthy receiver is not
+information.
 
 Map region:
 
@@ -82,7 +108,7 @@ far is left, so you prepare early rather than late):
 | ≥ 1000 m | 100 m | `5.8 KM` → `5.7 KM` → `5.6 KM` | 12.8 s @ 28 km/h |
 | 200–999 m | 50 m | `900 M` → `850 M` → `800 M` | 6.4 s @ 28 km/h |
 | 10–199 m | 10 m | `200 M` → `190 M` → `180 M` | 2.8 s @ 13 km/h |
-| < 10 m | — | `NOW` | once |
+| < 10 m | — | holds at `10 M` | — |
 
 The step tightens as the junction approaches, and that is the whole idea:
 **coarse where there is nothing to do yet, fine where you are about to act.**
@@ -91,10 +117,17 @@ in your riding between 5.8 and 5.7 km. Inside 200 m you are choosing a lane and
 braking, the 10 m steps are information, and you are slower anyway, so they
 arrive no faster than the 50 m steps did at cruise.
 
-`NOW` covers the last few metres, where flooring would say `0 M` and where the
-arrow is the only thing worth looking at. Worked examples: 5834 → `5.8 KM`,
-1000 → `1.0 KM`, 999 → `950 M`, 410 → `400 M`, 205 → `200 M`, 194 → `190 M`,
-12 → `10 M`, 9 → `NOW`.
+The last few metres **hold at the bottom rung** rather than counting to zero.
+An earlier draft printed `NOW` there; a word swapping in for the digits is a
+change at the worst possible moment, and by then the arrow is the instruction.
+Worked examples: 5834 → `5.8 KM`, 1000 → `1.0 KM`, 999 → `950 M`,
+410 → `400 M`, 205 → `200 M`, 194 → `190 M`, 12 → `10 M`, 9 → `10 M`.
+
+**Imperial keeps the ladder's shape, not its numbers** (`U` toggles):
+0.1 mi steps beyond a mile, 100 ft from 500 ft out, 50 ft inside that, holding
+at 50 ft. Converting the metric rungs would give a 328 ft step, which is not a
+figure anybody reads at a glance. A units change mid-ride **resets the latch** —
+400 metres is not a value 1312 feet may only decrease from.
 
 **Quantisation alone is not enough — the value must also latch.** GPS jitter of
 ±4 m sitting on a boundary would flicker `850`/`800` several times a second,
@@ -113,7 +146,15 @@ The result is a strictly monotone non-increasing countdown per cue, with no
 flicker possible by construction. Moving genuinely away from the route is not
 this mechanism's problem — the off-route latch (§7.3) takes the panel over.
 
-The `THEN` distance uses the same ladder and the same latch.
+Everything inside the program stays in metres; units reach no further than the
+ladder and the strings.
+
+**The latch is initialised to a sentinel, not zero.** Cue 0 is a real cue, and
+a zeroed "which cue am I on" makes the latch believe it is already counting
+down to it from a shown value of 0 — which, being the minimum, it can never
+leave. The panel read `0 M` for an entire ride before that was fixed, and the
+unit test missed it by initialising the latch by hand instead of through
+`nav_init()`.
 
 **The pin does not mark the announced turn.** The announced junction is already
 communicated twice — the whole left panel, and the visible bend in the route —
@@ -137,17 +178,15 @@ The fix sits at 72% of the height so roughly two thirds of the map is the road
 ahead. The map is course-up by default, north-up on a keypress.
 
 **Off route** (`nav-turn-off.png`) changes the panel, not just the map: the
-junction distance is replaced by `OFF ROUTE / 85 / M AWAY`, and the `THEN` row
-goes blank. A stale `410 M` next to a route you are not on is the worst thing
+junction distance is replaced by `OFF ROUTE / 85 / M AWAY`. A stale `410 M` next to a route you are not on is the worst thing
 this panel could say, so it is withheld rather than frozen. On the map the
 marker genuinely leaves the line, with a dotted tie-line to the nearest point
 on the route.
 
-An earlier draft put `FOLLOW DOTS BACK` in the vacated `THEN` row. It is not
-drawn, for two reasons: at scale 2 — the panel's floor since §5.1 — sixteen
-characters need 192 px against a 128 px panel, and the instruction is
-redundant, because the tie-line already points at the route and the panel
-already says how far. The blank row is deliberate.
+An earlier draft put `FOLLOW DOTS BACK` where the cue preview used to be. It is
+not drawn: at scale 2 — the panel's floor since §5.1 — sixteen characters need
+192 px against a 128 px panel, and the instruction is redundant, because the
+tie-line already points at the route and the panel already says how far.
 
 ### 1.2 OVERVIEW — `nav-overview.png`
 
