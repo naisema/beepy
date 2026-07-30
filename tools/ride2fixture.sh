@@ -5,9 +5,14 @@
 #
 # DESIGN.md 7.6: the ride log exists so that a failure in the field becomes a
 # regression test rather than a story. This is the step that does the becoming.
-# It copies the log into beepy-nav/tests/replay/, replays it headlessly against
+# It copies the log into beepy-nav/tests/rides/, replays it headlessly against
 # the route to produce the per-fix and per-frame traces, and prints the
 # Makefile lines to paste into test-replay.
+#
+# tests/rides/ and not tests/replay/: the latter is generated, gitignored and
+# emptied by `make clean`, because everything in it comes back byte for byte
+# from mknmea.py and a seed. A RECORDING comes back from nowhere -- it is
+# committed, and which directory a fixture lives in is the whole distinction.
 #
 # It also does the one check nothing else can: if the device wrote a .tsv
 # beside the log -- and it always does -- the replayed trace is compared
@@ -27,7 +32,7 @@
 set -eu
 
 usage() {
-    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 [ $# -eq 3 ] || usage
@@ -38,7 +43,8 @@ NAME=$3
 FPS=${FPS:-8}
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-RDIR=$ROOT/beepy-nav/tests/replay
+RDIR=$ROOT/beepy-nav/tests/replay   # traces: generated
+RIDES=$ROOT/beepy-nav/tests/rides    # recordings: committed
 
 if [ -z "${NAV:-}" ]; then
     # The host binary when there is one -- this is normally run on the Mac,
@@ -58,14 +64,14 @@ case $NAME in
                          exit 1 ;;
 esac
 
-mkdir -p "$RDIR"
+mkdir -p "$RDIR" "$RIDES"
 # Copied, not moved and not symlinked: the fixture has to survive the log
 # being tidied off the device, and a fixture that is a link into somebody's
 # home directory is not a fixture.
-cp "$LOG" "$RDIR/$NAME.nmea"
-echo "ride2fixture: $RDIR/$NAME.nmea  ($(wc -c < "$RDIR/$NAME.nmea") bytes)"
+cp "$LOG" "$RIDES/$NAME.nmea"
+echo "ride2fixture: $RIDES/$NAME.nmea  ($(wc -c < "$RIDES/$NAME.nmea") bytes)"
 
-"$NAV" --route "$ROUTE" --replay "$RDIR/$NAME.nmea" --headless --no-pace \
+"$NAV" --route "$ROUTE" --replay "$RIDES/$NAME.nmea" --headless --no-pace \
     --fps "$FPS" \
     --trace "$RDIR/$NAME.tsv" \
     --trace-frames "$RDIR/$NAME-frames.tsv"
@@ -137,14 +143,12 @@ cat <<EOF
 
 --- paste into the Makefile ---
 
-# in REPLAYS, so \`make clean\` and the device sync agree about it:
-#   \$(RDIR)/$NAME.nmea
-# NOTE: unlike the mknmea fixtures this one is a RECORDING and has no rule
-# that regenerates it -- it must be committed.
+# A RECORDING: no rule regenerates it, it lives in \$(RIDES) and it is
+# committed. Nothing to add to REPLAYS.
 
 	@echo "--- T-$(echo "$NAME" | tr '[:lower:]-' '[:upper:]_'): a recorded ride"
 	\$(NAV) --route $(printf '%s' "$ROUTE" | sed "s#^$ROOT/##") \\
-		--replay \$(RDIR)/$NAME.nmea --headless \$(FPS8) \\
+		--replay \$(RIDES)/$NAME.nmea --headless \$(FPS8) \\
 		--trace \$(RDIR)/$NAME.tsv \\
 		--trace-frames \$(RDIR)/$NAME-frames.tsv
 	\$(ASSERT) \$(RDIR)/$NAME.tsv --monotone-up cue_i

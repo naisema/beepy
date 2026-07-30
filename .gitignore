@@ -26,7 +26,9 @@ sim-anim.bin
 /beepy-nav/tests/gpx/oversize.gpx
 
 # Generated replay rides and their traces (regenerable via mknmea.py; the
-# seeds and options live in the Makefile, which is the actual fixture)
+# seeds and options live in the Makefile, which is the actual fixture).
+# beepy-nav/tests/rides/ is deliberately NOT here: those are RECORDINGS off
+# the device (DESIGN.md 7.6) and nothing regenerates them.
 /beepy-nav/tests/replay/*.nmea
 /beepy-nav/tests/replay/*.tsv
 /beepy-nav/tests/replay/*.fb

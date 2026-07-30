@@ -440,9 +440,9 @@ possible outcome of a mistyped `--config`.
 | Property | Value | How established |
 |---|---|---|
 | Receiver | u-blox 7, USB `1546:01a7`, `/dev/ttyACM0` | `lsusb`, `dmesg` |
-| **Receiver streams** | RMC, VTG, GGA, GSA, GSV at 1 Hz | `dd if=/dev/ttyACM0` |
-| Constellations seen | **GPS only** — `$GPGSV` only, 10 sats in view | same capture |
-| `VTG` present | course-over-ground true + speed in km/h, as fields | same capture |
+| **Receiver streams** | RMC, VTG, GGA, GSA, **GLL**, GSV×4 — **nine sentences an epoch**, at 1 Hz, plus a `$GPTXT` banner at power-on | §3.1 |
+| Constellations seen | **GPS only** — `$GPGSV` only, 13 sats in view | §3.1 |
+| `VTG` present | speed in km/h as a field; **course over ground is EMPTY at a standstill** | §3.1 |
 | Panel | `/dev/fb1`, 400×240, 32bpp XRGB, frame 384000 B | `gps-monitor` §13.1 |
 | Console | `fbterm`, must be SIGSTOPped to own the panel | `gps-monitor` §13.2 |
 | Keys | `/dev/input/event0`, `beepy` is in group `input` | `id` |
@@ -461,6 +461,60 @@ Two consequences:
    non-visual alert this hardware has; there is no buzzer. It needs a udev rule
    granting group `input` write access, or a small setuid helper. Nothing else
    in this design needs privileges.
+
+### 3.1 The first live run — measured 2026-07-30, indoors
+
+The table above was assembled from a `dd` capture before any of this program
+existed. This section is the navigator itself, three minutes against the real
+port at 8 Hz with `--stats`, and it corrects the table in three places.
+
+**A fix was acquired, indoors, and held.** GGA quality `1` on all 200 epochs,
+4–6 satellites used of 13 in view, HDOP 1.5–1.8. The expected outcome was no
+fix at all; that is not what happened, and the NO FIX row of §1.1.2 therefore
+did **not** appear on the live port. It was exercised on the same serial code
+path instead — see the end of this section.
+
+| Measured | Value |
+|---|---|
+| Fix cadence | **exactly 1.000 s**, 200 fixes, no jitter and no dropped epoch |
+| Sentence mix per epoch | RMC, VTG, GGA, GSA, GLL ×1 and GSV ×4 = **9**, plus 7 `$GPTXT` at power-on |
+| Malformed lines | **0** in 92 KB |
+| Byte rate | 514 B/s — **1.9 MB an hour**, against the 60 KB an hour §7.6 first assumed |
+| Render | **17.4 ms mean, 18.2 ms p95, 20.5 ms max** on the Pi Zero 2 W |
+| Frame rate | ~1.4 fps, not 8 — the receiver reports under 3 km/h at a standstill, so §6.3's stopped rate applies. Working as designed, and the first evidence that it does |
+| Frames skipped | 29–55% (§6.4), the rest being real multipath wander |
+| Cross-track wander | 0.6–15.6 m of it, indoors, never latching off route |
+
+Three of those are corrections rather than confirmations:
+
+- **`GLL` and `TXT` are in the stream and the original table missed them.**
+  Neither is parsed and neither needs to be, but they are a third of the bytes
+  and they are what made the log-size estimate wrong by thirty times.
+- **`VTG`'s and `RMC`'s course fields are empty while stationary** — all 200
+  epochs. No synthetic fixture has ever produced that, because `mknmea.py`
+  always writes a course. `fix.c` already holds the last known value rather
+  than taking a NaN, and §6.1's freeze below 3 km/h means nothing was going to
+  use it anyway, but the case was untested until now and is now a fixture.
+- **17 ms a frame is over half of §6.4's budget.** The bus arithmetic there is
+  fine — 25 ms of SPI, a 40 Hz ceiling — but the *drawing* costs 17 ms on this
+  CPU, so 8 Hz is 14% of one core rather than the rounding error the section
+  implies. It fits, with less room than it sounded like.
+
+**`T-LIVE`** replays 200 s of that capture, committed as
+`beepy-nav/tests/rides/live-ublox.nmea` — the first fixture in this repo that
+was not manufactured.
+
+**NO FIX on the live code path.** The serial branch is the one path a replay
+never exercises (`live_ride_now`, `live_frames`, `live_poll_ms` are all behind
+`NAV_DEVICE`), so `nofix.nmea` was fed through a pty into it on the device:
+last fix at t=199, `NO FIX` up at **t=203** — four seconds exactly — held to
+t=230, cleared by the fix at t=231, and `cue_q` constant at 20 throughout. The
+panel's bottom row went from 1 668 ink pixels to 300. Identical to the replay
+lane's behaviour, on the code the replay lane cannot reach.
+
+**Console restore, with the port open.** `fbterm` was `S+` before, and `S+`
+after `Q` and after `SIGINT`, with the ride log closed cleanly and its last
+line terminated in both cases.
 
 ---
 
@@ -917,13 +971,13 @@ configured.
 | Cadence | Call | Protects against | Cost |
 |---|---|---|---|
 | every epoch | `fflush` | SIGKILL, a segfault, `kill -9` — the kernel keeps what it has been handed even when the process is gone | one `write(2)` a second |
-| ≤ every 30 s | `fsync` | the battery falling out | ~500 bytes at risk |
+| ≤ every 30 s | `fsync` | the battery falling out | ~15 KB at risk |
 
 Thirty seconds is the budget §14 named while arguing this feature out of
-existence, and it is still the right one: at ~60 KB an hour it is half a
-kilobyte. Splitting the two is what makes the flush affordable and the guarantee
-strong — the earlier draft of this had only the 30 s `fsync`, which would have
-let a `kill -9` take up to a 4 KB stdio buffer, nine epochs, with it.
+existence, and at the measured 514 B/s (§3) it is 15 KB. Splitting the two is
+what makes the flush affordable and the guarantee strong — the earlier draft of
+this had only the 30 s `fsync`, which would have let a `kill -9` take up to a
+4 KB stdio buffer, nine epochs, with it.
 
 **A partial file is a valid replay input by construction.** The reader is
 line-oriented and drops a final unterminated line, so the worst a kill can do is
@@ -934,9 +988,11 @@ disk, a write that fails mid-ride — each is one line on stderr, once, and then
 the ride continues unlogged. This is the same argument §2.1 makes about the
 config file, applied to the same rider at the same roadside.
 
-**And it will not start below ~50 MB free.** Not a quota: at 60 KB an hour the
-guard is about a month of continuous riding and it will never be what stops a
-ride. It exists because the failure worth preventing is not "the log grew" but
+**And it will not start below ~50 MB free.** Not a quota: at the measured
+1.9 MB an hour (§3 — the first estimate of 60 KB counted three sentences an
+epoch when the receiver sends nine) the guard is a little over a day of
+continuous riding and it will never be what stops a ride. It exists because
+the failure worth preventing is not "the log grew" but
 "the log took the last of the disk and nobody was told". Refusing one more file
 out loud is an acceptable outcome; silence on a full disk is not.
 
@@ -1028,7 +1084,8 @@ view_nav 200, view_overview 160, nav main 180 ≈ **1450 lines**.
 | Cue classifier | hand-label the junctions of one real GPX, assert the derived set matches |
 | Clipping | render at a zoom where the route leaves the map on all four sides; assert no ink lands in x < 130 |
 | Ride log survives a kill | `kill -9` the navigator mid-ride against a live port, then `--replay` the partial `.nmea` it left. The file must load, the fixes must be the ones that were on the wire, and the loss must be at most the sentence in flight — the flush cadence of §7.6, measured rather than argued |
-| A field failure becomes a test | `tools/ride2fixture.sh LOG ROUTE NAME` turns a log into a `tests/replay/` case, and cross-checks the replayed per-fix trace against the `.tsv` the device itself wrote from the same bytes. They must agree exactly on every route-maths column |
+| A field failure becomes a test | `tools/ride2fixture.sh LOG ROUTE NAME` turns a log into a `tests/rides/` case, and cross-checks the replayed per-fix trace against the `.tsv` the device itself wrote from the same bytes. They must agree exactly on every route-maths column |
+| **T-LIVE** | 200 s of the real u-blox 7, recorded on the device (§3.1). It carries what no generated fixture does: an empty course field on every epoch, `GLL` and `TXT` sentences, and 15 m of indoor multipath the off-route latch must sit through. Asserted: the latch never fires, `off_m` stays under 40 m and exceeds 10 m somewhere, the heading never moves, the ETA stays unknown, and the drawn position still matches §6.3's closed form to 0.005 m |
 | Console restore | every exit path leaves `fbterm` in `S+`, never `T` — verified on the device for `Q` and `SIGINT`. `SIGKILL` is not an exit path a program can hook, so it leaves `fbterm` in `T+`; the next clean run recovers it on its own (measured), and `kill -CONT $(pgrep -x fbterm)` is the manual answer |
 
 The clipping test earns its place: the turn panel is the only part of this

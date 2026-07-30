@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<gpx version="1.1" creator="live-test">
+<trk><name>Live Receiver Test</name><trkseg>
+<trkpt lat="13.8851858" lon="100.3783982"><ele>2.0</ele></trkpt>
+<trkpt lat="13.8906137" lon="100.3783982"><ele>2.0</ele></trkpt>
+<trkpt lat="13.8906137" lon="100.3820996"><ele>2.0</ele></trkpt>
+<trkpt lat="13.8951370" lon="100.3820996"><ele>2.0</ele></trkpt>
+<trkpt lat="13.8978509" lon="100.3867263"><ele>2.0</ele></trkpt>
+<trkpt lat="13.9023742" lon="100.3867263"><ele>2.0</ele></trkpt>
+<trkpt lat="13.9023742" lon="100.3913531"><ele>2.0</ele></trkpt>
+</trkseg></trk>
+</gpx>

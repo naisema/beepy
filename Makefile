@@ -113,6 +113,11 @@ NAV       ?= ./beepy-nav/beepy-nav
 # so they run one frame per fix. The 8 Hz path has its own tests below.
 FPS1       = --fps 1
 RDIR       = beepy-nav/tests/replay
+# Recorded rides, as opposed to generated ones. Everything in $(RDIR) comes
+# back byte for byte from mknmea.py and a seed, so it is gitignored and
+# `clean` empties it; a recording comes back from nowhere and is committed.
+# Which directory a fixture lives in is the whole distinction (DESIGN.md 7.6).
+RIDES      = beepy-nav/tests/rides
 RROUTE     = beepy-nav/tests/gpx/loop.gpx
 MKNMEA     = python3 tools/mknmea.py --gpx $(RROUTE)
 ASSERT     = python3 tools/assert_trace.py
@@ -184,6 +189,25 @@ test-replay: $(NAV) $(REPLAYS)
 	$(NAV) --demo --page cliptest-panel --dump $(RDIR)/clip-panel.fb
 	python3 tools/fbdiff.py $(RDIR)/clip.fb $(RDIR)/clip-panel.fb \
 		--mask 130,0,399,239 --max-px 0
+#	Everything above this line is synthetic. This one is not: 200 seconds of
+#	the actual u-blox 7 on /dev/ttyACM0, recorded by the ride log of 7.6 and
+#	promoted with tools/ride2fixture.sh. It is worth its 100 KB because it
+#	contains three things mknmea.py has never produced and would not have
+#	thought to -- an EMPTY VTG/RMC course field (the receiver reports no
+#	course over ground while stationary, so the heading never gets a value at
+#	all), $GPGLL and $GPTXT sentences that DESIGN.md 3's measurement did not
+#	list, and fifteen metres of real indoor multipath wander that the
+#	off-route latch must sit through without firing.
+	@echo "--- T-LIVE: 200 s of the real receiver, recorded on the device"
+	$(NAV) --route beepy-nav/tests/gpx/live-ublox.gpx \
+		--replay $(RIDES)/live-ublox.nmea --headless $(FPS8) \
+		--trace $(RDIR)/live-ublox.tsv \
+		--trace-frames $(RDIR)/live-ublox-frames.tsv
+	$(ASSERT) $(RDIR)/live-ublox.tsv --zero off_latched --max off_m 40 \
+		--max along_m 20 --constant course_deg --constant heading_deg \
+		--always eta_s "<" 0 --any off_m ">" 10
+	$(ASSERT) $(RDIR)/live-ublox-frames.tsv --dr-closed-form 0.005 \
+		--head-ewma 0.55 0.01 --any base_spd "<" 0.8
 	$(MAKE) test-frames NAV="$(NAV)"
 	@echo "test-replay: PASS"
 

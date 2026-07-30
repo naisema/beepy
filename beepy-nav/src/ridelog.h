@@ -52,13 +52,21 @@
  * this budget. */
 #define RIDELOG_FSYNC_S 30.0
 
-/* A new log is refused below this. A ride is about 60 KB an hour, so 50 MB is
- * roughly a month of continuous riding and the guard will never be the thing
- * that stops a ride -- which is the point. It is not a quota, it is the line
- * below which a filesystem is in trouble for other reasons, and the failure
- * being guarded against is not "the log got big" but "the log filled the last
- * of the disk while the rider was told nothing". Silence on a full disk is the
- * unacceptable outcome; refusing to start one more file, out loud, is not. */
+/* A new log is refused below this.
+ *
+ * MEASURED, and the first estimate was thirty times out. 200 s of the actual
+ * receiver on /dev/ttyACM0 is 102 831 bytes: 514 B/s, or 1.9 MB an hour. The
+ * "about 60 KB an hour" this constant was first justified with came from
+ * counting RMC + VTG + GGA, and the u-blox 7 in fact emits nine sentences an
+ * epoch -- four of them GSV. So 50 MB is a little over a day of continuous
+ * riding rather than the month claimed, which is still generous enough that
+ * the guard will never be the thing that stops a ride.
+ *
+ * It is not a quota. It is the line below which a filesystem is in trouble
+ * for other reasons, and the failure being guarded against is not "the log
+ * got big" but "the log filled the last of the disk while the rider was told
+ * nothing". Silence on a full disk is the unacceptable outcome; refusing to
+ * start one more file, out loud, is not. */
 #define RIDELOG_MIN_FREE_MB 50
 
 typedef struct {
