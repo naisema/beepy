@@ -120,7 +120,7 @@ fi
 echo "mkmaps: country extract, major roads, no names"
 $OSMPY tools/pbf2osm.py "$PBF" --bbox "$COUNTRY" --classes coarse --no-names \
     -o "$OUT/country.json"
-echo "mkmaps: region extract, every road class, with names"
+echo "mkmaps: region extract, every road class, with names and destinations"
 $OSMPY tools/pbf2osm.py "$PBF" --bbox "$REGION_BOX" --classes all \
     -o "$OUT/region.json"
 

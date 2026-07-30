@@ -39,6 +39,15 @@ WHAT IT DOES
      distance from the rider, so the representative point of a 2 km road has to
      be chosen at query time, not at pack time. mockup.py samples `[::3]` and
      the device does the same arithmetic over the same points.
+  6. Indexes the DESTINATIONS in the extract -- schools, stations, markets --
+     which pbf2osm.py emits as Overpass `node` elements, an area having become
+     its centroid. They join the same PLACES table as the streets, carrying one
+     candidate point where a street carries every third vertex, and that is the
+     whole change: nothing on the device distinguishes them. search_places()
+     ranks by distance to the nearest candidate either way, and the router
+     snaps whatever it is handed to the nearest graph node, so a school
+     centroid inside a campus routes to the road outside it for free.
+     `--no-pois` builds the pack as it was before, streets only.
 
 DETERMINISM is a requirement, not a nicety: `make test-roads` builds the pack
 twice and compares sha256 against the committed fixture. Nothing here reads the
@@ -185,6 +194,34 @@ def read_osm(path):
     return out, dropped
 
 
+def read_pois(path):
+    """-> [(name, lat, lon), ...] for every named destination in the extract.
+
+    A destination is an Overpass `node` element -- which is what pbf2osm.py
+    emits for both POI nodes and the centroid of a POI area. It carries no
+    geometry, takes part in no graph, and exists only to be searched for and
+    then routed to by the same nearest-node snap a street hit uses.
+
+    Deliberately NOT filtered by tag here. pbf2osm.py decided what counts as a
+    destination; repeating that judgement in a second place is how the two
+    drift apart. A node with a usable name is a destination."""
+    doc = json.load(open(path, "r", encoding="utf-8"))
+    out = []
+    dropped = set()
+    for el in doc.get("elements", ()):
+        if el.get("type") != "node" or "lat" not in el or "lon" not in el:
+            continue
+        tags = el.get("tags", {})
+        raw = tags.get("name:en") or tags.get("name") or ""
+        if not raw:
+            continue
+        if not raw.isascii():
+            dropped.add(raw)
+            continue
+        out.append((raw.upper(), float(el["lat"]), float(el["lon"])))
+    return out, dropped
+
+
 def read_ref(route_path, ref_spec, ways):
     """The projection reference. --route's first point, else --ref, else the
     first vertex of the first way -- all three deterministic, in that order of
@@ -262,7 +299,7 @@ class Graph:
 
 # ----------------------------------------------------------------- the pack
 
-def build(ways, frame, honour_oneway):
+def build(ways, pois, frame, honour_oneway):
     """-> (graph, places, points, strings) with every table already ordered."""
     # Names first, so an edge can carry its place index. Sorted by name, which
     # is what makes the table stable between builds and between extracts that
@@ -271,8 +308,29 @@ def build(ways, frame, honour_oneway):
     for name, _ow, geom in ways:
         if name:
             by_name.setdefault(name, []).append(geom)
+    # A destination joins the same table as a street, carrying a single point
+    # where a street carries every third vertex. Nothing downstream needs to
+    # know which it was: search_places() ranks by distance to the nearest
+    # candidate point either way, and the router snaps whatever it is given to
+    # the nearest graph node. That is why POIs cost no format change.
+    #
+    # A destination whose name is also a street name MERGES with it, which is
+    # correct rather than merely convenient: "SILOM" is one thing to search
+    # for, and the ranking then picks whichever of its points is nearest.
+    for name, la, lo in pois:
+        by_name.setdefault(name, []).append([(la, lo)])
     order = sorted(by_name)
     name_i = {n: i for i, n in enumerate(order)}
+    # EDGES carries the place index as u16 with 0xffff meaning unnamed, so the
+    # table cannot exceed 65 534 entries. Streets alone never came close;
+    # destinations move it within sight (28 832 for Greater Bangkok), and a
+    # silent wrap here would rename roads at random rather than fail. Refuse.
+    if len(order) > NAME_NONE - 1:
+        raise SystemExit(
+            f"mkpack: {len(order)} names, but EDGES stores a place index as "
+            f"u16 and {NAME_NONE} means 'unnamed', so {NAME_NONE - 1} is the "
+            f"limit.\n  Cut a smaller extract, or widen the field -- which is "
+            f"a pack format version bump, not a tweak.")
 
     strings = bytearray()
     points = []
@@ -404,6 +462,10 @@ def main(argv=None):
     ap.add_argument("--repeat", metavar="NxM",
                     help="tile the extract into an NxM grid: a synthetic "
                          "scale fixture, never a real city")
+    ap.add_argument("--no-pois", action="store_true",
+                    help="index street names only, ignoring the destinations "
+                         "in the extract -- the pack as it was before they "
+                         "were searchable")
     ap.add_argument("--info", metavar="PACK", help="describe a pack and exit")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
@@ -415,6 +477,12 @@ def main(argv=None):
         ap.error("--osm and -o are both required")
 
     ways, dropped = read_osm(a.osm)
+    pois, poi_dropped = ([], set()) if a.no_pois else read_pois(a.osm)
+    # One count, covering both, because the header's promise (DESIGN.md
+    # 1.4) is 'how much of this pack you cannot be shown' -- and a
+    # destination named only in Thai is exactly as invisible as a street
+    # named only in Thai.
+    dropped = dropped | poi_dropped
     ref = read_ref(a.route, a.ref, ways)
     frame = mktiles.Frame(ref[0], ref[1])
     tiled = None
@@ -422,9 +490,11 @@ def main(argv=None):
         ways, rx, ry = repeat_ways(ways, a.repeat)
         tiled = (rx, ry)
 
-    g, places, points, strings = build(ways, frame, not a.ignore_oneway)
+    g, places, points, strings = build(ways, pois, frame,
+                                       not a.ignore_oneway)
     nnode, nedge = write_pack(a.out, frame, g, places, points, strings,
-                              len(ways), len(dropped), not a.ignore_oneway)
+                              len(ways), len(dropped),
+                              not a.ignore_oneway)
     size = os.path.getsize(a.out)
     if not a.quiet:
         print(f"mkpack: {len(ways)} routable ways"
@@ -435,6 +505,9 @@ def main(argv=None):
               f"{len(places)} names, {len(points)} place points, "
               f"oneway {'IGNORED' if a.ignore_oneway else 'honoured'}",
               file=sys.stderr)
+        if pois:
+            print(f"mkpack: {len(pois)} destinations indexed alongside the "
+                  f"streets", file=sys.stderr)
         print(f"mkpack: {len(dropped)} names dropped for having no ASCII form"
               + (": " + ", ".join(sorted(dropped)[:3]) if dropped else ""),
               file=sys.stderr)

@@ -1,0 +1,77 @@
+{
+  "_comment": [
+    "A hand-written Overpass-shaped extract for the DESTINATIONS half of the",
+    "indexer -- the `node` elements pbf2osm.py emits for a school, a station, a",
+    "market. osm-asok.json cannot exercise it: it is a highway-only extract, so",
+    "every branch that reads a node is dead there.",
+    "",
+    "One road, running north, and four destinations beside it:",
+    "  1  a school, 'THE ACADEMY'   -> searchable, ~110 m off the road, which",
+    "                                 is the case that matters: a POI has no",
+    "                                 graph node of its own and must reach the",
+    "                                 road through router.c's nearest-node snap",
+    "  2  a station, name:en preferred over a Thai name",
+    "  3  a market named only in Thai -> dropped, and COUNTED",
+    "  4  a node with a POI key and NO name -> never indexed; an unnamed thing",
+    "                                 cannot be searched for and costs bytes",
+    "",
+    "Plus one destination sharing a street's name ('MAIN ROAD MARKET' does not,",
+    "but 'NORTH ROAD' does) so the merge of a POI into an existing place has a",
+    "case: one entry, points from both.",
+    "",
+    "Coordinates sit on a 0.001 degree grid near Asok, like names.json, so the",
+    "numbers in the Makefile's assertions are readable."
+  ],
+  "elements": [
+    {
+      "type": "way",
+      "id": 1,
+      "tags": { "highway": "residential", "name:en": "NORTH ROAD" },
+      "geometry": [
+        { "lat": 13.740, "lon": 100.560 },
+        { "lat": 13.741, "lon": 100.560 },
+        { "lat": 13.742, "lon": 100.560 },
+        { "lat": 13.743, "lon": 100.560 }
+      ]
+    },
+    {
+      "type": "node",
+      "id": 101,
+      "lat": 13.7415,
+      "lon": 100.5610,
+      "tags": { "amenity": "school", "name": "THE ACADEMY" }
+    },
+    {
+      "type": "node",
+      "id": 102,
+      "lat": 13.7425,
+      "lon": 100.5605,
+      "tags": {
+        "railway": "station",
+        "name": "สถานี",
+        "name:en": "CENTRAL STATION"
+      }
+    },
+    {
+      "type": "node",
+      "id": 103,
+      "lat": 13.7405,
+      "lon": 100.5605,
+      "tags": { "amenity": "marketplace", "name": "ตลาดนัด" }
+    },
+    {
+      "type": "node",
+      "id": 104,
+      "lat": 13.7435,
+      "lon": 100.5605,
+      "tags": { "amenity": "parking" }
+    },
+    {
+      "type": "node",
+      "id": 105,
+      "lat": 13.7445,
+      "lon": 100.5602,
+      "tags": { "shop": "convenience", "name": "NORTH ROAD" }
+    }
+  ]
+}

@@ -320,11 +320,41 @@ is **type-to-filter** — no on-screen keyboard, no cursor chasing:
 | Up to 4 matches, nearest first | name · distance + 8-way bearing (`464M NE`) |
 | Selected match | inverted row; `↓`/`↑` move, ENTER routes |
 
-The search index is the street names already in the offline pack (`name:en`
-falling back to `name`), matched token-AND, ranked by distance from the current
-fix. POIs and addresses can join the index when packed — they are not, as of M6,
-and street names are all there is; **nothing is searchable that is not in the
-pack**, and the hit count says so honestly (§1.4.2).
+The search index is the names in the offline pack (`name:en` falling back to
+`name`), matched token-AND, ranked by distance from the current fix. It holds
+**street names and destinations** — schools, stations, markets, shops, parks:
+anything OSM tags `amenity`, `shop`, `leisure`, `tourism`, `railway` and their
+kin, *and gives a name*. **Nothing is searchable that is not in the pack**, and
+the hit count says so honestly (§1.4.2).
+
+Destinations cost no format change and no device change, which is the reason
+they are packed the way they are. A place in `BNAVROAD` is already a name plus a
+list of candidate points; a street contributes every third vertex of every way
+carrying it, and a destination contributes exactly one. Beyond that the device
+cannot tell them apart, and does not need to: `search_places()` ranks by
+distance to the nearest candidate either way, and `router.c`'s `snap()` already
+resolves an arbitrary point to the nearest graph node — which is precisely the
+step a POI needs, since a school polygon has no road node of its own. A campus
+centroid therefore routes to the road outside the campus for free.
+
+Two consequences worth stating rather than discovering:
+
+- **An area becomes its centroid.** `pbf2osm.py` reduces a POI way to the mean
+  of its nodes, so a hit is the middle of the site and not its gate. For a
+  school that is 50–150 m; the snap absorbs it. Multipolygon relations are not
+  handled at all — a POI mapped only as a relation is missing, and that is a
+  gap, not a decision.
+- **A destination sharing a street's name merges with it**, into one place
+  carrying both sets of points. That is correct rather than merely convenient:
+  `SILOM` is one thing to look for, and the ranking picks whichever of its
+  points is nearest the rider.
+
+The ceiling is the format's, and it is now within sight. `EDGES` stores a place
+index as `u16` with `0xffff` meaning unnamed, so the table stops at 65,534
+names. Streets alone were never near it; streets plus destinations over Greater
+Bangkok are **28,832**. `mkpack.py` refuses to build past the limit rather than
+wrap silently — a wrap would rename roads at random — and widening the field is
+a version bump, not a tweak.
 
 **Routing is on-device Dijkstra over the pack's road graph** — ways joined on
 exact shared coordinates. Measured on the Asok extract: 2,803 nodes, and the
@@ -1578,6 +1608,9 @@ view_nav 200, view_overview 160, nav main 180 ≈ **1450 lines**.
 | **T-ROADS-OPTIONAL** | the FIND page with no pack, and with an unreadable one, are the same frame — and neither is the frame with the pack. Unlike the basemap the difference here is the whole page, because a search with nothing to search cannot honestly show a hit; which is what makes the golden evidence about `search.c` and not only about the layout |
 | **T-FIND** | the whole pre-ride flow from a headless replay: `F`, seven keystrokes, ENTER to route, ENTER to go. Asserted on the state machine rather than on pixels, because the frames move with the ride — the router ran on the device's own graph and found the place that was *typed*, `main()` installed the result by the same line that loads a GPX, and the three screens differ by at least 4 000 pixels each |
 | **T-FIND-NOPACK** | `F` with no pack differs from an un-keyed run *only* inside the panel's bottom row, and is byte-identical two seconds later — the §7.5 transient mechanism, and the proof that the key is neither dead nor destructive |
+| **T-ROADS-POIS** | the destinations half of the indexer, over `tests/roads/pois.json` — one road and four things beside it, one per case. A school is searchable; a station prefers its `name:en`; a Thai-only market is dropped **and counted in the header**, which before destinations existed covered streets alone; an `amenity=parking` with no name is not indexed at all, because a POI key is not what makes something findable, a name is. Plus the merge: a shop sharing a street's name yields **one** place with 3 points, 2 from the road's every-third-vertex and 1 from the shop. `--no-pois` rebuilds the pack as it was, which is what makes each of these a pair rather than an assertion that everything is indexed and always was |
+| **T-ROADS-POIS-INERT** | an extract with no `node` elements builds the pack it always did. `osm-asok.json` is that extract and the committed `asok.roads` is the answer, compared byte for byte — the cheapest possible statement that a feature added to the packer moved nothing that existed before it |
+| **T-FIND-POI** | routing to a destination that is **not on the graph**. Every destination before this one was: a street's candidate points are its own vertices, so `router.c`'s nearest-node snap had never been asked to travel. `THE ACADEMY` sits ~110 m off `NORTH ROAD` and belongs to no way at all, and it must still route — and be installed as the live route by the same line a GPX takes, which is what makes it a destination rather than a map label |
 | **T-NOTE-FITS** | the same claim as T-FIND-NOPACK with the **committed** pack named on the command line instead of whatever the config points at. That distinction is the whole test: the runs above inherit `beepy-nav.conf`, every config to date named a pack that did not reach this route, and under an empty map `NO ROAD PACK` spilling 8 px past the panel into the map was white on white. `tests/tiles/asok.tiles` does cover this ground and puts 154 px of street in the strip the overflow landed on. Found by merging a basemap that finally covered the ground the tests ride over — which is the third time a pair here has quietly stopped being a pair because one half read the device's config |
 | **T-FIND-CANCEL** | two runs of one ride, one of which opened FIND and pressed `Esc`. Twenty seconds later they are the same frame: the page borrowed the screen and gave it back, which is the property that lets FIND be a page inside the ride loop rather than a modal detour |
 | Search semantics | `tests/test_search.c` over a twelve-node hand-written pack (`tests/roads/names.json`), so every branch of the indexer has a case: `name:en` preferred, an ASCII `name` as the fallback, a Thai name dropped **and counted**, an unnamed way still routable, a footway not routable at all. Plus token-AND as substrings, order-independence, case folding, an empty query matching nothing, a miss matching nothing, ranking by distance to the nearest candidate point, and a hit count that is the total rather than the length of the list |

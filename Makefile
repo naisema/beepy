@@ -39,6 +39,7 @@ ROADOPEN   ?= beepy-nav/tests/roads/asok-nooneway.roads
 ROADNAMES  ?= beepy-nav/tests/roads/names.roads
 ROADOSM    ?= beepy-nav/osm-asok.json
 ROADNAMESIN ?= beepy-nav/tests/roads/names.json
+ROADPOIS   ?= beepy-nav/tests/roads/pois.json
 ROADREF    ?= 13.740,100.560
 
 DEVICE  ?= beepy@beepy.local
@@ -532,6 +533,23 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK)
 		--mask 0,216,127,239 --max-px 0
 	! python3 tools/fbdiff.py $(RDIR)/nopack-a.fb $(RDIR)/plain-a.fb --max-px 0
 	python3 tools/fbdiff.py $(RDIR)/nopack-b.fb $(RDIR)/plain-b.fb --max-px 0
+	@echo "--- T-FIND-POI: routing to something that is not on the graph"
+#	Every destination before this one WAS a graph node: a street's candidate
+#	points are its own vertices, so the "snap to the nearest node" in router.c
+#	had never been asked to travel. A POI is the first destination that lies off
+#	the graph entirely -- a school in the middle of its campus -- and the claim
+#	is that it still routes, by the same snap, with no special case anywhere.
+#	tests/roads/pois.roads is the committed fixture; THE ACADEMY sits ~110 m off
+#	NORTH ROAD and belongs to no way at all.
+	$(NAV) --route $(TILEROUTE) --replay $(RDIR)/asok.nmea --headless $(FPS8) \
+		--roads beepy-nav/tests/roads/pois.roads \
+		--key 10:f --key 11:a --key 12:c --key 13:a --key 14:d \
+		--key 16:enter --key 18:enter \
+		--dump-at 20:$(RDIR)/find-poi.fb 2> $(RDIR)/find-poi.log
+	grep -q "routed to THE ACADEMY" $(RDIR)/find-poi.log
+#	And installed as the live route by the same line a GPX takes, which is what
+#	makes it a destination rather than a map label.
+	grep -q "beepy-nav: THE ACADEMY -- " $(RDIR)/find-poi.log
 	@echo "--- T-NOTE-FITS: a note stays inside the panel, over a drawn map"
 #	The pair above asserts "changes nothing outside the panel" -- but only as
 #	strongly as the map under the note is interesting, and for a long time it
@@ -803,6 +821,55 @@ test-roads: $(ROADPACK) $(ROADOPEN) $(ROADNAMES)
 		grep -q "5 ways indexed, 1 names dropped"
 	python3 tools/mkpack.py --info $(ROADNAMES) | grep -q "'MAIN ROAD'"
 	python3 tools/mkpack.py --info $(ROADNAMES) | grep -q "'SECOND STREET'"
+#	Destinations -- the half of the index osm-asok.json cannot reach, because it
+#	is a highway-only extract and every branch that reads a `node` is dead in
+#	it. tests/roads/pois.json is one road and four things beside it, one per
+#	case. Asserted through --info rather than by comparing a committed pack,
+#	because what is being claimed here is WHICH NAMES ARE SEARCHABLE, and that
+#	reads better as the names themselves than as a digest.
+	@echo "--- T-ROADS-POIS: a school is somewhere to go, an unnamed thing is not"
+	python3 tools/mkpack.py --osm $(ROADPOIS) --ref $(ROADREF) \
+		-o out-roads-pois.roads --quiet
+	python3 tools/mkpack.py --info out-roads-pois.roads | grep -q "'THE ACADEMY'"
+	python3 tools/mkpack.py --info out-roads-pois.roads | \
+		grep -q "'CENTRAL STATION'"
+#	name:en beats a Thai name; a Thai-only name is dropped AND counted, and the
+#	count is the header's, which is the number the device reports. Before
+#	destinations existed that number covered streets only, and a POI dropped
+#	for the same reason would have been invisible in it.
+	python3 tools/mkpack.py --info out-roads-pois.roads | \
+		grep -q "1 ways indexed, 1 names dropped"
+#	amenity=parking with no name: a POI key is not enough. Nothing unnamed can
+#	be searched for, so indexing it would cost bytes to no end.
+	! python3 tools/mkpack.py --info out-roads-pois.roads | grep -q "'PARKING'"
+#	A destination whose name is a street's merges into ONE place carrying both
+#	sets of points -- 2 from the road's every-third-vertex, 1 from the shop.
+	python3 tools/mkpack.py --info out-roads-pois.roads | \
+		grep -q "'NORTH ROAD'  3 points"
+#	--no-pois rebuilds the pack as it was, which is what makes the pair above a
+#	pair: without it "destinations are indexed" could pass on a build that
+#	indexes everything and always did.
+	python3 tools/mkpack.py --osm $(ROADPOIS) --ref $(ROADREF) --no-pois \
+		-o out-roads-nopois.roads --quiet
+	! python3 tools/mkpack.py --info out-roads-nopois.roads | \
+		grep -q "'THE ACADEMY'"
+	python3 tools/mkpack.py --info out-roads-nopois.roads | \
+		grep -q "'NORTH ROAD'  2 points"
+	! cmp -s out-roads-pois.roads out-roads-nopois.roads
+#	Determinism, for the reason every other pack here has it: same extract,
+#	same bytes.
+	python3 tools/mkpack.py --osm $(ROADPOIS) --ref $(ROADREF) \
+		-o out-roads-pois-2.roads --quiet
+	cmp out-roads-pois.roads out-roads-pois-2.roads
+#	And the claim that costs nothing to make and everything to get wrong: an
+#	extract with no `node` elements at all builds the SAME pack it always did.
+#	osm-asok.json is that extract, and $(ROADPACK) is the committed answer.
+	@echo "--- T-ROADS-POIS-INERT: a highway-only extract is untouched"
+	python3 tools/mkpack.py --osm $(ROADOSM) --route $(TILEROUTE) \
+		-o out-roads-inert.roads --quiet
+	cmp out-roads-inert.roads $(ROADPACK)
+	rm -f out-roads-pois.roads out-roads-pois-2.roads out-roads-nopois.roads \
+		out-roads-inert.roads
 	@echo "test-roads: PASS"
 
 # Rebuilding the fixtures is deliberate, like regenerating a golden.

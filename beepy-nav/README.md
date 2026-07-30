@@ -357,13 +357,31 @@ Cost, measured: about 7 ms a frame, taking the render p95 from 11.5 ms to
 
 ## Finding a destination
 
-`F` opens FIND: type, and street names filter as you go, nearest first with a
+`F` opens FIND: type, and names filter as you go, nearest first with a
 distance and a bearing. `Enter` routes to the selected one on the device —
 Dijkstra over the pack's road graph, `oneway` respected — and shows CONFIRM: the
 proposed route drawn whole, with its length, an estimate and the number of
 turns, against `ENTER = GO` and `Q = CANCEL`. Go, and it becomes an ordinary
 ride: the same NAV page, the same cues, the same ride log. A route you searched
 for and a GPX you downloaded are the same thing from that point on.
+
+**What you can search for:** street names *and* destinations — schools,
+stations, markets, shops, hospitals, parks, temples. Anything OpenStreetMap
+tags as a place and gives a name to. Around Bangkok that is 11,213 streets and
+25,318 destinations, 29,546 distinct names in all.
+
+Three things about it that will save you a puzzled minute:
+
+- **It is ASCII only.** The 5×7 font has no Thai glyphs, so a place named only
+  in Thai cannot be shown and is not indexed. The pack counts them and says so
+  (5,860 around Bangkok) rather than pretending to be complete. If you cannot
+  find somewhere you know exists, this is usually why — try its English name.
+- **Type less, not more.** Matching is token-AND on substrings, so every word
+  you type must appear. `ASSUMPTION` finds the college; `ASSUMPTION COLLEGE
+  THONBURI` finds it only if the pack holds that exact wording.
+- **A hit is the middle of a place, not its gate.** A campus or a mall is
+  reduced to its centre point, and the router then takes you to the nearest
+  road to that centre. Expect to arrive at the perimeter.
 
 It needs a **road pack**, built on a Mac from an OpenStreetMap extract. It is a
 different pack from the basemap of *Streets under the map* — that one is

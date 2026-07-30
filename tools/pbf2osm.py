@@ -39,20 +39,89 @@ ROADS = ("motorway", "motorway_link", "trunk", "trunk_link", "primary",
 COARSE = ("motorway", "motorway_link", "trunk", "trunk_link", "primary",
           "primary_link", "secondary", "secondary_link")
 
+# The keys that make a feature a DESTINATION rather than a road: a school, a
+# hospital, a station, a market. Any value will do -- the filter that actually
+# matters is that the thing has a name, because an unnamed feature cannot be
+# searched for and is not worth a byte. `place` is here for the district and
+# suburb names a rider thinks in ("BANG KHAE") as much as for shops.
+#
+# Keys, not key=value pairs, on purpose. A whitelist of values would need
+# maintaining against a tag scheme that grows every year, and would silently
+# drop whatever was invented last; the name test does the same job without
+# the maintenance.
+POI_KEYS = ("amenity", "shop", "leisure", "tourism", "office", "healthcare",
+            "craft", "railway", "aeroway", "public_transport", "historic",
+            "emergency", "place")
+
+
+def _poi_name(tags):
+    """The searchable form, or None. Same rule as mkpack.py: name:en first,
+    then name, and nothing at all if neither is ASCII -- the device has no
+    Thai glyphs and an unrenderable hit is worse than a miss."""
+    raw = tags.get("name:en") or tags.get("name") or ""
+    return raw if raw and raw.isascii() else None
+
 
 class Collect(osmium.SimpleHandler):
-    def __init__(self, classes, bbox, keep_names):
+    def __init__(self, classes, bbox, keep_names, want_pois):
         super().__init__()
         self.classes = set(classes)
         self.bbox = bbox  # (lat0, lon0, lat1, lon1) or None
         self.keep_names = keep_names
+        self.want_pois = want_pois
         self.out = []
         self.seen = 0
         self.dropped_bbox = 0
+        self.pois = 0
+        self.pois_nonascii = 0
+
+    def _inside(self, la, lo):
+        if not self.bbox:
+            return True
+        la0, lo0, la1, lo1 = self.bbox
+        return la0 <= la <= la1 and lo0 <= lo <= lo1
+
+    def _poi(self, o, la, lo):
+        """Emit one destination as an Overpass `node` element. An AREA becomes
+        its centroid, which is what `out center` would have given -- good
+        enough because the router snaps a destination to the nearest road node
+        anyway (router.c's snap()), so the metres between a campus centroid and
+        its gate are absorbed by a step that has to happen regardless."""
+        key = next((k for k in POI_KEYS if k in o.tags), None)
+        if key is None:
+            return
+        name = _poi_name(o.tags)
+        if name is None:
+            if o.tags.get("name"):
+                self.pois_nonascii += 1
+            return
+        if not self._inside(la, lo):
+            return
+        tags = {key: o.tags.get(key), "name": name}
+        if "name:en" in o.tags:
+            tags["name:en"] = o.tags["name:en"]
+        self.out.append({"type": "node", "id": o.id, "lat": la, "lon": lo,
+                         "tags": tags})
+        self.pois += 1
+
+    def node(self, n):
+        if self.want_pois and n.location.valid():
+            self._poi(n, n.location.lat, n.location.lon)
 
     def way(self, w):
         hw = w.tags.get("highway")
         if hw not in self.classes:
+            # Not a road we draw -- but it may still be somewhere to go. A
+            # school, a mall and a park are all closed ways in OSM.
+            if self.want_pois:
+                try:
+                    pts = [(n.lat, n.lon) for n in w.nodes
+                           if n.location.valid()]
+                except osmium.InvalidLocationError:
+                    return
+                if pts:
+                    self._poi(w, sum(p[0] for p in pts) / len(pts),
+                              sum(p[1] for p in pts) / len(pts))
             return
         self.seen += 1
         try:
@@ -92,6 +161,13 @@ def main():
     ap.add_argument("--no-names", action="store_true",
                     help="drop name tags: a basemap never draws them, and for "
                          "a country they are most of the JSON")
+    ap.add_argument("--pois", action="store_true", default=None,
+                    help="also emit named destinations -- schools, stations, "
+                         "shops -- as Overpass `node` elements, an area as its "
+                         "centroid. On by default unless --no-names or "
+                         "--classes coarse says this is a basemap extract")
+    ap.add_argument("--no-pois", dest="pois", action="store_false",
+                    help="roads only")
     a = ap.parse_args()
 
     if a.classes == "all":
@@ -107,7 +183,13 @@ def main():
         bbox = (min(v[0], v[2]), min(v[1], v[3]),
                 max(v[0], v[2]), max(v[1], v[3]))
 
-    h = Collect(classes, bbox, not a.no_names)
+    # A basemap extract wants none of this: tiles draw geometry and never a
+    # label, so destinations there would be megabytes that nothing reads.
+    want_pois = a.pois
+    if want_pois is None:
+        want_pois = not (a.no_names or a.classes == "coarse")
+
+    h = Collect(classes, bbox, not a.no_names, want_pois)
     # locations=True gives every way its node coordinates; the flex-mem index
     # holds a country's nodes in a few hundred MB rather than a dict's several
     # gigabytes.
@@ -117,9 +199,13 @@ def main():
         json.dump({"elements": h.out}, f, separators=(",", ":"))
     import os
     print(f"pbf2osm: {h.seen} ways in {len(classes)} classes, "
-          f"{len(h.out)} kept"
+          f"{len(h.out) - h.pois} kept"
           + (f", {h.dropped_bbox} outside the box" if bbox else ""),
           file=sys.stderr)
+    if want_pois:
+        print(f"pbf2osm: {h.pois} named destinations, "
+              f"{h.pois_nonascii} dropped for having no ASCII name",
+              file=sys.stderr)
     print(f"pbf2osm: {a.out}: {os.path.getsize(a.out) / 1e6:.1f} MB",
           file=sys.stderr)
     return 0
