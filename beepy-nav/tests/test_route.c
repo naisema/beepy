@@ -528,6 +528,140 @@ test_countdown(void)
     eq_int(shown, CUE_FLOOR, "approach ends at the bottom rung");
 }
 
+/* DESIGN.md 1.1.1's second table: "imperial keeps the ladder's SHAPE, not its
+ * numbers". Every expectation below is the shape restated -- 0.1 mi steps
+ * beyond a mile, 100 ft from 500 ft out, 50 ft inside that, holding at 50 --
+ * computed here from the definition, never read off a previous run. */
+static void
+test_countdown_imperial(void)
+{
+    int shown = 0, shown_cue = -99, i;
+    struct {
+        double m; /* metres in, as everything inside the program is */
+        int q;    /* feet out */
+    } ladder[] = {
+        /* 1609.344 m is a mile exactly: the first rung of the mile ladder. */
+        {1609.344, 5280},
+        /* 2.35 mi floors to a whole tenth: 10560 + 3 * 528 = 12144. The
+         * inputs here avoid exact rung boundaries on purpose -- the ladder
+         * floors a round-tripped conversion, so 500 ft expressed in metres
+         * and converted back is 499.999... and lands a rung below. That is
+         * inherent to flooring, not a defect, and a rider never notices a
+         * boundary crossed a hundredth of a foot early. */
+        {1609.344 * 2.35, 12144},
+        /* Just under a mile: 100 ft steps, 5279 ft -> 5200. */
+        {5279 / GEO_FT_PER_M, 5200},
+        /* 500 ft is the rung where the 100 ft steps start. */
+        {501 / GEO_FT_PER_M, 500},
+        {549 / GEO_FT_PER_M, 500},
+        /* Below it, 50 ft steps. */
+        {499 / GEO_FT_PER_M, 450},
+        {101 / GEO_FT_PER_M, 100},
+        {51 / GEO_FT_PER_M, CUE_FLOOR_FT},
+        /* And the bottom rung holds, as the metric one does at 10 m. */
+        {49 / GEO_FT_PER_M, CUE_FLOOR_FT},
+        {0, CUE_FLOOR_FT},
+        {-5, CUE_FLOOR_FT},
+    };
+
+    for (i = 0; i < (int)(sizeof ladder / sizeof ladder[0]); i++)
+        eq_int(cue_quantise_u(ladder[i].m, UNITS_IMPERIAL), ladder[i].q,
+               "cue_quantise_u imperial");
+
+    /* Never a number nobody reads: under a mile every rung is a multiple of
+     * 50 ft, and at or above one it is a whole tenth of a mile. */
+    for (i = 0; i < 30000; i++) {
+        int q = cue_quantise_u(i / 10.0, UNITS_IMPERIAL);
+        if (q < GEO_FT_PER_MILE)
+            check(q % 50 == 0, "under a mile, a multiple of 50 ft");
+        else
+            check(q % (GEO_FT_PER_MILE / 10) == 0,
+                  "above a mile, a whole tenth of a mile");
+    }
+
+    /* Monotone non-increasing over a whole approach, exactly as metric is. */
+    (void)cue_latch_u(3000.0, 7, &shown, &shown_cue, UNITS_IMPERIAL);
+    for (i = 3000; i >= 0; i--) {
+        int prev = shown;
+        double noisy = i + ((i % 7) - 3);
+        (void)cue_latch_u(noisy < 0.0 ? 0.0 : noisy, 7, &shown, &shown_cue,
+                          UNITS_IMPERIAL);
+        check(shown <= prev, "imperial countdown never rises");
+    }
+    eq_int(shown, CUE_FLOOR_FT, "imperial approach ends at the bottom rung");
+}
+
+/* A units change mid-ride resets the latch: 400 metres is not a value 1312
+ * feet may only decrease from (1.1.1). */
+static void
+test_units_toggle(void)
+{
+    navctx_t c;
+    nav_t nv;
+    route_t r;
+    static pt_t pts[3];
+    static cue_t cues[1];
+
+    /* Two cues 400 m apart on a straight north line, so cue_m is exact. */
+    route_init(&r);
+    pts[0].lat = 13.0;
+    pts[0].lon = 100.0;
+    pts[0].ele = 0;
+    pts[1].lat = 13.0 + 400.0 / GEO_M_PER_DEG_LAT;
+    pts[1].lon = 100.0;
+    pts[1].ele = 0;
+    pts[2].lat = 13.0 + 800.0 / GEO_M_PER_DEG_LAT;
+    pts[2].lon = 100.0;
+    pts[2].ele = 0;
+    r.pt = pts;
+    r.npt = 3;
+    cues[0].idx = 2;
+    cues[0].kind = CUE_DEST;
+    r.cue = cues;
+    r.ncue = 1;
+    check(route_prepare(&r) == 0, "toggle fixture prepares");
+    route_cues_finish(&r);
+
+    nav_init(&c);
+    nav_reset(&nv);
+    nv.cue_i = 0;
+    nv.cue_m = 400.0;
+    nv.along = 400.0;
+    eq_int(c.units, UNITS_METRIC, "metric is the default");
+
+    route_countdown_refresh(&r, &c, &nv);
+    eq_int(nv.cue_q, 400, "400 m reads 400");
+
+    /* Without the reset the latch would refuse 1312 ft as an increase and the
+     * panel would sit at 400 -- reading FT -- for the rest of the ride. */
+    nav_set_units(&c, UNITS_IMPERIAL);
+    route_countdown_refresh(&r, &c, &nv);
+    eq_int(nv.cue_q, cue_quantise_u(400.0, UNITS_IMPERIAL),
+           "the toggle reseeds the latch on the imperial ladder");
+    check(nv.cue_q > 1000, "and the value really is feet, not metres");
+
+    /* And back. The metric ladder must not inherit the feet value either. */
+    nav_set_units(&c, UNITS_METRIC);
+    route_countdown_refresh(&r, &c, &nv);
+    eq_int(nv.cue_q, 400, "and back to metres");
+
+    /* Idempotent: setting the units it already has must not reset a latch
+     * that is mid-countdown. */
+    nv.cue_m = 380.0;
+    route_countdown_refresh(&r, &c, &nv);
+    eq_int(nv.cue_q, 350, "the countdown steps down");
+    nav_set_units(&c, UNITS_METRIC);
+    nv.cue_m = 400.0;
+    route_countdown_refresh(&r, &c, &nv);
+    eq_int(nv.cue_q, 350, "a no-op toggle leaves the latch alone");
+
+    /* Only pt/cum/en were allocated by route_prepare(); pt and cue are ours. */
+    r.pt = NULL;
+    r.cue = NULL;
+    r.npt = r.ncue = 0;
+    route_free(&r);
+}
+
 int
 main(void)
 {
@@ -540,6 +674,8 @@ main(void)
     test_progress();
     test_latch();
     test_countdown();
+    test_countdown_imperial();
+    test_units_toggle();
     test_cue_ahead();
     test_loaded_route();
     printf("test_route: %s\n", failures ? "FAIL" : "PASS");

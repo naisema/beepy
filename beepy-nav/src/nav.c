@@ -235,6 +235,11 @@ typedef struct {
     int alert_cue, alert_done, alert_fired;
 
     int page, hold, quit, course_up;
+
+    /* Metres per pixel while the rider has taken the NAV map off auto zoom;
+     * 0 is auto. Not in navctx_t: it is a view decision, and nothing in the
+     * route maths may depend on what the map happens to be showing. */
+    double mpp_manual;
     int have_pos;
     double e, n; /* the fix, in route metres */
 
@@ -506,10 +511,15 @@ build_window(app_t *a)
         a->win_turn_i = a->win_pos_i + 1;
 }
 
+/* The OVERVIEW strip's two big numbers. Kilometres or miles -- the strip
+ * prints the unit beside them, so the digits carry no label of their own. */
 static void
-fmt_km(char *buf, size_t n, double metres)
+fmt_big(char *buf, size_t n, double metres, int units)
 {
-    snprintf(buf, n, "%.1f", metres / 1000.0);
+    double per = units == UNITS_IMPERIAL
+                     ? GEO_FT_PER_MILE / GEO_FT_PER_M
+                     : 1000.0;
+    snprintf(buf, n, "%.1f", metres / per);
 }
 
 /* Time left on the route, centred under the rule. Minutes while there are
@@ -591,8 +601,8 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         int i;
         for (i = 0; i < r->ncue && i < ROUTE_MAXCUE; i++)
             a->cue_idx[i] = r->cue[i].idx;
-        fmt_km(togo, sizeof togo, a->rnv.togo_m);
-        fmt_km(total, sizeof total, r->total_m);
+        fmt_big(togo, sizeof togo, a->rnv.togo_m, a->ctx.units);
+        fmt_big(total, sizeof total, r->total_m, a->ctx.units);
         fmt_clock(clock, sizeof clock, a->nv.eta);
         o.pts = r->en;
         o.npts = r->npt;
@@ -610,6 +620,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         o.done = (int)(a->rnv.pct + 0.5);
         o.cue_i = a->rnv.cue_i < 0 ? 0 : a->rnv.cue_i;
         o.ncues = r->ncue;
+        o.units = a->ctx.units;
         view_overview(cov, &o);
     } else {
         navmap_t m;
@@ -626,6 +637,8 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         m.off = a->rnv.off ? a->rnv.off_m : 0.0;
         m.spd_kmh = (int)(a->fx.speed_kmh + 0.5);
         m.course_up = a->course_up;
+        m.units = a->ctx.units;
+        m.mpp_manual = a->mpp_manual;
         /* DESIGN.md 6.1: the map turns with the SMOOTHED heading, and 1.1:
          * the chevron gets what is left over, so it keeps pointing along the
          * road while the rotation catches up. North-up (theta 0) leaves the
@@ -646,6 +659,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
          * times a second. Only the map moves at the frame rate. */
         p.off = a->nv.off ? (int)(a->nv.off_m + 0.5) : 0;
         p.turn_m = a->nv.cue_q; /* quantised + latched, not raw metres */
+        p.units = a->ctx.units;
         p.kind = a->rnv.cue_i >= 0 ? r->cue[a->rnv.cue_i].kind : CUE_DEST;
         fmt_remaining(remain, sizeof remain, a->nv.eta_s);
         fmt_eta(etabuf, sizeof etabuf, a->nv.eta);
@@ -797,7 +811,8 @@ on_epoch(app_t *a, time_t now)
 static double
 live_zoom(const app_t *a)
 {
-    return map_auto_zoom(a->nv.cue_m, SCR_H * 0.72);
+    return a->mpp_manual > 0.0 ? a->mpp_manual
+                               : map_auto_zoom(a->nv.cue_m, SCR_H * 0.72);
 }
 
 /* -------------------------------------------------------- the frame clock

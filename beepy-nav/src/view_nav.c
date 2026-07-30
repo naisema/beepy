@@ -131,33 +131,57 @@ mark_compass(cov_t *c, double x, double y, double theta, double r)
 /* Same ring construction as the position marker, so the two read as one
  * family of round instruments. */
 static void
-speed_badge(cov_t *c, double x, double y, int kmh, double r)
+speed_badge(cov_t *c, double x, double y, int kmh, double r, int units)
 {
     char s[16]; /* "%d" of an int is up to 11 chars + NUL, whatever the km/h */
-    int cap;
+    /* Centred by the same arithmetic the metric literal encoded: cov_text_w
+     * is strlen * 6 * scale, so "KM/H" is 24 px and half of it is the 12 the
+     * mockup hard-coded. Writing it out keeps "MPH" centred too, instead of
+     * needing a second magic number beside the first. */
+    const char *lbl = units == UNITS_IMPERIAL ? "MPH" : "KM/H";
+    int cap, v = kmh < 0 ? 0 : kmh;
+    if (units == UNITS_IMPERIAL)
+        v = (int)(v * (1000.0 * GEO_FT_PER_M / GEO_FT_PER_MILE) + 0.5);
     cov_disc(c, x, y, r + 2.2, COV_PAPER);
     cov_disc(c, x, y, r, COV_INK);
     cov_disc(c, x, y, r - 2.2, COV_PAPER);
-    snprintf(s, sizeof s, "%d", kmh < 0 ? 0 : kmh);
+    snprintf(s, sizeof s, "%d", v);
     cap = num_fit(s, 26, (int)(2 * (r - 7)));
     num_draw(c, x, y - 19, s, num_set_for_cap(cap), NUM_CT, COV_INK);
-    cov_text(c, (int)rint(x - 12), (int)rint(y + 11), "KM/H", 1, COV_INK);
+    cov_text(c, (int)rint(x) - cov_text_w(lbl, 1) / 2, (int)rint(y + 11), lbl,
+             1, COV_INK);
 }
 
 void
-mark_scale_bar(cov_t *c, double x, double y, double mpp)
+mark_scale_bar(cov_t *c, double x, double y, double mpp, int units)
 {
     char lbl[24]; /* the ladder tops out at "20KM", but %d could be anything */
     int m, px;
-    map_scale_pick(mpp, &m, &px);
+
+    if (units == UNITS_IMPERIAL) {
+        /* `m` is feet here. Under a mile it is printed as feet; at or above
+         * one, as miles -- whole where the rung is a whole mile, a tenth
+         * where it is the half-mile rung. Same shape as the metric M/KM
+         * switch, which is the only rule imperial has to be consistent with:
+         * there is no imperial mockup to transcribe. */
+        map_scale_pick_ft(mpp, &m, &px);
+        if (m < (int)MAP_FT_PER_MILE)
+            snprintf(lbl, sizeof lbl, "%dFT", m);
+        else if (m % (int)MAP_FT_PER_MILE == 0)
+            snprintf(lbl, sizeof lbl, "%dMI", m / (int)MAP_FT_PER_MILE);
+        else
+            snprintf(lbl, sizeof lbl, "%.1fMI", m / MAP_FT_PER_MILE);
+    } else {
+        map_scale_pick(mpp, &m, &px);
+        if (m < 1000)
+            snprintf(lbl, sizeof lbl, "%dM", m);
+        else
+            snprintf(lbl, sizeof lbl, "%dKM", m / 1000);
+    }
     cov_fill_rect(c, x - 2, y - 22, x + px + 2, y + 1, COV_PAPER);
     cov_fill_rect(c, x, y, x + px, y + 1, COV_INK); /* pixel-aligned: solid */
     cov_fill_rect(c, x, y - 5, x + 1, y, COV_INK);
     cov_fill_rect(c, x + px - 1, y - 5, x + px, y, COV_INK);
-    if (m < 1000)
-        snprintf(lbl, sizeof lbl, "%dM", m);
-    else
-        snprintf(lbl, sizeof lbl, "%dKM", m / 1000);
     cov_text(c, (int)rint(x + 2), (int)rint(y - 22), lbl, 2, COV_INK);
 }
 
@@ -203,10 +227,27 @@ mark_cased_route(cov_t *c, const double *segs, int nsegs, double outer,
 
 /* Format an already-quantised distance (DESIGN.md 1.1.1). `m` is what the
  * rider is shown, not what was measured -- the ladder and the anti-jitter
- * latch live in route.c, so this only chooses the unit. */
+ * latch live in route.c, so this only chooses the unit. Under UNITS_IMPERIAL
+ * it arrives in FEET, because that is the ladder cue_quantise_u() counted on.
+ *
+ * Four-digit feet (the 100 ft rungs between 500 ft and a mile) are wider than
+ * the 54 px numerals can be at 128 px, so num_fit() demotes them to the 22 px
+ * set. That is not an imperial quirk: four-digit kilometres -- a cue more than
+ * 10 km out -- demote in exactly the same way and always have. Imperial
+ * inherits the metric layout rule rather than inventing one. */
 static void
-fmt_dist(int m, char *val, size_t n, const char **unit)
+fmt_dist(int m, int units, char *val, size_t n, const char **unit)
 {
+    if (units == UNITS_IMPERIAL) {
+        if (m < GEO_FT_PER_MILE) {
+            snprintf(val, n, "%d", m);
+            *unit = "FT";
+        } else {
+            snprintf(val, n, "%.1f", m / (double)GEO_FT_PER_MILE);
+            *unit = "MI";
+        }
+        return;
+    }
     if (m < 1000) {
         snprintf(val, n, "%d", m);
         *unit = "M";
@@ -214,6 +255,30 @@ fmt_dist(int m, char *val, size_t n, const char **unit)
         snprintf(val, n, "%.1f", m / 1000.0);
         *unit = "KM";
     }
+}
+
+/* The whole-route row, which is a different number with a different job: it
+ * is glanced at, not acted on, so it is coarser than the countdown and does
+ * not latch. Metric floors to 50 m below a kilometre and to 0.1 km above;
+ * imperial floors to 100 ft below a mile and to 0.1 mi above -- the same two
+ * rungs' worth of precision, in the numbers a rider who thinks in miles
+ * reads. */
+static void
+fmt_togo(char *buf, size_t n, double metres, int units)
+{
+    if (units == UNITS_IMPERIAL) {
+        double ft = metres * GEO_FT_PER_M;
+        if (ft < GEO_FT_PER_MILE)
+            snprintf(buf, n, "%dFT", (int)ft - (int)ft % 100);
+        else
+            snprintf(buf, n, "%.1fMI",
+                     floor(ft / (GEO_FT_PER_MILE / 10.0)) / 10.0);
+        return;
+    }
+    if (metres < 1000.0)
+        snprintf(buf, n, "%dM", (int)metres - (int)metres % 50);
+    else
+        snprintf(buf, n, "%.1fKM", floor(metres / 100.0) / 10.0);
 }
 
 /* One centred scale-2 row of the panel's lower stack. */
@@ -249,7 +314,7 @@ view_turn_panel(cov_t *c, const panel_t *p)
                    COV_PAPER);
     } else {
         arrow_draw(c, (PANEL_W - 76) / 2.0, 6, 76, p->kind, COV_PAPER);
-        fmt_dist(p->turn_m, buf, sizeof buf, &unit);
+        fmt_dist(p->turn_m, p->units, buf, sizeof buf, &unit);
         /* PANEL_W - 8, not - 10: integer advances round a 3-digit NUM54
          * string to 119 px, and a 118 px limit would demote it to the 22 px
          * set by that single pixel. The margin is still 4+ px a side. */
@@ -276,12 +341,7 @@ view_turn_panel(cov_t *c, const panel_t *p)
 
     panel_row(c, 192, p->remain);
     if (p->togo_m >= 0.0) {
-        if (p->togo_m < 1000.0)
-            snprintf(buf, sizeof buf, "%dM",
-                     (int)p->togo_m - (int)p->togo_m % 50);
-        else
-            snprintf(buf, sizeof buf, "%.1fKM",
-                     floor(p->togo_m / 100.0) / 10.0);
+        fmt_togo(buf, sizeof buf, p->togo_m, p->units);
         panel_row(c, 208, buf);
         panel_row(c, 224, p->eta);
     } else {
@@ -325,8 +385,15 @@ view_nav_map(cov_t *c, const navmap_t *m)
         pos_e += cos(geoh) * m->off;
         pos_n += -sin(geoh) * m->off;
     }
-    mpp = map_auto_zoom(map_cue_distance(pts, n, on_e, on_n, pos_i, m->turn_i),
-                        cy);
+    /* Auto unless a key has said otherwise (DESIGN.md 6.1). Manual zoom is a
+     * rider decision and outranks the cue-fitting rule entirely -- including
+     * its promise that the junction stays on screen, which is exactly what
+     * somebody pressing Z to see the wider picture is choosing to give up. */
+    mpp = m->mpp_manual > 0.0
+              ? m->mpp_manual
+              : map_auto_zoom(
+                    map_cue_distance(pts, n, on_e, on_n, pos_i, m->turn_i),
+                    cy);
 
     /* Ridden track: everything behind the fix, plus the fix itself. */
     k = 0;
@@ -391,8 +458,8 @@ view_nav_map(cov_t *c, const navmap_t *m)
 
     mark_position(c, cx, cy, 13, m->residual);
     mark_compass(c, MAP_X + 21, 27, theta, 11);
-    speed_badge(c, W - 33, 33, m->spd_kmh, 27);
-    mark_scale_bar(c, MAP_X + 7, H - 8, mpp);
+    speed_badge(c, W - 33, 33, m->spd_kmh, 27, m->units);
+    mark_scale_bar(c, MAP_X + 7, H - 8, mpp, m->units);
 }
 
 void
@@ -446,8 +513,14 @@ view_nav_demo(cov_t *c, int off)
     m.heading = 0.0;
     m.have_heading = 0;
     m.residual = 0.0;
+    /* The frozen design states are metric and auto-zoom, and must stay so:
+     * they are what the design gate compares against mockup.py, which has no
+     * units toggle and no keys. */
+    m.units = UNITS_METRIC;
+    m.mpp_manual = 0.0;
 
     p.off = off;
+    p.units = UNITS_METRIC;
     /* The demo carries the raw metres the design's sample state names, and
      * quantises them here exactly as the live path does -- so the reference
      * frames show what a rider would actually see (1.1.1): 410 -> "400". */
@@ -497,6 +570,7 @@ clip_panel(panel_t *p)
     p->togo_m = 12600;
     p->batt = 86;
     p->clock = "09:40";
+    p->units = UNITS_METRIC;
 }
 
 void
@@ -516,6 +590,8 @@ view_cliptest(cov_t *c)
     m.heading = 0.0;
     m.have_heading = 0;
     m.residual = 0.0;
+    m.units = UNITS_METRIC;
+    m.mpp_manual = 0.0;
     clip_panel(&p);
     view_nav(c, &m, &p);
 }
@@ -542,6 +618,8 @@ view_cliptest_panel(cov_t *c)
     m.heading = 0.0;
     m.have_heading = 0;
     m.residual = 0.0;
+    m.units = UNITS_METRIC;
+    m.mpp_manual = 0.0;
     clip_panel(&p);
     view_nav(c, &m, &p);
 }

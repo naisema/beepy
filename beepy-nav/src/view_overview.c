@@ -75,6 +75,9 @@ view_overview(cov_t *c, const overview_t *o)
     double min_e, max_e, min_n, max_n, org_e, org_n, mpp, cx, cy;
     double sx, sy, pos_e, pos_n, px, py, xy[2], en[2];
     char buf[96];
+    /* The two numbers arrive pre-formatted -- the caller is the one that knows
+     * the units setting -- so all this page decides is what to call them. */
+    const char *unit = o->units == UNITS_IMPERIAL ? "MI" : "KM";
     int n, i, k, ns, nseg, pos_i, wd;
 
     n = thin(o->pts, o->npts, o_raw, OV_MAXPTS);
@@ -181,12 +184,12 @@ view_overview(cov_t *c, const overview_t *o)
     mark_position(c, px, py, 9, 0.0);
 
     mark_compass(c, W - 21, 27, 0.0, 11);
-    mark_scale_bar(c, 7, OV_MY1 - 5, mpp);
+    mark_scale_bar(c, 7, OV_MY1 - 5, mpp, o->units);
 
     /* Name and total length share the title line. That is what frees the
      * strip's second line, which is what lets everything in the strip run at
      * scale 2 -- the panel's readable floor. */
-    snprintf(buf, sizeof buf, "%s  %sKM", o->name, o->total);
+    snprintf(buf, sizeof buf, "%s  %s%s", o->name, o->total, unit);
     cov_text(c, 6, 4, buf, 2, COV_INK);
 
     cov_fill_rect(c, 0, H - OV_STRIP, W - 1, H - 1, COV_INK);
@@ -198,7 +201,7 @@ view_overview(cov_t *c, const overview_t *o)
     wd = num_draw(c, W - 8, H - OV_STRIP + 5, o->togo, NUM_22, NUM_RT,
                   COV_PAPER);
     rtext(c, W - 14 - wd, H - OV_STRIP + 5, "TO GO", 2, COV_PAPER);
-    rtext(c, W - 14 - wd, H - OV_STRIP + 23, "KM", 2, COV_PAPER);
+    rtext(c, W - 14 - wd, H - OV_STRIP + 23, unit, 2, COV_PAPER);
 }
 
 /* ------------------------------------------------------------ the demo */
@@ -228,5 +231,6 @@ view_overview_demo(cov_t *c)
     o.done = 59;
     o.cue_i = 3;
     o.ncues = 11;
+    o.units = UNITS_METRIC; /* the frozen design state; see view_nav_demo() */
     view_overview(c, &o);
 }

@@ -24,6 +24,11 @@ typedef struct {
     double togo_m;      /* whole-route remaining; < 0 = no route loaded */
     int batt;           /* only shown when there is no route            */
     const char *clock;  /* likewise                                     */
+    /* UNITS_METRIC / UNITS_IMPERIAL (route.h). It picks the labels and the
+     * whole-route row's arithmetic; `turn_m` arrives ALREADY on the right
+     * ladder -- metres or feet -- because the quantiser is what knows which
+     * rungs exist (DESIGN.md 1.1.1). */
+    int units;
 } panel_t;
 
 /* The map on the right. Route geometry is metres east/north of any origin;
@@ -36,8 +41,15 @@ typedef struct {
     int turn_i; /* the announced cue */
     int pin_i;  /* the cue AFTER it -- what the teardrop marks */
     double off; /* metres perpendicular off the route; 0 = on it */
-    int spd_kmh;
+    int spd_kmh; /* always km/h: the badge converts, nothing upstream does */
     int course_up;
+    int units;
+
+    /* Metres per pixel, or <= 0 for auto zoom (DESIGN.md 6.1: "Z/X switch to
+     * manual; A returns to auto"). The value is a rung of MAP_ZOOMS -- the
+     * keys step the ladder, they do not scale freely -- but nothing here
+     * requires that, and the demo pages leave it 0. */
+    double mpp_manual;
 
     /* Map rotation, radians clockwise from north: the smoothed heading of
      * DESIGN.md 6.1. `have_heading` 0 means "derive it from the route
@@ -66,10 +78,11 @@ typedef struct {
     int ncue_dots;
     int pos_i;
     double pos_f;
-    const char *name;  /* "SUKHUMVIT LOOP"  */
-    const char *total; /* "31.0", km        */
-    const char *togo;  /* "12.6", km        */
-    const char *eta;   /* "10:42"           */
+    const char *name;  /* "SUKHUMVIT LOOP"        */
+    const char *total; /* "31.0", km or miles    */
+    const char *togo;  /* "12.6", km or miles    */
+    const char *eta;   /* "10:42"                */
+    int units;         /* which of the two, for the labels and the bar */
     int done;          /* per cent          */
     int cue_i, ncues;  /* "3/11 CUES"       */
 } overview_t;
@@ -86,7 +99,7 @@ void view_overview(cov_t *c, const overview_t *o);
 void mark_position(cov_t *c, double x, double y, double r, double ang);
 void mark_pin(cov_t *c, double x, double y, double r);
 void mark_compass(cov_t *c, double x, double y, double theta, double r);
-void mark_scale_bar(cov_t *c, double x, double y, double mpp);
+void mark_scale_bar(cov_t *c, double x, double y, double mpp, int units);
 void mark_dashed(cov_t *c, const double *segs, int nsegs, double on,
                  double off, double width, int ink);
 void mark_cased_route(cov_t *c, const double *segs, int nsegs, double outer,
