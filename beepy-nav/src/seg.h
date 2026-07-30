@@ -14,8 +14,14 @@
 #include "libbeepyfb/cover.h"
 
 /* Glyph sets. Only two digit sizes exist, so a cap between them is a
- * request for the nearer prepared size, not a new rasterization. */
-enum { NUM_54 = 0, NUM_22, UNITS_22, NUM_LABEL };
+ * request for the nearer prepared size, not a new rasterization.
+ *
+ * NUM_QUERY24 is the FIND page's 24 px query (DESIGN.md 1.4): the same
+ * mechanism as the digits, extended to A-Z and space because a destination is
+ * typed and not measured. It is never selected by cap -- num_set_for_cap()
+ * still answers with a DIGIT set, so nothing that asks for a number can be
+ * handed letters -- and the one page that wants it names it. */
+enum { NUM_54 = 0, NUM_22, UNITS_22, NUM_LABEL, NUM_QUERY24 };
 
 /* Anchor: x is the left edge, the centre, or the right edge of the ink box. */
 enum { NUM_LT = 0, NUM_CT, NUM_RT };
@@ -42,6 +48,14 @@ int num_lookup_set(const char *s, int cap);
 /* Ink width in pixels (pen advances minus the last advance, plus the last
  * glyph's ink width), or -1 when the set cannot render the string. */
 int num_width(const char *s, int set);
+
+/* Total PEN advance, which is where the next glyph would start rather than
+ * where the ink stops. The two differ by the last glyph's right side bearing,
+ * and for a trailing space they differ by a whole space: "SOI " is ink-narrower
+ * than "SOI", so a caret placed at the ink edge walks BACKWARDS over the I when
+ * a rider types a space. The FIND page's block cursor uses this instead
+ * (DESIGN.md 1.4). 0 for an empty string, -1 when a glyph is missing. */
+int num_advance(const char *s, int set);
 
 /* Draw at x,y = the ink box's top-left/top-centre/top-right. Coordinates
  * are Python-rounded (half to even) before blitting, because a fractional

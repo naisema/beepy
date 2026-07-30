@@ -41,6 +41,11 @@ typedef struct {
      * so unlike the two directories above there is no default path to guess:
      * a pack is cut for a particular corridor and nothing can invent one. */
     char basemap[CFG_PATH_MAX];
+    /* The road/name pack FIND searches and routes over (DESIGN.md 1.4), built
+     * on the Mac by tools/mkpack.py. Empty means no pack, and then F says so
+     * on the panel and does nothing else -- the same shape as basemap above,
+     * and for the same reason: nothing can invent an extract. */
+    char roads[CFG_PATH_MAX];
 } navcfg_t;
 
 void cfg_defaults(navcfg_t *c);

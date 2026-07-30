@@ -17,6 +17,7 @@ cfg_defaults(navcfg_t *c)
     c->routes_dir[0] = '\0';
     c->rides_dir[0] = '\0';  /* 7.6; ridelog_default_dir() decides */
     c->basemap[0] = '\0';    /* 6.5; no pack, and no path to guess  */
+    c->roads[0] = '\0';      /* 1.4; likewise -- F says so when it is absent */
 }
 
 void
@@ -128,12 +129,13 @@ cfg_load(navcfg_t *c, const char *path, int loud)
                 complain(path, lineno, "units must be metric or imperial, not",
                          val);
         } else if (!strcmp(key, "routes_dir") || !strcmp(key, "rides_dir") ||
-                   !strcmp(key, "basemap")) {
-            /* Three paths, one rule. Not lowercased: on the device's f2fs and
+                   !strcmp(key, "basemap") || !strcmp(key, "roads")) {
+            /* Four paths, one rule. Not lowercased: on the device's f2fs and
              * on a Mac's APFS a path's case is its own business. */
             char *dst = !strcmp(key, "rides_dir")  ? c->rides_dir
-                        : !strcmp(key, "basemap") ? c->basemap
-                                                  : c->routes_dir;
+                        : !strcmp(key, "basemap")  ? c->basemap
+                        : !strcmp(key, "roads")    ? c->roads
+                                                   : c->routes_dir;
             if (!*val)
                 complain(path, lineno, "is empty", key);
             else if (strlen(val) >= (size_t)CFG_PATH_MAX)

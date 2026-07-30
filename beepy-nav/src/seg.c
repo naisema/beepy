@@ -8,6 +8,7 @@
 
 #include "numerals.h"
 #include "labels.h"
+#include "query24.h"
 
 #include "seg.h"
 
@@ -21,12 +22,18 @@ find(const glyph_t *tab, int n, const char *s, int len)
     return NULL;
 }
 
+/* The per-character table a set draws from. "digit" is historical: NUM_QUERY24
+ * carries letters too, and is laid out by exactly the same pen arithmetic. */
 static const glyph_t *
 digit_tab(int set, int *n)
 {
     if (set == NUM_54) {
         *n = NUM54_N;
         return NUM54;
+    }
+    if (set == NUM_QUERY24) {
+        *n = QUERY24_N;
+        return QUERY24;
     }
     *n = NUM22_N;
     return NUM22;
@@ -48,6 +55,8 @@ num_cap(int set)
         return NUM22_CAP;
     case UNITS_22:
         return UNITS22_CAP;
+    case NUM_QUERY24:
+        return QUERY24_CAP;
     default:
         return 0;
     }
@@ -91,6 +100,28 @@ num_width(const char *s, int set)
         last = g;
     }
     return pen - last->adv + last->w;
+}
+
+int
+num_advance(const char *s, int set)
+{
+    const glyph_t *tab, *g;
+    int n, pen = 0;
+
+    if (!s)
+        return -1;
+    if (!*s)
+        return 0;
+    if (set == NUM_LABEL || set == UNITS_22)
+        return num_width(s, set);
+    tab = digit_tab(set, &n);
+    for (; *s; s++) {
+        g = find(tab, n, s, 1);
+        if (!g)
+            return -1;
+        pen += g->adv;
+    }
+    return pen;
 }
 
 int

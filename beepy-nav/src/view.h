@@ -8,7 +8,8 @@
 #define BEEPY_NAV_VIEW_H
 
 #include "libbeepyfb/cover.h"
-#include "route.h" /* the countdown ladder (1.1.1) */
+#include "route.h"  /* the countdown ladder (1.1.1) */
+#include "search.h" /* place_t, for the FIND page's rows (1.4) */
 
 #define PANEL_W 128       /* turn panel: 32% of the width */
 #define MAP_X (PANEL_W + 2)
@@ -107,10 +108,51 @@ typedef struct {
     int osm;
 } overview_t;
 
+/* The FIND page (DESIGN.md 1.4): a query being typed and the nearest matches.
+ * Four rows is what the mockup shows and what the layout holds -- 34 px a row
+ * from y 74, at the scale-2 floor.
+ *
+ * `nhits` is the TOTAL match count, not `nshown`: 1.4 calls the title bar's
+ * number a live hit count, and a count that stops at the size of the visible
+ * list is not one. search_places() returns the two separately for this reason.
+ */
+#define FIND_ROWS 4
+#define FIND_QUERY_MAX 40
+typedef struct {
+    const char *query;   /* what has been typed, uppercase */
+    const place_t *hit;  /* nshown of them, nearest first */
+    int nshown;
+    int nhits;
+    int sel;             /* which row is inverted; N/P move it */
+    int units;
+    /* Names the pack could not index for having no ASCII form
+     * (roads_ndropped()). DESIGN.md 1.4: "nothing is searchable that is not in
+     * the pack, and the hit count says so honestly" -- so when a query finds
+     * nothing, the page says how much of the pack it cannot show rather than
+     * letting the rider conclude the place does not exist. */
+    int ndropped;
+} find_t;
+
+/* The CONFIRM page (DESIGN.md 1.4): the OVERVIEW page's cartography fitted to
+ * the PROPOSED route, with the strip carrying the one decision. Geometry is
+ * world metres, as everywhere else; the length, the estimate and the turn count
+ * are all derived here from `pts` and `ncues`, so the page cannot disagree with
+ * the route it is drawing. */
+typedef struct {
+    const double *pts;
+    int npts;
+    const int *cue_idx; /* one vertex index per NON-destination cue */
+    int ncues;          /* how many -- also the "N TURNS" figure */
+    const char *dest;   /* uppercase; the title reads "TO <dest>" */
+    int units;
+} confirm_t;
+
 void view_turn_panel(cov_t *c, const panel_t *p);
 void view_nav_map(cov_t *c, const navmap_t *m);
 void view_nav(cov_t *c, const navmap_t *m, const panel_t *p);
 void view_overview(cov_t *c, const overview_t *o);
+void view_find(cov_t *c, const find_t *f);
+void view_confirm(cov_t *c, const confirm_t *cf);
 
 /* Map marks shared by the two pages; defined in view_nav.c, where they were
  * transcribed from mockup.py. The OVERVIEW page is the same cartography at a
@@ -141,6 +183,18 @@ void view_nav_tiles_demo(cov_t *c, struct tiles *t);
 /* The static demo state page_overview() renders. `osm` adds the attribution
  * line of DESIGN.md 6.5, which is what a loaded basemap does to this page. */
 void view_overview_demo(cov_t *c, int osm);
+
+/* mockup.py's page_search(): "SOI 23" from the Asok route's first point, over
+ * the road pack `g` -- so this page is the search itself and not a picture of
+ * one. `g` NULL renders the empty-pack state, which is the frame nothing should
+ * ever reach (F says so on the panel instead) and is therefore worth having.
+ * `zero` types a query that matches nothing, which is the honest-coverage state
+ * DESIGN.md 1.4 asks for and which the mockup has no reference for. */
+void view_find_demo(cov_t *c, roads_t *g, int zero);
+
+/* mockup.py's page_confirm(): the same Asok route the basemap demo rides,
+ * proposed rather than under way. */
+void view_confirm_demo(cov_t *c);
 
 /* The clipping test of DESIGN.md 10: the NAV map at a zoom where the route
  * leaves the view on all four sides. Nothing but the panel may put ink in

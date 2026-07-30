@@ -233,14 +233,18 @@ FACES = ("/System/Library/Fonts/Supplemental/Arial Bold.ttf",
 _face_cache = {}
 
 # Once the generated tables exist (tools/gen_tables.py -> src/numerals.h,
-# tools/gen_labels.py -> src/labels.h), num() blits them with integer
-# advances instead of rasterizing through PIL -- the same tables, the same
-# advances and the same set-selection rule as seg.c, so mockup and C
-# numerals are identical BY CONSTRUCTION rather than by resemblance. The
-# PIL path below survives as the fallback when the headers are absent and
-# for strings outside the tables (search queries), and it is still what
-# the table generators themselves render with.
-TABLE_FILES = ("src/numerals.h", "src/labels.h")
+# tools/gen_labels.py -> src/labels.h, tools/gen_query.py -> src/query24.h),
+# num() blits them with integer advances instead of rasterizing through PIL --
+# the same tables, the same advances and the same set-selection rule as seg.c,
+# so mockup and C numerals are identical BY CONSTRUCTION rather than by
+# resemblance. The PIL path below survives as the fallback when the headers are
+# absent, and it is still what the table generators themselves render with.
+#
+# The FIND query used to be the one string left on the PIL path (M6: the device
+# has no TrueType rasterizer, so "24 px bold" had to become a table like every
+# other size). QUERY24 is that table; nav-search.png moved when it landed, by
+# the integer-advance tracking the table imposes.
+TABLE_FILES = ("src/numerals.h", "src/labels.h", "src/query24.h")
 
 
 def load_num_tables():
@@ -288,7 +292,13 @@ def _table_layout(s, cap_px):
         g = NUMTAB.get(name, {}).get(s)
         if g:
             return g[0], [(g, 0)]
-    tab = NUMTAB["NUM54" if cap_px >= 54 else "NUM22"]
+    # QUERY24 is asked for by cap, and only by the one cap the FIND page uses.
+    # Nothing else on any page sets anything at 24, so no other frame can pick
+    # up letterforms where it was expecting digits.
+    if cap_px == QUERY_CAP and "QUERY24" in NUMTAB:
+        tab = NUMTAB["QUERY24"]
+    else:
+        tab = NUMTAB["NUM54" if cap_px >= 54 else "NUM22"]
     if not s or not all(ch in tab for ch in s):
         return None
     pen, out = 0, []
@@ -324,7 +334,23 @@ def num_size(c, s, cap_px):
     return (b[2] - b[0]) / SS, (b[3] - b[1]) / SS
 
 
+def num_pen(c, s, cap_px):
+    """
+    Total pen ADVANCE, which is where the next glyph would start -- not where
+    the ink stops. seg.c's num_advance(); see it for why the FIND cursor needs
+    the difference (a trailing space makes the ink box narrower, so a caret at
+    the ink edge walks backwards over the previous letter).
+    """
+    t = _table_layout(s, cap_px)
+    if t is not None:
+        return sum(g[4] for g, _pen in t[1])
+    if not s:
+        return 0.0
+    return c.d.textlength(s, font=face(cap_px)) / SS
+
+
 NUM_MIN_CAP = 16        # below this, use the bitmap font instead -- see num()
+QUERY_CAP = 24          # the FIND query's cap, and QUERY24's (DESIGN.md 1.4)
 
 
 def num(c, x, y, s, cap_px, ink=INK, anchor="lt"):
@@ -980,21 +1006,28 @@ def compass8(b):
         ((math.degrees(b) + 22.5) % 360) // 45)]
 
 
-def render_search(query, pos, sel=0):
+def render_search(query, pos, sel=0, nhits=None):
     """
     FIND screen: the query being typed, matches nearest-first. Driven by the
     Beepy's own QWERTY -- type-to-filter is this hardware's home advantage, so
     there is no on-screen keyboard and no cursor chasing.
+
+    `nhits` is the TOTAL number of matches, which is not the same as the length
+    of the list below it: search_places() stops at its limit, and a title bar
+    that reads "5 HITS" when there are ninety is not the "live hit count"
+    DESIGN.md 1.4 promises. The C side (search.c) returns the total separately;
+    here the default keeps the old behaviour for a caller that has only a list.
     """
     c = Canvas()
     c.rect(0, 0, W - 1, 25, INK)
     text(c, 6, 5, "FIND", 2, PAPER)
     hits = search_places(query, pos)
-    rtext(c, W - 6, 5, f"{len(hits)} HIT" + ("S" if len(hits) != 1 else ""),
-          2, PAPER)
+    n = len(hits) if nhits is None else nhits
+    rtext(c, W - 6, 5, f"{n} HIT" + ("S" if n != 1 else ""), 2, PAPER)
 
-    num(c, 8, 34, query, 24, INK)
-    qw = num_size(c, query, 24)[0]
+    num(c, 8, 34, query, QUERY_CAP, INK)
+    # The pen, not the ink box: see num_pen().
+    qw = num_pen(c, query, QUERY_CAP)
     c.rect(14 + qw, 36, 14 + qw + 12, 58, INK)          # block cursor
 
     y = 74

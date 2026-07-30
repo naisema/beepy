@@ -48,6 +48,8 @@
 #include "map.h"
 #include "ridelog.h"
 #include "route.h"
+#include "router.h"
+#include "search.h"
 #include "tile.h"
 #include "view.h"
 
@@ -101,20 +103,24 @@ static const char USAGE[] =
     "                --no-rate-5hz is the default (see DESIGN.md 6.3)\n"
     "  --basemap F   an OSM tile pack under the map (DESIGN.md 6.5), built\n"
     "                by tools/mktiles.py; --no-basemap defeats the config\n"
+    "  --roads F     the road/name pack F searches and routes over (1.4),\n"
+    "                built by tools/mkpack.py; --no-roads defeats the config\n"
     "  --no-log      do not record the ride. On a real port the raw NMEA and\n"
     "                the per-fix trace go to ~/rides/YYYYMMDD-HHMMSS.{nmea,tsv}\n"
     "                unless this says otherwise (rides_dir in the config)\n"
     "  --demo        render a static design state instead of navigating\n"
     "  --page P      nav, nav-off, nav-nofix, nav-tiles, overview,\n"
-    "                overview-tiles, arrows, chooser, cliptest,\n"
-    "                cliptest-panel -- and with\n"
+    "                overview-tiles, arrows, chooser, find, find-none,\n"
+    "                confirm, cliptest, cliptest-panel -- and with\n"
     "                --route it picks the page the ride opens on\n"
     "  --dump FILE   write the frame as 384000 raw XRGB bytes\n"
     "  --bench N     time N draw+resolve cycles and print ms/frame\n"
     "\n"
-    "keys: Tab page   R change route   Q quit   H hold\n"
+    "keys: Tab page   F find a destination   R change route   Q quit   H hold\n"
     "      O course-up/north-up   Z/X zoom out/in   A auto zoom\n"
-    "      U metric/imperial   L cue alerts on/off\n";
+    "      U metric/imperial   L cue alerts on/off\n"
+    "find: type to filter   Down/Up select   Enter route   Esc (or Backspace\n"
+    "      on an empty query) cancel;  confirm: Enter go   Q cancel\n";
 
 enum {
     PAGE_NAV,
@@ -124,16 +130,27 @@ enum {
     PAGE_OVERVIEW,
     PAGE_OVERVIEW_TILES,
     PAGE_ARROWS,
+    PAGE_FIND,
+    PAGE_FIND_NONE,
+    PAGE_CONFIRM,
     PAGE_CLIPTEST,
     PAGE_CLIPTEST_PANEL,
     PAGE_CHOOSER
 };
-enum { LIVE_NAV, LIVE_OVERVIEW };
+/* The live pages. FIND and CONFIRM are pages and not a modal sub-loop, which is
+ * the whole reason they are testable: the frame clock keeps running behind them,
+ * --key drives them in a headless replay exactly as it drives L, and the ride
+ * that resumes after a cancel never noticed they were there. */
+enum { LIVE_NAV, LIVE_OVERVIEW, LIVE_FIND, LIVE_CONFIRM };
 
 /* run_live()'s "the rider wants a different route", distinct from any exit
  * status: main() loops back to the picker rather than returning it. Outside
  * the NAV_DEVICE guard because main() tests it in both lanes. */
 #define RUN_PICK_AGAIN 100
+/* And "the rider chose a destination on CONFIRM": main() installs the route the
+ * router built and goes round the same loop, so a routed destination and a GPX
+ * reach run_live() by the identical path (DESIGN.md 1.4). */
+#define RUN_FIND_ROUTE 101
 
 /* The coverage buffer is 96 KB; keep it out of the stack. */
 static cov_t COV;
@@ -145,11 +162,23 @@ static cov_t COV;
  * bound to changes, which tiles_bind_route() does after each route_load(). */
 static tiles_t *g_tiles;
 
+/* The road/name pack (DESIGN.md 1.4), or NULL -- none configured, missing, or
+ * not a pack. At file scope for the same reason g_tiles is: it outlives every
+ * route, and unlike the tile pack it is not even bound to one (search.h). */
+static roads_t *g_roads;
+
+/* The route CONFIRM approved, waiting for main() to install it. A route_t and
+ * not a path, because there is no file: router_to() built it, route_prepare()
+ * and route_cues_derive() have already run on it, and main() takes ownership by
+ * struct copy. */
+static route_t g_found;
+static int g_have_found;
+
 /* ------------------------------------------------------------------ demo */
 
 static void
 render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
-            tiles_t *tiles)
+            tiles_t *tiles, roads_t *roads)
 {
     cov_begin(cov);
     switch (page) {
@@ -173,6 +202,19 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
         break;
     case PAGE_ARROWS:
         view_arrows(cov);
+        break;
+    /* The FIND page IS the search: it runs search_places() against the pack it
+     * is handed, so the frozen frame is evidence about the index and not just
+     * about the layout. With no --roads it renders the empty-pack state, which
+     * is the pair that says "the search is what put the row there". */
+    case PAGE_FIND:
+        view_find_demo(cov, roads, 0);
+        break;
+    case PAGE_FIND_NONE:
+        view_find_demo(cov, roads, 1);
+        break;
+    case PAGE_CONFIRM:
+        view_confirm_demo(cov);
         break;
     case PAGE_CLIPTEST:
         view_cliptest(cov);
@@ -304,6 +346,24 @@ typedef struct {
     int alert_cue, alert_done, alert_fired;
 
     int page, hold, quit, course_up;
+
+    /* --- FIND and CONFIRM (DESIGN.md 1.4) ------------------------------- */
+
+    int page_back;              /* the page F was pressed on               */
+    char query[FIND_QUERY_MAX]; /* what has been typed, uppercase          */
+    int qn;
+    place_t hit[FIND_ROWS];
+    int nhits;  /* the TOTAL, which is what the title bar shows */
+    int nshown; /* how many of them are on screen               */
+    int sel;
+    /* What CONFIRM is drawing: a fully prepared route_t, so the page it is
+     * shown on and the ride it becomes are the same object. Freed on cancel and
+     * on quit; handed to main() by struct copy on GO. */
+    route_t proposed;
+    int have_proposed;
+    int cf_idx[ROUTE_MAXCUE];
+    int find_go; /* CONFIRM's ENTER: leave this route for the new one */
+
     /* R: leave this route and go back to the picker, without leaving the
      * program. Distinct from quit, because the panel, the evdev grab and the
      * process all survive it -- only the route does not. */
@@ -700,6 +760,38 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
     char clock[8], togo[16], total[16], remain[16], etabuf[24];
 
     cov_begin(cov);
+    if (a->page == LIVE_FIND) {
+        find_t f;
+        f.query = a->query;
+        f.hit = a->hit;
+        f.nshown = a->nshown;
+        f.nhits = a->nhits;
+        f.sel = a->sel;
+        f.units = a->ctx.units;
+        f.ndropped = roads_ndropped(g_roads);
+        view_find(cov, &f);
+        cov_resolve(cov, cv);
+        return;
+    }
+    if (a->page == LIVE_CONFIRM && a->have_proposed) {
+        const route_t *pr = &a->proposed;
+        confirm_t cf;
+        int i, k = 0;
+        /* Every cue but the destination gets a dot; the destination gets the
+         * flag. route_cues_finish() guarantees the last one is CUE_DEST. */
+        for (i = 0; i < pr->ncue && k < ROUTE_MAXCUE; i++)
+            if (pr->cue[i].kind != CUE_DEST)
+                a->cf_idx[k++] = pr->cue[i].idx;
+        cf.pts = pr->en;
+        cf.npts = pr->npt;
+        cf.cue_idx = a->cf_idx;
+        cf.ncues = k;
+        cf.dest = pr->name;
+        cf.units = a->ctx.units;
+        view_confirm(cov, &cf);
+        cov_resolve(cov, cv);
+        return;
+    }
     if (a->page == LIVE_OVERVIEW) {
         overview_t o;
         int i;
@@ -1414,9 +1506,196 @@ note_show(app_t *a, const char *s)
     a->note_until = a->frame_t + NOTE_S;
 }
 
+/* --------------------------------------------------- FIND (DESIGN.md 1.4)
+ *
+ * Two keycodes that are not characters, so the arrow keys can move the
+ * selection without stealing a letter from the query. Above 255 deliberately:
+ * every value handle_key() gets from a keyboard or from stdin is a byte, so
+ * these cannot collide with one.
+ */
+#define NAVKEY_DOWN 0x100
+#define NAVKEY_UP 0x101
+
+/* Where the search measures from. The fix if there has ever been one, and
+ * otherwise the pack's own reference -- which is the middle of the corridor it
+ * was cut for, and the only position that exists before the receiver has said
+ * anything. A cold navigator on a roadside is exactly when a rider wants to
+ * type a destination, so refusing to search without a fix would break the
+ * feature at the one moment it matters. The distances are then honest about a
+ * position nobody claimed; nothing else on the page depends on them. */
+static void
+find_origin(const app_t *a, double *e, double *n)
+{
+    if (a->epochs > 0)
+        roads_project(g_roads, a->fx.lat, a->fx.lon, e, n);
+    else
+        *e = *n = 0.0;
+}
+
+/* Re-run the search. Called on every keystroke that changes the query, which is
+ * what makes this type-to-filter and not type-then-search: the whole cost is
+ * one pass over the name table (DESIGN.md 1.4). */
+static void
+find_update(app_t *a)
+{
+    double e, n;
+    find_origin(a, &e, &n);
+    a->nhits = search_places(g_roads, a->query, e, n, a->hit, FIND_ROWS);
+    a->nshown = a->nhits < FIND_ROWS ? a->nhits : FIND_ROWS;
+    if (a->sel >= a->nshown)
+        a->sel = a->nshown > 0 ? a->nshown - 1 : 0;
+}
+
+static void
+find_open(app_t *a)
+{
+    a->page_back = a->page;
+    a->page = LIVE_FIND;
+    a->qn = 0;
+    a->query[0] = '\0';
+    a->sel = 0;
+    find_update(a);
+}
+
+static void
+find_drop_proposed(app_t *a)
+{
+    if (a->have_proposed)
+        route_free(&a->proposed);
+    a->have_proposed = 0;
+}
+
+/* Route to the selected hit and show CONFIRM. An unreachable destination is a
+ * message on the FIND page's transient row and nothing else -- never a crash,
+ * and never a half-built route (router_to() leaves `out` empty on failure). */
+static void
+find_route_selected(app_t *a)
+{
+    static char why[96];
+    double e, n;
+    const place_t *h;
+
+    if (a->sel < 0 || a->sel >= a->nshown)
+        return;
+    h = &a->hit[a->sel];
+    find_origin(a, &e, &n);
+    find_drop_proposed(a);
+    if (router_to(g_roads, e, n, h->e, h->n, h->name, &a->proposed, why,
+                  (int)sizeof why)) {
+        fprintf(stderr, "beepy-nav: %s\n", why);
+        note_show(a, "NO ROUTE");
+        return;
+    }
+    a->have_proposed = 1;
+    a->page = LIVE_CONFIRM;
+    fprintf(stderr, "beepy-nav: routed to %s -- %d points, %.2f km, %d cues\n",
+            a->proposed.name, a->proposed.npt, a->proposed.total_m / 1000.0,
+            a->proposed.ncue);
+}
+
+/* The FIND page owns every key. That is not an oversight: the whole surface of
+ * this page is a text field, so Q types a Q and H types an H, and a page that
+ * quietly kept a global meaning for one of the twenty-six letters would eat a
+ * character out of half the street names in Bangkok.
+ *
+ * Which leaves cancelling. DESIGN.md 1.4's table says N/P move the selection,
+ * and that cannot be true here for the same reason -- so the arrows do, and
+ * Esc backs out. Backspace on an EMPTY query backs out too, because the Beepy's
+ * Esc needs the symbol layer and a rider must never be able to reach a page
+ * they cannot leave with the keys already under their thumbs. */
+static int
+find_key(app_t *a, int ch)
+{
+    switch (ch) {
+    case '\n':
+    case '\r':
+        find_route_selected(a);
+        break;
+    case 27: /* Esc */
+        a->page = a->page_back;
+        break;
+    case '\b':
+    case 127: /* DEL, which is what a terminal sends for Backspace */
+        if (a->qn == 0) {
+            a->page = a->page_back;
+            break;
+        }
+        a->query[--a->qn] = '\0';
+        find_update(a);
+        break;
+    case NAVKEY_DOWN:
+        if (a->nshown > 0)
+            a->sel = (a->sel + 1) % a->nshown;
+        break;
+    case NAVKEY_UP:
+        if (a->nshown > 0)
+            a->sel = (a->sel + a->nshown - 1) % a->nshown;
+        break;
+    default:
+        /* A-Z, 0-9 and space, and nothing else: those are the glyphs
+         * tools/gen_query.py prepared, and a character with no glyph would
+         * blank the whole query line rather than appear as a box. Lower case is
+         * folded up because the pack's names are uppercase and so is the font.
+         *
+         * Digits need the Beepy's symbol layer (DESIGN.md 2 -- "the digit row
+         * needs the Alt modifier"), which is why the keymap accepts them from
+         * evdev as well: the overlay sends KEY_1..KEY_0 and this is the one
+         * page where a digit is worth the modifier. */
+        if (ch >= 'a' && ch <= 'z')
+            ch = ch - 'a' + 'A';
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+              ch == ' '))
+            return 0;
+        if (a->qn + 1 >= FIND_QUERY_MAX)
+            return 0; /* the field is full; a silent no-op beats a wrap */
+        a->query[a->qn++] = (char)ch;
+        a->query[a->qn] = '\0';
+        find_update(a);
+        break;
+    }
+    key_repaint(a);
+    return 1;
+}
+
+/* CONFIRM has exactly the two keys its own strip advertises. */
+static int
+confirm_key(app_t *a, int ch)
+{
+    switch (ch) {
+    case '\n':
+    case '\r':
+        if (!a->have_proposed)
+            return 0;
+        /* Hand the route to main() and leave this one. Not a new program state:
+         * the same RUN_* mechanism R uses, so the panel, the evdev grab and the
+         * process all survive, and the ride that starts is started by exactly
+         * the code that starts a GPX ride. */
+        g_found = a->proposed;
+        g_have_found = 1;
+        a->have_proposed = 0; /* ownership moved; do not free it here */
+        a->find_go = 1;
+        a->quit = 1;
+        return 1; /* no repaint: the next frame belongs to the new route */
+    case 'q':
+    case 'Q':
+    case 27: /* Esc, for a thumb that has just used it on the page before */
+        find_drop_proposed(a);
+        a->page = LIVE_FIND;
+        break;
+    default:
+        return 0;
+    }
+    key_repaint(a);
+    return 1;
+}
+
 static int
 handle_key(app_t *a, int ch)
 {
+    if (a->page == LIVE_FIND)
+        return find_key(a, ch);
+    if (a->page == LIVE_CONFIRM)
+        return confirm_key(a, ch);
     switch (ch) {
     case '\t':
         a->page = a->page == LIVE_NAV ? LIVE_OVERVIEW : LIVE_NAV;
@@ -1480,6 +1759,19 @@ handle_key(app_t *a, int ch)
         led_enable(a->alerts);
         note_show(a, a->alerts ? "ALERTS ON" : "ALERTS OFF");
         break;
+    /* DESIGN.md 2 promises F opens FIND "from any page", and 1.4 says nothing
+     * is searchable that is not in the pack. With no pack there is nothing to
+     * type into, and the one thing this key must not be is silent: a dead key
+     * is indistinguishable from a broken program. The transient row says which
+     * of the two it is, once, and the ride carries on underneath. */
+    case 'f':
+    case 'F':
+        if (!g_roads) {
+            note_show(a, "NO ROAD PACK");
+            break;
+        }
+        find_open(a);
+        break;
     default:
         return 0;
     }
@@ -1487,10 +1779,34 @@ handle_key(app_t *a, int ch)
     return 1;
 }
 
+/* --key SEC:NAME for the presses that are not characters. Without these the
+ * FIND flow could only be driven by a physical thumb, and DESIGN.md 2 is
+ * explicit that this is not a debugging affordance to be removed later: it is
+ * the only way any of the keymap is testable. */
+static int
+keyname_to_ch(const char *s)
+{
+    static const struct {
+        const char *name;
+        int ch;
+    } NAMES[] = {{"enter", '\n'}, {"esc", 27},        {"bs", '\b'},
+                 {"space", ' '},  {"tab", '\t'},      {"down", NAVKEY_DOWN},
+                 {"up", NAVKEY_UP}};
+    size_t i;
+    if (!s || !*s)
+        return -1;
+    if (!s[1])
+        return (unsigned char)s[0];
+    for (i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++)
+        if (!strcmp(s, NAMES[i].name))
+            return NAMES[i].ch;
+    return -1;
+}
+
 /* Presses scheduled against the ride clock (--key SEC:CHAR). The mechanism a
  * replay test uses to press a key, and the reason handle_key() above is not
  * behind NAV_DEVICE. */
-#define MAX_KEYS 8
+#define MAX_KEYS 16
 typedef struct {
     double at;
     int ch;
@@ -1515,32 +1831,120 @@ keys_due(app_t *a, double t)
 
 #ifdef NAV_DEVICE
 
+/* Every letter, every digit, space and the four editing keys.
+ *
+ * Before FIND existed this mapped the ten bound keys and nothing else, and that
+ * was the right size: a key with no meaning should not become a character. The
+ * FIND page changes the premise -- its whole surface is a text field, so the
+ * WHOLE alphabet has to arrive, and what a key means is decided by handle_key()
+ * against the current page rather than here. Letters with no meaning on the NAV
+ * page still fall through handle_key()'s default and cost nothing.
+ *
+ * The table is written out rather than derived from KEY_A..KEY_Z, because Linux
+ * numbers those in QWERTY row order and not alphabetically -- KEY_A is 30 and
+ * KEY_B is 48. A loop over that range would map half the alphabet wrong. */
 static int
 keycode_to_char(int code)
 {
     switch (code) {
-    case KEY_TAB:
-        return '\t';
-    case KEY_R:
-        return 'r';
-    case KEY_Q:
-        return 'q';
-    case KEY_H:
-        return 'h';
-    case KEY_O:
-        return 'o';
-    case KEY_Z:
-        return 'z';
-    case KEY_X:
-        return 'x';
-    case KEY_A:
-        return 'a';
-    case KEY_U:
-        return 'u';
-    case KEY_L:
-        return 'l';
+    case KEY_A: return 'a';
+    case KEY_B: return 'b';
+    case KEY_C: return 'c';
+    case KEY_D: return 'd';
+    case KEY_E: return 'e';
+    case KEY_F: return 'f';
+    case KEY_G: return 'g';
+    case KEY_H: return 'h';
+    case KEY_I: return 'i';
+    case KEY_J: return 'j';
+    case KEY_K: return 'k';
+    case KEY_L: return 'l';
+    case KEY_M: return 'm';
+    case KEY_N: return 'n';
+    case KEY_O: return 'o';
+    case KEY_P: return 'p';
+    case KEY_Q: return 'q';
+    case KEY_R: return 'r';
+    case KEY_S: return 's';
+    case KEY_T: return 't';
+    case KEY_U: return 'u';
+    case KEY_V: return 'v';
+    case KEY_W: return 'w';
+    case KEY_X: return 'x';
+    case KEY_Y: return 'y';
+    case KEY_Z: return 'z';
+    /* The digit row needs the Beepy's symbol layer (DESIGN.md 2), which sends
+     * these keycodes; the FIND page is the one place a digit is worth the
+     * modifier, and "SOI 23" is why. */
+    case KEY_0: return '0';
+    case KEY_1: return '1';
+    case KEY_2: return '2';
+    case KEY_3: return '3';
+    case KEY_4: return '4';
+    case KEY_5: return '5';
+    case KEY_6: return '6';
+    case KEY_7: return '7';
+    case KEY_8: return '8';
+    case KEY_9: return '9';
+    case KEY_SPACE: return ' ';
+    case KEY_BACKSPACE: return '\b';
+    case KEY_ENTER:
+    case KEY_KPENTER: return '\n';
+    case KEY_ESC: return 27;
+    case KEY_DOWN: return NAVKEY_DOWN;
+    case KEY_UP: return NAVKEY_UP;
+    case KEY_TAB: return '\t';
     default:
         return 0;
+    }
+}
+
+/* stdin, byte at a time, with just enough of a state machine to turn the two
+ * arrow keys' CSI sequences into single presses.
+ *
+ * Not a terminal library: without it "\x1b[B" arrives on the FIND page as Esc
+ * (which cancels), '[' (which is not a glyph) and 'B' (which is typed) -- so a
+ * rider pressing Down over ssh would leave the page and type a letter into
+ * nothing. Three bytes of state buys the whole keymap a second input source,
+ * and DESIGN.md 2 is explicit that the ssh source is not optional. */
+static void
+stdin_keys(app_t *a)
+{
+    static int esc; /* 0 = idle, 1 = saw Esc, 2 = saw Esc [ */
+    char k;
+    while (read(STDIN_FILENO, &k, 1) == 1) {
+        if (esc == 1 && k == '[') {
+            esc = 2;
+            continue;
+        }
+        if (esc == 2) {
+            esc = 0;
+            if (k == 'A')
+                handle_key(a, NAVKEY_UP);
+            else if (k == 'B')
+                handle_key(a, NAVKEY_DOWN);
+            /* Left, Right, Home and the rest: swallowed rather than typed. */
+            continue;
+        }
+        if (esc == 1) {
+            /* Esc followed by anything else really was an Esc, and then this. */
+            esc = 0;
+            handle_key(a, 27);
+        }
+        if (k == 27) {
+            esc = 1;
+            continue;
+        }
+        handle_key(a, (unsigned char)k);
+    }
+    /* Esc still pending at the end of the drain was a real Esc: an arrow key's
+     * three bytes are written by the terminal in one go and read in one go, so
+     * "Esc alone in this batch" is the classic disambiguation and the reason
+     * this does not need a timeout. A "[" still pending is left for the next
+     * call, which is the one case where the sequence really did split. */
+    if (esc == 1) {
+        esc = 0;
+        handle_key(a, 27);
     }
 }
 
@@ -1569,6 +1973,8 @@ cleanup(void)
     led_off();
     tiles_close(g_tiles);
     g_tiles = NULL;
+    roads_close(g_roads);
+    g_roads = NULL;
     if (g_tty_raw)
         tcsetattr(STDIN_FILENO, TCSANOW, &g_tty_saved);
     evdev_close();
@@ -1615,12 +2021,10 @@ drain_keys(app_t *a)
         return;
     for (i = 0; i < np; i++) {
         int code, value;
-        char k;
         if (!(pfd[i].revents & POLLIN))
             continue;
         if (g_tty_raw && pfd[i].fd == STDIN_FILENO) {
-            while (read(STDIN_FILENO, &k, 1) == 1)
-                handle_key(a, k);
+            stdin_keys(a);
             continue;
         }
         while (evdev_next_key(pfd[i].fd, &code, &value))
@@ -1909,12 +2313,10 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
             }
             for (i = 1; i < np; i++) {
                 int code, value;
-                char k;
                 if (!(pfd[i].revents & POLLIN))
                     continue;
                 if (g_tty_raw && pfd[i].fd == STDIN_FILENO) {
-                    while (read(STDIN_FILENO, &k, 1) == 1)
-                        handle_key(a, k);
+                    stdin_keys(a);
                     continue;
                 }
                 while (evdev_next_key(pfd[i].fd, &code, &value))
@@ -2008,6 +2410,10 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
     }
     stats_flush(a, 1);
 
+    /* A proposal the rider neither accepted nor cancelled -- Ctrl-C on the
+     * CONFIRM page -- is still holding a route_t's four allocations. */
+    find_drop_proposed(a);
+
     led_off();
     ridelog_close(&RIDELOG);
     if (g_trace)
@@ -2021,8 +2427,9 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
         port_close(&port);
     /* On R the panel and the grab stay exactly where they are -- one owner,
      * handed back to the picker untouched. Releasing and re-taking would flash
-     * fbterm between the two screens, and re-taking can fail. */
-    if (!a->pick_again && g_panel_open) {
+     * fbterm between the two screens, and re-taking can fail. The same is true
+     * of a GO from CONFIRM, which is the same hand-off to a different caller. */
+    if (!a->pick_again && !a->find_go && g_panel_open) {
         fb_release(&g_panel);
         g_panel_open = 0;
         g_fb = NULL;
@@ -2030,6 +2437,8 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
 #endif
     fprintf(stderr, "beepy-nav: %ld fixes, %.1f%% done, %d full scans\n",
             a->epochs, a->nv.pct, a->ctx.full_scans);
+    if (a->find_go)
+        return RUN_FIND_ROUTE;
     return a->pick_again ? RUN_PICK_AGAIN : 0;
 }
 
@@ -2088,6 +2497,12 @@ main(int argc, char **argv)
                 page = PAGE_OVERVIEW_TILES;
             else if (!strcmp(p, "arrows"))
                 page = PAGE_ARROWS;
+            else if (!strcmp(p, "find"))
+                page = PAGE_FIND;
+            else if (!strcmp(p, "find-none"))
+                page = PAGE_FIND_NONE;
+            else if (!strcmp(p, "confirm"))
+                page = PAGE_CONFIRM;
             else if (!strcmp(p, "cliptest"))
                 page = PAGE_CLIPTEST;
             else if (!strcmp(p, "cliptest-panel"))
@@ -2121,12 +2536,13 @@ main(int argc, char **argv)
         }
         else if (!strcmp(a, "--key") && i + 1 < argc) {
             const char *v = argv[++i], *colon = strchr(v, ':');
-            if (!colon || !colon[1] || g_nkeys >= MAX_KEYS) {
+            int ch = colon ? keyname_to_ch(colon + 1) : -1;
+            if (!colon || ch < 0 || g_nkeys >= MAX_KEYS) {
                 fprintf(stderr, "bad --key: %s\n%s", v, USAGE);
                 return 2;
             }
             g_keys[g_nkeys].at = atof(v);
-            g_keys[g_nkeys].ch = (unsigned char)colon[1];
+            g_keys[g_nkeys].ch = ch;
             g_nkeys++;
         }
         else if (!strcmp(a, "--dump-at") && i + 1 < argc) {
@@ -2165,6 +2581,10 @@ main(int argc, char **argv)
             snprintf(cfg.basemap, sizeof cfg.basemap, "%s", argv[++i]);
         else if (!strcmp(a, "--no-basemap"))
             cfg.basemap[0] = '\0';
+        else if (!strcmp(a, "--roads") && i + 1 < argc)
+            snprintf(cfg.roads, sizeof cfg.roads, "%s", argv[++i]);
+        else if (!strcmp(a, "--no-roads"))
+            cfg.roads[0] = '\0';
         else if (!strcmp(a, "--config") && i + 1 < argc)
             i++; /* already read, above */
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
@@ -2212,6 +2632,30 @@ main(int argc, char **argv)
                     tiles_ref_lat(g_tiles), tiles_ref_lon(g_tiles));
     }
 
+    /* The road pack (DESIGN.md 1.4), on exactly the same terms: one line either
+     * way, and a navigator that still navigates without it. The difference is
+     * what its absence costs -- a basemap that is missing is a decoration that
+     * is missing, and a road pack that is missing means F has nothing to search,
+     * which is why the key says so rather than doing nothing. The dropped-name
+     * count is printed because it is the honest measure of "nothing is
+     * searchable that is not in the pack". */
+    if (cfg.roads[0]) {
+        char why[96];
+        g_roads = roads_open(cfg.roads, why, (int)sizeof why);
+        if (!g_roads)
+            fprintf(stderr, "beepy-nav: %s: %s; no search or routing\n",
+                    cfg.roads, why);
+        else
+            fprintf(stderr,
+                    "beepy-nav: roads %s -- %d nodes, %d edges, %d names "
+                    "(%d dropped, no ASCII form), oneway %s, "
+                    "reference %.5f,%.5f\n",
+                    cfg.roads, roads_nnode(g_roads), roads_nedge(g_roads),
+                    roads_nplace(g_roads), roads_ndropped(g_roads),
+                    roads_honours_oneway(g_roads) ? "honoured" : "IGNORED",
+                    roads_ref_lat(g_roads), roads_ref_lon(g_roads));
+    }
+
     /* ---------------------------------------------------- static pages */
     if (demo) {
         if (!dumppath && bench <= 0) {
@@ -2227,17 +2671,17 @@ main(int argc, char **argv)
         if (bench > 0) {
             struct timespec t0, t1;
             double ms;
-            render_demo(&COV, cv, page, routes, g_tiles); /* warm the caches */
+            render_demo(&COV, cv, page, routes, g_tiles, g_roads); /* warm the caches */
             clock_gettime(CLOCK_MONOTONIC, &t0);
             for (i = 0; i < bench; i++)
-                render_demo(&COV, cv, page, routes, g_tiles);
+                render_demo(&COV, cv, page, routes, g_tiles, g_roads);
             clock_gettime(CLOCK_MONOTONIC, &t1);
             ms = ((double)(t1.tv_sec - t0.tv_sec) * 1e3 +
                   (double)(t1.tv_nsec - t0.tv_nsec) / 1e6) /
                  bench;
             printf("bench: %d frames, %.3f ms/frame\n", bench, ms);
         } else {
-            render_demo(&COV, cv, page, routes, g_tiles);
+            render_demo(&COV, cv, page, routes, g_tiles, g_roads);
         }
         if (dumppath) {
             if (canvas_dump(cv, dumppath) < 0) {
@@ -2306,7 +2750,16 @@ main(int argc, char **argv)
     for (;;) {
         int rc;
 
-        if (route_load(routepath, &APP.rt, err, sizeof err)) {
+        /* Either a file or a destination the router built, and from here on
+         * nothing can tell which: route_load() and router_to() both leave a
+         * prepared route_t with cues, and this loop, run_live(), the two ride
+         * pages and the ride log see exactly one kind of route (DESIGN.md 1.4:
+         * "a GPX IS one, and everything downstream is identical"). */
+        if (g_have_found) {
+            APP.rt = g_found;
+            memset(&g_found, 0, sizeof g_found);
+            g_have_found = 0;
+        } else if (route_load(routepath, &APP.rt, err, sizeof err)) {
             fprintf(stderr, "beepy-nav: %s\n", err);
             return 1;
         }
@@ -2324,17 +2777,43 @@ main(int argc, char **argv)
 
         rc = run_live(&APP, devpath, replaypath, headless, pace_opt, do_print,
                       no_log ? NULL : rides);
-        if (rc != RUN_PICK_AGAIN)
+        if (rc != RUN_PICK_AGAIN && rc != RUN_FIND_ROUTE)
             return rc;
 
-#ifdef NAV_DEVICE
         /* A different route is a different ride: the old one's state cannot
          * carry over. route_free() and a zeroed app_t are the whole reset --
          * the snap window, the off-route run, the speed ring, the countdown
          * latch and the ride clock all live in there. The ride log closed
-         * with the ride, and the next one opens its own. */
+         * with the ride, and the next one opens its own.
+         *
+         * Everything the ride is ABOUT to need has already been moved out:
+         * g_found holds the routed destination, and the pack and the panel are
+         * at file scope precisely because they outlive this memset. */
         route_free(&APP.rt);
-        memset(&APP, 0, sizeof APP);
+        {
+            /* The rider's SESSION decisions survive the reset; the route's do
+             * not. 7.5 argues this for the mute -- a key is a decision about
+             * the next ten minutes -- and it is just as true of the units and
+             * the map orientation: a new destination must not silently put the
+             * panel back into kilometres. `can_pick` survives because whether
+             * there is a picker behind this ride is a fact about how the
+             * program was started, not about which route is loaded. */
+            int units = APP.ctx.units, alerts = APP.alerts;
+            int course_up = APP.course_up, can_pick = APP.can_pick;
+            double fps_keep = APP.fps;
+            memset(&APP, 0, sizeof APP);
+            nav_init(&APP.ctx);
+            nav_init(&APP.rctx);
+            nav_set_units(&APP.ctx, units);
+            APP.alerts = alerts;
+            APP.course_up = course_up;
+            APP.can_pick = can_pick;
+            APP.fps = fps_keep > 0.0 ? fps_keep : DR_FPS;
+            APP.alert_cue = -1;
+        }
+        if (rc == RUN_FIND_ROUTE)
+            continue;
+#ifdef NAV_DEVICE
         APP.can_pick = 1;
         if (chooser_run(chosen, sizeof chosen, &g_panel, routes) != 0) {
             fb_release(&g_panel);

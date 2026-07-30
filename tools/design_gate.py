@@ -26,8 +26,10 @@ whose downsampled value is exactly 128 and hands the list to fbdiff as
 --mask-list. Those pixels were decided by resolve()'s own `>= 128`, and a
 hair of geometry either way flips them -- they cannot distinguish a correct
 renderer from a displaced shape, which is the only thing --edges-only is
-trying to see. The count is printed so the exemption stays visible; it is
-84 pixels on the OVERVIEW page and 0 on the M2 pages.
+trying to see. The count is printed so the exemption stays visible, and it
+is 0, 1 or 2 on every page as this is written -- the exemption exists
+because such a pixel cannot tell a correct renderer from a displaced one,
+not because any page needs it to pass.
 
 The first bullet is checked by running fbdiff twice: once unmasked for the
 total, once with --mask panel. Panel differences are the masked count, and
@@ -49,20 +51,36 @@ WHITE = b"\xff\xff\xff\xff"
 MAX_PX = 480          # 0.5% of the frame
 PANEL_MAX = 0         # exact-by-construction: the panel must be identical
 
-# page name -> how mockup.py renders it. nav-turn-off is rendered here
-# WITHOUT the synthetic basemap, because view_nav.c draws route and track
-# only (DESIGN.md phase 2); the streets layer arrives with the tile work.
+# The road pack the FIND page searches (DESIGN.md 1.4). Committed, like the
+# tile fixture, and built by tools/mkpack.py from the same extract mockup.py
+# reads -- so the two sides of the gate are searching the same city.
+ROADS = os.path.join(NAVDIR, "tests", "roads", "asok.roads")
+
+# page name -> how mockup.py renders it, and any extra flags the C binary needs.
+# nav-turn-off is rendered here WITHOUT the synthetic basemap, because
+# view_nav.c draws route and track only (DESIGN.md phase 2); the streets layer
+# arrives with the tile work.
 PAGES = (
-    ("nav", "nav", lambda m, n: m.page_nav(n, basemap=False)),
-    ("nav-off", "nav-off", lambda m, n: m.page_nav(n, basemap=False, off=85)),
+    ("nav", "nav", lambda m, n: m.page_nav(n, basemap=False), ()),
+    ("nav-off", "nav-off", lambda m, n: m.page_nav(n, basemap=False, off=85),
+     ()),
     # The NO FIX state of DESIGN.md 1.1: the same turn page with the bottom
     # row inverted. It earns a gate entry of its own because the inversion is
     # the only place on this screen where the panel's polarity flips, and a
     # renderer that got it a pixel out would still "look right".
     ("nav-nofix", "nav-nofix",
-     lambda m, n: m.page_nav(n, basemap=False, nofix=True)),
-    ("overview", "nav-overview", lambda m, n: m.page_overview()),
-    ("arrows", "nav-arrows", lambda m, n: m.page_arrows()),
+     lambda m, n: m.page_nav(n, basemap=False, nofix=True), ()),
+    ("overview", "nav-overview", lambda m, n: m.page_overview(), ()),
+    ("arrows", "nav-arrows", lambda m, n: m.page_arrows(), ()),
+    # M6. FIND is here because its 24 px query became a generated glyph table
+    # (tools/gen_query.py) rather than a live TrueType render: the device has no
+    # rasterizer, so the only way "24 px bold" could survive the port was to
+    # make mockup and panel blit the same bitmaps -- and the moment they do, the
+    # page can be byte-compared like every other. It is also the one gate entry
+    # that checks a SEARCH: the row and its "464M NE" are computed from the
+    # committed pack on both sides, not drawn from a fixture.
+    ("find", "nav-search", lambda m, n: m.page_search(), ("--roads", ROADS)),
+    ("confirm", "nav-confirm", lambda m, n: m.page_confirm(), ()),
 )
 
 
@@ -84,7 +102,7 @@ def references(outdir):
             return plain(cov, dither)
 
         mockup.resolve = spy
-        for page, mockup_name, render in PAGES:
+        for page, mockup_name, render, _flags in PAGES:
             render(mockup, mockup_name)
             img = grabbed[mockup_name]
             small = covs["last"].resize((W, H), Image.BOX).load()
@@ -105,7 +123,7 @@ def references(outdir):
             path = os.path.join(outdir, f"ref-{page}.fb")
             open(path, "wb").write(out)
             grabbed[page] = path
-        return {p: (grabbed[p], grabbed[p + "!tie"]) for p, _, _ in PAGES}
+        return {p: (grabbed[p], grabbed[p + "!tie"]) for p, _, _, _ in PAGES}
     finally:
         os.chdir(cwd)
 
@@ -137,11 +155,11 @@ def main(argv):
 
     refs = references(outdir)
     bad = 0
-    for page, _, _ in PAGES:
+    for page, _, _, flags in PAGES:
         ref, tie = refs[page]
         got = os.path.join(outdir, f"c-{page}.fb")
-        subprocess.run([binary, "--demo", "--page", page, "--dump", got],
-                       check=True, capture_output=True)
+        subprocess.run([binary, "--demo", "--page", page, "--dump", got,
+                        *flags], check=True, capture_output=True)
         total, _, tied, _, _, _ = fbdiff(got, ref, "--mask-list", tie,
                                          "--max-px", str(MAX_PX))
         _, panel, _, nonedge, ok, _ = fbdiff(

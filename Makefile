@@ -61,7 +61,8 @@ NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
             beepy-nav/src/fix.o beepy-nav/src/chooser.o beepy-nav/src/led.o \
             beepy-nav/src/config.o beepy-nav/src/ridelog.o \
             beepy-nav/src/tile.o beepy-nav/src/search.o \
-            beepy-nav/src/router.o
+            beepy-nav/src/router.o beepy-nav/src/view_find.o \
+            beepy-nav/src/view_confirm.o
 HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h beepy-nav/src/*.h)
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -103,6 +104,15 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 		--basemap $(TILEPACK) --dump out-nav-tiles.fb
 	./beepy-nav/beepy-nav --demo --page overview-tiles \
 		--dump out-nav-overview-tiles.fb
+#	The FIND and CONFIRM pages of DESIGN.md 1.4. FIND takes the committed road
+#	pack because the page IS the search: its row and its "464M NE" are computed
+#	from the index, not drawn from a fixture, so this golden is evidence about
+#	search.c as well as about the layout.
+	./beepy-nav/beepy-nav --demo --page find \
+		--roads $(ROADPACK) --dump out-nav-find.fb
+	./beepy-nav/beepy-nav --demo --page find-none \
+		--roads $(ROADPACK) --dump out-nav-find-none.fb
+	./beepy-nav/beepy-nav --demo --page confirm --dump out-nav-confirm.fb
 	cmp goldens/nav-turn.fb     out-nav-turn.fb
 	cmp goldens/nav-off.fb      out-nav-off.fb
 	cmp goldens/nav-nofix.fb    out-nav-nofix.fb
@@ -110,6 +120,9 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	cmp goldens/nav-overview.fb out-nav-overview.fb
 	cmp goldens/nav-tiles.fb    out-nav-tiles.fb
 	cmp goldens/nav-overview-tiles.fb out-nav-overview-tiles.fb
+	cmp goldens/nav-find.fb     out-nav-find.fb
+	cmp goldens/nav-find-none.fb out-nav-find-none.fb
+	cmp goldens/nav-confirm.fb  out-nav-confirm.fb
 #	The five goldens above nav-tiles are rendered with NO pack, and that is
 #	the standing proof that the tile layer is optional: a basemap that is
 #	absent must render exactly what rendered before basemaps existed. The two
@@ -123,6 +136,16 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 		--basemap no-such-pack.tiles --dump out-nav-tiles-bad.fb
 	cmp out-nav-tiles-none.fb out-nav-tiles-bad.fb
 	! cmp -s out-nav-tiles.fb out-nav-tiles-none.fb
+#	The same argument for the road pack, and here it is stronger: the FIND page
+#	with no pack is a DIFFERENT frame -- it has to be, because a search with
+#	nothing to search cannot honestly show a hit -- so this pair says the row on
+#	the golden was put there by the index and not by the renderer.
+	@echo "--- T-ROADS-OPTIONAL: no pack and an unreadable one are one frame"
+	./beepy-nav/beepy-nav --demo --page find --dump out-nav-find-nopack.fb
+	./beepy-nav/beepy-nav --demo --page find \
+		--roads no-such-pack.roads --dump out-nav-find-badpack.fb
+	cmp out-nav-find-nopack.fb out-nav-find-badpack.fb
+	! cmp -s out-nav-find.fb out-nav-find-nopack.fb
 	@echo "check: PASS - demo dumps byte-identical to goldens"
 
 goldens: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -140,6 +163,11 @@ endif
 		--basemap $(TILEPACK) --dump goldens/nav-tiles.fb
 	./beepy-nav/beepy-nav --demo --page overview-tiles \
 		--dump goldens/nav-overview-tiles.fb
+	./beepy-nav/beepy-nav --demo --page find \
+		--roads $(ROADPACK) --dump goldens/nav-find.fb
+	./beepy-nav/beepy-nav --demo --page find-none \
+		--roads $(ROADPACK) --dump goldens/nav-find-none.fb
+	./beepy-nav/beepy-nav --demo --page confirm --dump goldens/nav-confirm.fb
 	@echo "goldens regenerated - review the diff before committing"
 
 # ----------------------------------------------------------- replay tests
@@ -201,6 +229,12 @@ $(RDIR)/detour.nmea: tools/mknmea.py $(RROUTE)
 $(RDIR)/nofix.nmea: tools/mknmea.py $(RROUTE)
 	$(MKNMEA) --speed 25 --brake --seed 1 --nofix 200:230 -o $@
 
+# A ride along the Asok route the road pack was cut around, so the FIND flow
+# below searches and routes from a position that is actually IN the pack. Slow,
+# because the whole route is 827 m and the flow needs thirty seconds of it.
+$(RDIR)/asok.nmea: tools/mknmea.py $(TILEROUTE)
+	python3 tools/mknmea.py --gpx $(TILEROUTE) --speed 12 --seed 11 -o $@
+
 $(RDIR)/rough.nmea: tools/mknmea.py $(RROUTE)
 	$(MKNMEA) --speed 25 --noise 2 --dropout 100:140 --nofix 300:330 \
 		--seed 7 -o $@
@@ -260,6 +294,7 @@ test-replay: $(NAV) $(REPLAYS)
 	$(ASSERT) $(RDIR)/live-ublox-frames.tsv --dr-closed-form 0.005 \
 		--head-ewma 0.55 0.01 --any base_spd "<" 0.8
 	$(MAKE) test-frames NAV="$(NAV)"
+	$(MAKE) test-find NAV="$(NAV)"
 	@echo "test-replay: PASS"
 
 # ------------------------------------------------- the 8 Hz frame clock
@@ -345,6 +380,74 @@ test-frames: $(NAV) $(REPLAYS)
 		--mask 138,4,166,42 --max-px 0
 	@echo "test-frames: PASS"
 
+# ------------------------------------------------- FIND, CONFIRM and GO (1.4)
+#
+# The whole pre-ride flow, driven from a headless replay: F, seven keystrokes,
+# ENTER to route, ENTER to go. DESIGN.md 2 is explicit that --key is not a
+# debugging affordance to be removed later -- it is the only way any of the
+# keymap is testable, and that goes double for a page whose entire surface is a
+# text field.
+#
+# The assertions are deliberately about the STATE MACHINE rather than about
+# pixels: the frames on this route move with the replay and cannot be frozen,
+# but "typing changed the screen", "ENTER produced a CONFIRM that is a different
+# screen again" and "the second ENTER started a ride on a route named after the
+# place" are exactly the claims of 1.4 and each of them has a way to fail.
+test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK)
+	@echo "--- T-FIND: F, a typed query, ENTER, CONFIRM, ENTER, riding"
+	$(NAV) --route $(TILEROUTE) --replay $(RDIR)/asok.nmea --headless $(FPS8) \
+		--roads $(ROADPACK) \
+		--dump-at 9.5:$(RDIR)/find-nav.fb \
+		--key 10:f --key 11:s --key 12:o --key 13:i \
+		--key 14:space --key 15:2 --key 16:3 \
+		--dump-at 17:$(RDIR)/find-typed.fb \
+		--key 18:enter \
+		--dump-at 19:$(RDIR)/find-confirm.fb \
+		--key 20:enter \
+		--dump-at 40:$(RDIR)/find-riding.fb \
+		2> $(RDIR)/find.log
+#	The router ran, on the device's own graph, and found the place that was
+#	typed -- not a place the test named.
+	grep -q "routed to SOI SUKHUMVIT 23" $(RDIR)/find.log
+#	And main() installed it by the same path a GPX takes: this line is printed
+#	by the route-loading loop and by nothing else.
+	grep -q "beepy-nav: SOI SUKHUMVIT 23 -- " $(RDIR)/find.log
+#	Three distinct screens. --min-px, because "the page changed" is the claim;
+#	an equality here would pass on a FIND page that never opened.
+	python3 tools/fbdiff.py $(RDIR)/find-nav.fb $(RDIR)/find-typed.fb \
+		--min-px 4000
+	python3 tools/fbdiff.py $(RDIR)/find-typed.fb $(RDIR)/find-confirm.fb \
+		--min-px 4000
+	python3 tools/fbdiff.py $(RDIR)/find-confirm.fb $(RDIR)/find-riding.fb \
+		--min-px 4000
+	@echo "--- T-FIND-NOPACK: F with no pack says so, and changes nothing else"
+#	The transient of 7.5's mechanism, on the same bottom row and for the same
+#	1.5 s. Masked exactly as T-CUE-LED-MUTE masks its own: the note is the only
+#	difference at 120.5 s, and by 122.5 s there is no difference at all. A key
+#	that did nothing would fail the first comparison; a key that changed the map
+#	would fail it too.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless $(FPS8) \
+		--no-roads --key 120:f \
+		--dump-at 120.5:$(RDIR)/nopack-a.fb \
+		--dump-at 122.5:$(RDIR)/nopack-b.fb
+	python3 tools/fbdiff.py $(RDIR)/nopack-a.fb $(RDIR)/plain-a.fb \
+		--mask 0,216,127,239 --max-px 0
+	! python3 tools/fbdiff.py $(RDIR)/nopack-a.fb $(RDIR)/plain-a.fb --max-px 0
+	python3 tools/fbdiff.py $(RDIR)/nopack-b.fb $(RDIR)/plain-b.fb --max-px 0
+	@echo "--- T-FIND-CANCEL: Esc leaves no trace of the page at all"
+#	Two runs of the same ride, one of which opened FIND and backed out of it.
+#	Twenty seconds later they are the same frame, so the page borrowed the
+#	screen and gave it back -- the property that lets FIND be a page inside the
+#	ride loop instead of a modal detour.
+	$(NAV) --route $(TILEROUTE) --replay $(RDIR)/asok.nmea --headless $(FPS8) \
+		--roads $(ROADPACK) --key 10:f --key 11:a --key 12:esc \
+		--dump-at 40:$(RDIR)/cancel-post.fb
+	$(NAV) --route $(TILEROUTE) --replay $(RDIR)/asok.nmea --headless $(FPS8) \
+		--roads $(ROADPACK) --dump-at 40:$(RDIR)/cancel-plain.fb
+	python3 tools/fbdiff.py $(RDIR)/cancel-post.fb $(RDIR)/cancel-plain.fb \
+		--max-px 0
+	@echo "test-find: PASS"
+
 host-replay: host/beepy-nav $(REPLAYS)
 	$(MAKE) test-replay NAV=host/beepy-nav
 
@@ -360,6 +463,12 @@ bench: beepy-nav/beepy-nav
 	./beepy-nav/beepy-nav --demo --page nav-tiles --bench 100
 	./beepy-nav/beepy-nav --demo --page nav-tiles --basemap $(TILEPACK) \
 		--bench 100
+#	KEYSTROKE -> FRAME for the FIND page (DESIGN.md 1.4). This is the whole cost
+#	of one press: view_find_demo() runs search_places() over the pack and then
+#	draws, which is exactly what find_key() does. The budget is 50 ms -- a
+#	type-to-filter field that lags a fast thumb is worse than a menu -- and the
+#	number to quote is the one from a CITY pack, so pass ROADPACK=... a big one.
+	./beepy-nav/beepy-nav --demo --page find --roads $(ROADPACK) --bench 200
 
 # -------------------------------------------------------------------- host
 #
@@ -371,7 +480,8 @@ HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
             host/seg.o host/arrows.o host/map.o host/gpx.o host/route.o \
             host/view_nav.o host/view_overview.o host/fix.o host/chooser.o \
             host/led.o host/config.o host/ridelog.o host/tile.o \
-            host/search.o host/router.o \
+            host/search.o host/router.o host/view_find.o \
+            host/view_confirm.o \
             host/nav.o
 
 # beepy-nav is portable end to end (no fbdev, no evdev), so the Mac can link
@@ -379,7 +489,8 @@ HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
 HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/arrows.o host/map.o host/gpx.o host/route.o host/fix.o \
            host/chooser.o host/led.o host/config.o host/ridelog.o \
-           host/tile.o host/search.o host/router.o \
+           host/tile.o host/search.o host/router.o host/view_find.o \
+           host/view_confirm.o \
            host/nmea.o host/gps.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
 
@@ -577,6 +688,6 @@ clean:
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
-.PHONY: all check goldens host test-unit test-replay test-frames \
+.PHONY: all check goldens host test-unit test-replay test-frames test-find \
 	host-replay tables design-gate test-tiles tiles test-roads roads \
 	bench sync clean
