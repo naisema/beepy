@@ -88,6 +88,8 @@ static const char USAGE[] =
     "                p95 summary at exit\n"
     "  --dump-at S:F write the frame at replay second S to file F (up to 4;\n"
     "                this is how a moving page gets into fbshow --verify)\n"
+    "  --key S:C     press key C at replay second S (up to 8) -- how the\n"
+    "                keymap is driven in a headless test\n"
     "  --print       dump nav_t as text, per fix\n"
     "  --north-up    start north-up instead of course-up\n"
     "  --imperial    feet and miles; --metric is the default\n"
@@ -103,7 +105,8 @@ static const char USAGE[] =
     "  --bench N     time N draw+resolve cycles and print ms/frame\n"
     "\n"
     "keys: Tab page   Q quit   H hold   O course-up/north-up\n"
-    "      Z/X zoom out/in   A auto zoom   U metric/imperial\n";
+    "      Z/X zoom out/in   A auto zoom   U metric/imperial\n"
+    "      L cue alerts on/off\n";
 
 enum {
     PAGE_NAV,
@@ -242,6 +245,19 @@ typedef struct {
     int page, hold, quit, course_up;
 
     int rate_5hz; /* ask the receiver for 5 Hz at startup (DESIGN.md 6.3) */
+
+    /* Cue alerts, as a SESSION state. The config's led_alerts supplies the
+     * starting value and L overrides it for this ride only -- nothing here
+     * ever writes the config back, because the file is a default and the key
+     * is a decision about the next ten minutes. */
+    int alerts;
+
+    /* The transient confirmation of that decision, and when it expires, both
+     * on the ride clock (so a replay shows it for the same 1.5 s a ride
+     * would, and a test can see it). */
+    const char *note;
+    double note_until;
+    double frame_t; /* the ride second being drawn, for the expiry test */
 
     /* Metres per pixel while the rider has taken the NAV map off auto zoom;
      * 0 is auto. Not in navctx_t: it is a view decision, and nothing in the
@@ -396,6 +412,12 @@ dr_advance(app_t *a, double t, double dt)
  * same reason. The rungs are not consumed either, so they still fire once the
  * route is regained.
  *
+ * A MUTE is the opposite case and is handled the opposite way: the rungs are
+ * still consumed, they simply do not ring. Off route the alerts are wrong and
+ * owed later; muted they are right and refused now. Keeping the ladder moving
+ * under a mute is what stops L, pressed a hundred metres from a junction, from
+ * firing 500 and 200 as a burst for a junction already half taken.
+ *
  * Returns the bitmask that fired, for the trace. */
 static int
 alerts_update(app_t *a)
@@ -415,6 +437,8 @@ alerts_update(app_t *a)
         fired |= 1 << k;
         worst = k;
     }
+    if (!a->alerts)
+        return 0; /* consumed above, refused here */
     if (worst >= 0)
         led_pulse(worst + 1, a->t);
     return fired;
@@ -675,6 +699,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         p.togo_m = a->nv.seg >= 0 ? a->nv.togo_m : -1.0;
         p.batt = read_battery();
         p.clock = clock;
+        p.note = a->note && a->frame_t < a->note_until ? a->note : NULL;
         view_nav(cov, &m, &p);
     }
     cov_resolve(cov, cv);
@@ -946,6 +971,7 @@ frame_at(app_t *a, double t)
     int presented, bin, d;
 
     pace_to(t);
+    a->frame_t = t;
     dr_advance(a, t, dt);
     render_state(a);
 
@@ -1163,6 +1189,15 @@ live_poll_ms(const app_t *a)
         return 1000;
     dt = 1.0 / (a->fix_speed * 3.6 >= DR_MOVING_KMH ? a->fps : DR_STOPPED_FPS);
     left = (a->render_t + dt) - live_ride_now(a);
+    /* A transient owes the bottom row back on time. At the 1 Hz stopped rate
+     * the next scheduled frame can be most of a second after it expires, and
+     * "ALERTS OFF" lingering for two and a half seconds reads as a stuck
+     * panel rather than a confirmation. */
+    if (a->note) {
+        double until = a->note_until - live_ride_now(a);
+        if (until > 0.0 && until < left)
+            left = until;
+    }
     if (left <= 0.001)
         return 1;
     if (left > 1.0)
@@ -1173,13 +1208,15 @@ live_poll_ms(const app_t *a)
 
 /* ------------------------------------------------------------------ keys
  *
- * Device-only, and not for want of trying to keep it portable: DESIGN.md 2
- * has the keys coming from /dev/input/event0 with EVIOCGRAB, because fbterm
- * is SIGSTOPped for as long as the panel is owned. The host lane runs
- * headless replays, which have nobody to press anything. */
-#ifdef NAV_DEVICE
-
-/* A key changes what the panel says, and the answer has to arrive with the
+ * The SOURCES are device-only -- DESIGN.md 2 has them coming from
+ * /dev/input/event0 with EVIOCGRAB, because fbterm is SIGSTOPped for as long
+ * as the panel is owned -- but what a key DOES is portable, and it is kept
+ * that way deliberately. --key schedules presses against the ride clock, so
+ * the whole keymap runs in a headless replay on the Mac and every one of its
+ * effects is assertable there. A keymap that only a physical thumb can reach
+ * is a keymap with no tests.
+ *
+ * A key changes what the panel says, and the answer has to arrive with the
  * press. Waiting for the next tick of the frame clock would mean up to a
  * whole second at the 1 Hz stopped rate -- press U, watch nothing happen,
  * press it again -- which is how an instrument comes to feel broken.
@@ -1202,8 +1239,21 @@ key_repaint(app_t *a)
     if (memcmp(RC.cv->bits, RC.prev->bits, nb) == 0)
         return;
     memcpy(RC.prev->bits, RC.cv->bits, nb);
+#ifdef NAV_DEVICE
     if (RC.have_fb)
         fb_present(RC.fb, RC.cv);
+#endif
+}
+
+/* 1.5 s: long enough to read four syllables at handlebar distance, short
+ * enough that the row it borrowed is back before the rider next wants it. */
+#define NOTE_S 1.5
+
+static void
+note_show(app_t *a, const char *s)
+{
+    a->note = s;
+    a->note_until = a->frame_t + NOTE_S;
 }
 
 static int
@@ -1250,12 +1300,52 @@ handle_key(app_t *a, int ch)
                                                             : UNITS_METRIC);
         route_countdown_refresh(&a->rt, &a->ctx, &a->nv);
         break;
+    /* DESIGN.md 7.5. The confirmation is not decoration: muting is the one
+     * setting on this device whose effect is INVISIBLE in the direction that
+     * matters. A silenced LED looks exactly like a route with no junction
+     * nearby, so without a word on the screen a rider cannot tell "I turned
+     * the alerts off" from "the alerts are broken" -- and would find out
+     * which at the next missed turn. */
+    case 'l':
+    case 'L':
+        a->alerts = !a->alerts;
+        led_enable(a->alerts);
+        note_show(a, a->alerts ? "ALERTS ON" : "ALERTS OFF");
+        break;
     default:
         return 0;
     }
     key_repaint(a);
     return 1;
 }
+
+/* Presses scheduled against the ride clock (--key SEC:CHAR). The mechanism a
+ * replay test uses to press a key, and the reason handle_key() above is not
+ * behind NAV_DEVICE. */
+#define MAX_KEYS 8
+typedef struct {
+    double at;
+    int ch;
+    int done;
+} keyat_t;
+static keyat_t g_keys[MAX_KEYS];
+static int g_nkeys;
+
+static void
+keys_due(app_t *a, double t)
+{
+    int i;
+    for (i = 0; i < g_nkeys; i++)
+        if (!g_keys[i].done && t >= g_keys[i].at) {
+            g_keys[i].done = 1;
+            /* So a transient started by a scheduled key expires 1.5 s after
+             * the press and not 1.5 s after whatever frame happened last. */
+            a->frame_t = t;
+            handle_key(a, g_keys[i].ch);
+        }
+}
+
+#ifdef NAV_DEVICE
 
 static int
 keycode_to_char(int code)
@@ -1277,6 +1367,8 @@ keycode_to_char(int code)
         return 'a';
     case KEY_U:
         return 'u';
+    case KEY_L:
+        return 'l';
     default:
         return 0;
     }
@@ -1701,6 +1793,8 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
                    a->nv.cue_m, a->nv.togo_m, a->nv.pct, a->nv.eta_s,
                    a->heading * (180.0 / M_PI));
 
+        keys_due(a, a->t);
+
         if (a->hold) {
             pace_to(a->t);
             led_tick(a->t);
@@ -1813,6 +1907,16 @@ main(int argc, char **argv)
                 return 2;
             }
         }
+        else if (!strcmp(a, "--key") && i + 1 < argc) {
+            const char *v = argv[++i], *colon = strchr(v, ':');
+            if (!colon || !colon[1] || g_nkeys >= MAX_KEYS) {
+                fprintf(stderr, "bad --key: %s\n%s", v, USAGE);
+                return 2;
+            }
+            g_keys[g_nkeys].at = atof(v);
+            g_keys[g_nkeys].ch = (unsigned char)colon[1];
+            g_nkeys++;
+        }
         else if (!strcmp(a, "--dump-at") && i + 1 < argc) {
             const char *v = argv[++i], *colon = strchr(v, ':');
             if (!colon || g_ndumps >= MAX_DUMPS) {
@@ -1910,6 +2014,9 @@ main(int argc, char **argv)
     APP.course_up = !cfg.north_up;
     APP.fps = fps;
     APP.rate_5hz = cfg.rate_5hz;
+    /* The config sets where the ride starts; L moves it from there, and
+     * nothing writes the file back. */
+    APP.alerts = cfg.led_alerts;
     APP.alert_cue = -1;
     nav_init(&APP.rctx);
     nav_set_units(&APP.ctx, cfg.units);

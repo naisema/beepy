@@ -39,6 +39,9 @@ eight times a second and none of which a per-fix trace can see:
                         once per cue, never while the off-route latch is set,
                         never on a row that is not a fix, and at least N cues
                         rang all three
+  --led-rungs N         exactly N rungs ring over the whole ride -- the check
+                        that a mute suppressed what it should and nothing else
+  --led-quiet T0 T1     nothing rings between those ride seconds
   --settles COL         once the column reaches zero it stays there -- 6.4's
                         frame skip on a display that has stopped changing
 
@@ -283,6 +286,25 @@ class Checker:
         self.report(full >= want_full, f"at least {want_full} cues rang all "
                     f"three rungs", f"{full} of {len(seen)}")
 
+    def led_rungs(self, want):
+        """The total number of RUNGS rung, not of rows: two rungs crossed on
+        one fix arrive in one row as a two-bit mask, and counting rows would
+        make the expected number depend on how fast the ride approached the
+        junction."""
+        n = sum(bin(int(m)).count("1") for m in self.col("led"))
+        self.report(n == want, f"exactly {want} rungs ring over the ride",
+                    f"{n}")
+
+    def led_quiet(self, t0, t1):
+        """A muted stretch. Stated over an interval rather than per cue
+        because that is what the rider did: they switched the alerts off at
+        one moment and on again at another."""
+        t, led = self.col("t"), self.col("led")
+        bad = [(i, t[i], int(led[i]))
+               for i in range(len(t)) if t0 <= t[i] <= t1 and led[i]]
+        self.report(not bad, f"nothing rings between t={t0:g} and t={t1:g}",
+                    "" if not bad else f"{len(bad)} fired, first {bad[0]}")
+
     def settles(self, name):
         """6.4: the frame is skipped when it memcmps equal to the last one
         presented, so a display that has stopped changing costs nothing. On a
@@ -349,6 +371,11 @@ def main(argv):
             c.head_ewma(tau, float(next(it)))
         elif a == "--cue-led":
             c.cue_led(int(next(it)))
+        elif a == "--led-rungs":
+            c.led_rungs(int(next(it)))
+        elif a == "--led-quiet":
+            t0 = float(next(it))
+            c.led_quiet(t0, float(next(it)))
         elif a == "--settles":
             c.settles(next(it))
         elif a == "--rows":

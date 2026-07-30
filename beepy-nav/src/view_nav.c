@@ -367,11 +367,18 @@ view_turn_panel(cov_t *c, const panel_t *p)
      * bottom edge; the glyphs are 14 px of ink, so the rows stay separated. */
     cov_fill_rect(c, 6, H - 51, PANEL_W - 7, H - 51, COV_PAPER);
 
+    /* The bottom row is where a transient confirmation goes. It displaces
+     * arrival, which is the row that can most afford a second and a half
+     * away: it changes slowly, it is a prediction rather than a fact, and it
+     * is the one of the three a rider is least likely to be reading at the
+     * exact moment they pressed a key. Nothing permanent is added -- panel
+     * space is the scarce resource, and a setting the rider chose two seconds
+     * ago does not need continuous display. */
     panel_row(c, 192, p->remain);
     if (p->togo_m >= 0.0) {
         fmt_togo(buf, sizeof buf, p->togo_m, p->units);
         panel_row(c, 208, buf);
-        panel_row(c, 224, p->eta);
+        panel_row(c, 224, p->note ? p->note : p->eta);
     } else {
         /* No route: nothing to count down to, so the pair that has always
          * been true of the device goes back in. */
@@ -379,7 +386,7 @@ view_turn_panel(cov_t *c, const panel_t *p)
             snprintf(buf, sizeof buf, "%d%%", p->batt);
             panel_row(c, 208, buf);
         }
-        panel_row(c, 224, p->clock);
+        panel_row(c, 224, p->note ? p->note : p->clock);
     }
 }
 
@@ -549,6 +556,7 @@ view_nav_demo(cov_t *c, int off)
 
     p.off = off;
     p.units = UNITS_METRIC;
+    p.note = NULL;
     /* The demo carries the raw metres the design's sample state names, and
      * quantises them here exactly as the live path does -- so the reference
      * frames show what a rider would actually see (1.1.1): 410 -> "400". */
@@ -599,6 +607,7 @@ clip_panel(panel_t *p)
     p->batt = 86;
     p->clock = "09:40";
     p->units = UNITS_METRIC;
+    p->note = NULL;
 }
 
 void

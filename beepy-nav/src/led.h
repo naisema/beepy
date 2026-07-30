@@ -19,10 +19,20 @@
 #ifndef BEEPY_NAV_LED_H
 #define BEEPY_NAV_LED_H
 
-/* Probe once. `enabled` is the config's led_alerts: 0 disables the LED
- * without pretending it is missing. Returns 1 when alerts will be felt as
- * well as seen. */
+/* Probe once, ALWAYS -- even when alerts start switched off, because the L
+ * key can switch them on mid-ride and "is there an LED here at all" must not
+ * depend on what the config said at boot. `enabled` is the config's
+ * led_alerts and only sets the initial mute. Returns 1 when alerts will be
+ * felt as well as seen. */
 int led_init(int enabled);
+
+/* Session mute, what L toggles. Separate from availability on purpose: an
+ * unwritable LED is a fact about the hardware, a mute is a rider's choice,
+ * and conflating them would make L look broken on a device missing the udev
+ * rule. Switching off darkens the LED immediately -- a queued blink must not
+ * outlive the decision to stop blinking. */
+void led_enable(int on);
+int led_enabled(void);
 
 int led_available(void);
 

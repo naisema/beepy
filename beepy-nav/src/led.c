@@ -12,6 +12,7 @@
 #define LED_OFF_S 0.15
 
 static int g_avail;
+static int g_enabled = 1;
 static int g_on;
 static int g_left; /* toggles remaining: 2 per blink, so it ends dark */
 static double g_next;
@@ -36,10 +37,12 @@ led_init(int enabled)
 {
     FILE *probe;
     g_avail = 0;
+    g_enabled = enabled;
     g_on = 0;
     g_left = 0;
-    if (!enabled)
-        return 0;
+    /* The probe runs whether or not alerts start enabled: it is one write of
+     * "0" to a light that is already dark, and it is what lets L switch them
+     * on later without re-probing from inside a keypress. */
     if (write_attr("led", "0") != 0) {
         /* Distinguish "no such device" (a Mac, or a replay on any other
          * machine) from "there but root-only", because only the second one
@@ -48,7 +51,9 @@ led_init(int enabled)
         probe = fopen(LED_DIR "/led", "r");
         if (probe)
             fclose(probe);
-        else if ((probe = fopen(LED_DIR "/fw_version", "r")) != NULL) {
+        /* Said only when the rider asked for alerts. Starting muted and being
+         * told the mute is also broken is noise. */
+        else if (enabled && (probe = fopen(LED_DIR "/fw_version", "r")) != NULL) {
             fclose(probe);
             fputs("beepy-nav: cue alerts are visual only -- "
                   "/sys/firmware/beepy/led is not writable "
@@ -73,9 +78,23 @@ led_available(void)
 }
 
 void
+led_enable(int on)
+{
+    g_enabled = on;
+    if (!on)
+        led_off();
+}
+
+int
+led_enabled(void)
+{
+    return g_enabled;
+}
+
+void
 led_pulse(int blinks, double t)
 {
-    if (!g_avail || blinks <= 0)
+    if (!g_avail || !g_enabled || blinks <= 0)
         return;
     /* A new alert replaces whatever was still winking. Two cues 60 m apart
      * would otherwise queue their flashes and report the second one late,
@@ -91,7 +110,7 @@ led_pulse(int blinks, double t)
 void
 led_tick(double t)
 {
-    if (!g_avail || g_left <= 0 || t < g_next)
+    if (!g_avail || !g_enabled || g_left <= 0 || t < g_next)
         return;
     g_on = !g_on;
     write_attr("led", g_on ? "1" : "0");

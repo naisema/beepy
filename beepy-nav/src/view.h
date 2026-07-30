@@ -29,6 +29,9 @@ typedef struct {
      * ladder -- metres or feet -- because the quantiser is what knows which
      * rungs exist (DESIGN.md 1.1.1). */
     int units;
+    /* A transient confirmation, or NULL. It takes the bottom row for about a
+     * second and a half and then gives it back -- see view_turn_panel(). */
+    const char *note;
 } panel_t;
 
 /* The map on the right. Route geometry is metres east/north of any origin;

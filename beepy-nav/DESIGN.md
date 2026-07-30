@@ -274,6 +274,7 @@ not a rehearsal of anything:
 | `A` | return the NAV map to auto zoom |
 | `O` | course-up ↔ north-up |
 | `U` | units: metric ↔ imperial |
+| `L` | cue LED alerts on ↔ off, for this ride (§7.5) |
 | `H` | hold — freeze the display |
 | `Q` | quit |
 
@@ -307,8 +308,14 @@ only way any of this is testable without a physical thumb.
 
 ```
 beepy-nav --route ROUTE.gpx [-d DEV] [--north-up] [--imperial]
-          [--replay F.nmea] [--config FILE]
+          [--replay F.nmea] [--config FILE] [--key SEC:CHAR]
 ```
+
+`--key` presses a key at a given replay second. It exists because the keymap
+is otherwise reachable only by a physical thumb, and a keymap with no tests is
+a keymap that quietly rots: what a key *does* is portable C, and only where
+the press comes *from* is device-specific. `make test-frames` uses it to drive
+`L` mid-ride and assert what happens.
 
 Run with no `--route`, it lists `$BEEPY_ROUTES` or `~/routes` (`routes_dir` in
 the config file) and waits for a selection — a startup chooser, not a page.
@@ -746,10 +753,49 @@ with no name line rather than inventing text.
 ### 7.5 Alerts
 
 At 500 m, 200 m and 50 m from a cue, flash the keyboard LED (§3, needs the udev
-rule). No page switching is needed — the NAV page is already showing the turn.
-This is a quiet benefit of collapsing to two pages: the auto-switch behaviour an
-earlier draft needed, along with its "return to the previous page" rule and its
-configuration toggle, simply does not exist.
+rule). Nearer means more urgent, so the number of blinks is the rung index plus
+one: one wink at half a kilometre, three at fifty metres, and no need to look
+down to tell them apart. No page switching is needed — the NAV page is already
+showing the turn. This is a quiet benefit of collapsing to two pages: the
+auto-switch behaviour an earlier draft needed, along with its "return to the
+previous page" rule and its configuration toggle, simply does not exist.
+
+Nothing fires while the off-route latch is set: off route the announced cue is
+not the junction ahead, so a flash would be an instruction to turn where there
+is no turn. The rungs are **not** consumed either — they still fire once the
+route is regained.
+
+**`L` mutes the alerts for the ride** (`led_alerts` in the config file sets the
+starting state; the key never writes the file back — the file is a default, the
+key is a decision about the next ten minutes). A mute is the *opposite* case to
+being off route and is handled the opposite way: the rungs go on being
+**consumed**, they simply do not ring. Off route the alerts are wrong and owed
+later; muted they are right and refused now. Keeping the ladder moving under a
+mute is what stops `L`, pressed a hundred metres from a junction, from firing
+500 and 200 as a burst for a turn already half taken.
+
+**The toggle shows a transient confirmation** — `ALERTS ON` / `ALERTS OFF`,
+centred, scale 2, in the bottom row for 1.5 s, then the row goes back to
+arrival. It is not decoration. Muting is the one setting on this device whose
+effect is invisible in the direction that matters: a silenced LED looks exactly
+like a route with no junction nearby, so without a word on the screen a rider
+cannot tell "I turned the alerts off" from "the alerts are broken", and would
+find out which at the next missed turn.
+
+Arrival is the row that can most afford a second and a half away — it changes
+slowly, it is a prediction rather than a fact, and it is the one of the three a
+rider is least likely to be reading at the exact moment they pressed a key.
+**No permanent indicator is added.** Panel space is the scarce resource here,
+and a setting the rider chose two seconds ago does not need continuous display.
+The transient interacts correctly with §6.4's frame skip by construction — the
+frames genuinely differ while it is up — and `live_poll_ms()` shortens the
+poll so the row comes back on time even at the 1 Hz stopped rate, where the
+next scheduled frame could otherwise be most of a second late and a lingering
+`ALERTS OFF` would read as a stuck panel.
+
+An unwritable LED (no udev rule) still accepts the toggle and still shows the
+confirmation: the state is the rider's intent, and the one-line warning at
+startup is where "there is no LED here" is said.
 
 ---
 
@@ -846,7 +892,9 @@ rendered frame, carrying every quantity each of those four is built from, and
 | **T-DR** (ease) | a correction of 5 m or less is spread over exactly three frames, weights 3/4, 2/4, 1/4 and then gone; one beyond 5 m leaves no ease at all and the frame drawn *is* the fix |
 | **T-HEAD-EWMA** | the heading trace is the circular EWMA of §6.1 with **τ = 0.55 s** — the constant this section adopted, asserted rather than assumed. τ = 0.47, the exact-equivalent reading rejected above, misses by 1.5°, so the test really does pin the choice |
 | **T-HEAD-EWMA** (freeze) | below 3 km/h the heading does not move at all |
-| **T-CUE-LED** | each of 500/200/50 m fires at most once per cue, only on a fix, and **never while the off-route latch is set**; ten of ten cues ring all three rungs on a clean ride |
+| **T-CUE-LED** | each of 500/200/50 m fires at most once per cue, only on a fix, and **never while the off-route latch is set**; ten of ten cues ring all three rungs on a clean ride, thirty rungs in total |
+| **T-CUE-LED-MUTE** | `--key 120:l --key 250:l` mutes across cues 0–2. Nothing rings in the muted window, twenty-three rungs ring instead of thirty, and the cue whose approach straddles the un-mute rings **only its 50 m rung** — the 500 and 200 it passed while muted were consumed, not queued |
+| **T-CUE-LED-MUTE** (panel) | the transient is byte-compared against the same frame from an un-keyed run: it differs *only* inside the bottom row, and two seconds later the two frames are byte-identical |
 | **T-SKIP** | on a ride with the jitter turned off, 600 of 601 frames are skipped — the presents stop at the first identical frame and never resume |
 
 The `fix_err` column exists for T-DR alone: it is the one quantity that cannot

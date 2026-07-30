@@ -184,6 +184,8 @@ test-replay: $(NAV) $(REPLAYS)
 test-frames: $(NAV) $(REPLAYS)
 	@echo "--- T-DR: extrapolation, and a correction eased over three frames"
 	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless $(FPS8) \
+		--dump-at 120.5:$(RDIR)/plain-a.fb \
+		--dump-at 122.5:$(RDIR)/plain-b.fb \
 		--trace-frames $(RDIR)/ride-frames.tsv
 	$(ASSERT) $(RDIR)/ride-frames.tsv --dr-closed-form 0.005 --dr-ease
 	@echo "--- T-DR-SNAP: and one beyond 5 m taken whole, on its own frame"
@@ -198,8 +200,20 @@ test-frames: $(NAV) $(REPLAYS)
 	$(ASSERT) $(RDIR)/still-frames.tsv --head-ewma 0.55 0.01 \
 		--any base_spd "<" 0.8
 	@echo "--- T-CUE-LED: 500/200/50 m, once each, never off route"
-	$(ASSERT) $(RDIR)/ride-frames.tsv --cue-led 10
+	$(ASSERT) $(RDIR)/ride-frames.tsv --cue-led 10 --led-rungs 30
 	$(ASSERT) $(RDIR)/detour-frames.tsv --cue-led 9 --any off_latched "==" 1
+	@echo "--- T-CUE-LED-MUTE: L off at 120 s, on at 250 s, no backlog"
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless $(FPS8) \
+		--key 120:l --key 250:l \
+		--dump-at 120.5:$(RDIR)/note-a.fb \
+		--dump-at 122.5:$(RDIR)/note-b.fb \
+		--trace-frames $(RDIR)/mute-frames.tsv
+	$(ASSERT) $(RDIR)/mute-frames.tsv --led-quiet 120 250 --led-rungs 23 \
+		--cue-led 7
+	@echo "    ... and the transient takes the bottom row and gives it back"
+	python3 tools/fbdiff.py $(RDIR)/note-a.fb $(RDIR)/plain-a.fb \
+		--mask 0,216,127,239 --max-px 0
+	python3 tools/fbdiff.py $(RDIR)/note-b.fb $(RDIR)/plain-b.fb --max-px 0
 	@echo "--- T-SKIP: a display that stopped changing stops being sent"
 	$(ASSERT) $(RDIR)/still-frames.tsv --settles presented
 	@echo "test-frames: PASS"
