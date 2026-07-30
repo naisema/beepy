@@ -42,6 +42,7 @@
 
 #include "arrows.h"
 #include "chooser.h"
+#include "config.h"
 #include "fix.h"
 #include "led.h"
 #include "map.h"
@@ -90,6 +91,8 @@ static const char USAGE[] =
     "  --print       dump nav_t as text, per fix\n"
     "  --north-up    start north-up instead of course-up\n"
     "  --imperial    feet and miles; --metric is the default\n"
+    "  --config F    read F instead of ~/.config/beepy-nav.conf; every\n"
+    "                setting in it is overridden by the flag for it\n"
     "  --demo        render a static design state instead of navigating\n"
     "  --page P      nav, nav-off, overview, arrows, chooser, cliptest,\n"
     "                cliptest-panel -- and with\n"
@@ -117,7 +120,7 @@ static cov_t COV;
 /* ------------------------------------------------------------------ demo */
 
 static void
-render_demo(cov_t *cov, canvas_t *cv, int page)
+render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes)
 {
     cov_begin(cov);
     switch (page) {
@@ -140,9 +143,7 @@ render_demo(cov_t *cov, canvas_t *cv, int page)
         /* Dumpable so the list can be looked at without a device -- the
          * whole reason view_chooser() is portable and separate. */
         chooser_t ch;
-        char dir[192];
-        chooser_default_dir(dir, sizeof dir);
-        chooser_scan(&ch, dir);
+        chooser_scan(&ch, routes);
         view_chooser(cov, &ch);
         break;
     }
@@ -1285,16 +1286,14 @@ chooser_key(chooser_t *ch, int code, char *out, size_t outsz, int *rc)
 }
 
 static int
-chooser_run(char *out, size_t outsz, fb_t *fb)
+chooser_run(char *out, size_t outsz, fb_t *fb, const char *dir)
 {
     chooser_t ch;
     canvas_t *cv = canvas_new(SCR_W, SCR_H);
-    char dir[192];
     int done = 0, rc = -1, dirty = 1;
 
     if (!cv)
         return -1;
-    chooser_default_dir(dir, sizeof dir);
     chooser_scan(&ch, dir);
 
     while (!done && !g_signal_quit) {
@@ -1608,14 +1607,31 @@ main(int argc, char **argv)
     const char *tracepath = NULL, *devpath = "/dev/ttyACM0";
     const char *ftracepath = NULL;
     int page = PAGE_NAV, bench = 0, demo = 0, headless = 0, do_print = 0;
-    int pace_opt = -1, north_up = 0, units = UNITS_METRIC, i;
+    int pace_opt = -1, i;
     double fps = DR_FPS;
     char err[320];
+    char cfgpath[CFG_PATH_MAX], routes[CFG_PATH_MAX];
+    navcfg_t cfg;
     canvas_t *cv;
 #ifdef NAV_DEVICE
     char chosen[512];
     fb_t chooser_fb;
 #endif
+
+    /* The config file first, so the flags below can override it. --config
+     * itself has to be found before the file is read, which is what this
+     * pre-pass is for; it is cheaper than deferring every other flag. */
+    cfg_defaults(&cfg);
+    cfgpath[0] = '\0';
+    for (i = 1; i < argc - 1; i++)
+        if (!strcmp(argv[i], "--config"))
+            snprintf(cfgpath, sizeof cfgpath, "%s", argv[++i]);
+    if (cfgpath[0]) {
+        cfg_load(&cfg, cfgpath, 1);
+    } else {
+        cfg_default_path(cfgpath, sizeof cfgpath);
+        cfg_load(&cfg, cfgpath, 0);
+    }
 
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -1683,11 +1699,13 @@ main(int argc, char **argv)
         else if (!strcmp(a, "--no-pace"))
             pace_opt = 0;
         else if (!strcmp(a, "--north-up"))
-            north_up = 1;
+            cfg.north_up = 1;
         else if (!strcmp(a, "--imperial"))
-            units = UNITS_IMPERIAL;
+            cfg.units = UNITS_IMPERIAL;
         else if (!strcmp(a, "--metric"))
-            units = UNITS_METRIC;
+            cfg.units = UNITS_METRIC;
+        else if (!strcmp(a, "--config") && i + 1 < argc)
+            i++; /* already read, above */
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
             fputs(USAGE, stdout);
             return 0;
@@ -1696,6 +1714,16 @@ main(int argc, char **argv)
             return 2;
         }
     }
+
+    /* The config file's routes_dir, or the way it has always been decided --
+     * $BEEPY_ROUTES, then ~/routes. Resolved here rather than inside
+     * chooser_default_dir() so that the environment keeps working for anyone
+     * already using it, and so the --demo chooser page lists the same
+     * directory the real one would. */
+    if (cfg.routes_dir[0])
+        snprintf(routes, sizeof routes, "%s", cfg.routes_dir);
+    else
+        chooser_default_dir(routes, sizeof routes);
 
     /* ---------------------------------------------------- static pages */
     if (demo) {
@@ -1712,17 +1740,17 @@ main(int argc, char **argv)
         if (bench > 0) {
             struct timespec t0, t1;
             double ms;
-            render_demo(&COV, cv, page); /* warm the caches; not counted */
+            render_demo(&COV, cv, page, routes); /* warm the caches */
             clock_gettime(CLOCK_MONOTONIC, &t0);
             for (i = 0; i < bench; i++)
-                render_demo(&COV, cv, page);
+                render_demo(&COV, cv, page, routes);
             clock_gettime(CLOCK_MONOTONIC, &t1);
             ms = ((double)(t1.tv_sec - t0.tv_sec) * 1e3 +
                   (double)(t1.tv_nsec - t0.tv_nsec) / 1e6) /
                  bench;
             printf("bench: %d frames, %.3f ms/frame\n", bench, ms);
         } else {
-            render_demo(&COV, cv, page);
+            render_demo(&COV, cv, page, routes);
         }
         if (dumppath) {
             if (canvas_dump(cv, dumppath) < 0) {
@@ -1740,12 +1768,12 @@ main(int argc, char **argv)
     nav_init(&APP.ctx);
     nav_reset(&APP.nv);
     APP.page = page == PAGE_OVERVIEW ? LIVE_OVERVIEW : LIVE_NAV;
-    APP.course_up = !north_up;
+    APP.course_up = !cfg.north_up;
     APP.fps = fps;
     APP.alert_cue = -1;
     nav_init(&APP.rctx);
-    nav_set_units(&APP.ctx, units);
-    led_init(1);
+    nav_set_units(&APP.ctx, cfg.units);
+    led_init(cfg.led_alerts);
 
     if (!routepath) {
 #ifdef NAV_DEVICE
@@ -1763,7 +1791,7 @@ main(int argc, char **argv)
         tty_raw();
         evdev_open(1);
         fb_take(&chooser_fb);
-        if (chooser_run(chosen, sizeof chosen, &chooser_fb) != 0) {
+        if (chooser_run(chosen, sizeof chosen, &chooser_fb, routes) != 0) {
             fb_release(&chooser_fb);
             g_fb = NULL;
             return 0; /* the rider quit the chooser; not an error */

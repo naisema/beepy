@@ -315,6 +315,36 @@ the config file) and waits for a selection — a startup chooser, not a page.
 Everything else lives in `~/.config/beepy-nav.conf`, which is read once at
 startup.
 
+### 2.1 `~/.config/beepy-nav.conf`
+
+Flat `key = value`, one per line; a line whose first non-blank character is `#`
+is a comment. Whitespace around both sides is ignored, keys and the enumerated
+values are case-insensitive, and a `#` inside a value is a `#` — a path may
+legitimately contain one, and five keys is not enough surface to justify a
+quoting rule nobody would remember.
+
+| Key | Values | Default | Effect |
+|---|---|---|---|
+| `units` | `metric` / `imperial` | `metric` | starting units; `U` still toggles |
+| `north_up` | `0` / `1` | `0` | start north-up instead of course-up |
+| `rate_5hz` | `0` / `1` | `0` | ask the receiver for 5 Hz at startup (§6.3) |
+| `routes_dir` | a path | `$BEEPY_ROUTES`, else `~/routes` | where the chooser looks |
+| `led_alerts` | `0` / `1` | `1` | flash the keyboard LED at cues (§7.5) |
+
+Flags also accept `yes`/`no`, `true`/`false`, `on`/`off`. **A command-line flag
+always wins**, because it is the more specific statement of intent: the file
+says what you usually want and the flag says what you want this time.
+`--config FILE` reads somewhere else, which is what makes the parser testable.
+
+**The file is never fatal.** A rider whose navigator refuses to start because
+of a typo in a preferences file — at the roadside, with the only text editor
+being whatever is on the SD card — has been failed by the program, not by the
+typo. Every malformed line, unknown key and unreadable value warns to stderr
+with its line number and is then ignored, and the setting keeps its default.
+An absent file is not even a warning; that is the ordinary case. An absent
+*explicitly named* file is one, because being told nothing at all is the worst
+possible outcome of a mistyped `--config`.
+
 ---
 
 ## 3. Target environment (measured 2026-07-29, not assumed)
