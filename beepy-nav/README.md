@@ -143,16 +143,57 @@ led_alerts = 1          # 0 mutes cue alerts
 rate_5hz   = 0          # see the note below   (--rate-5hz)
 routes_dir = ~/routes   # what the panel chooser lists
 rides_dir  = ~/rides    # where ride logs go
+basemap    =            # empty: no streets    (--basemap F / --no-basemap)
 ```
 
 An unknown key or a malformed line is a warning naming the line number, never
 a failure to start.
+
+**`basemap` is empty by default and there is no default to guess.** A pack is
+cut for one route's corridor, so nothing can invent one for you; see *Streets
+under the route* below. If the file is missing or is not a pack you get one
+line on stderr and the map draws the way it always did.
 
 **`rate_5hz` is off deliberately.** The receiver will accept the request and
 then fail to deliver: at 9600 baud its nine sentences an epoch need about
 2250 B/s, against a 960 B/s line. Making it real needs a faster port or fewer
 sentence types, and the latter would break `gps-monitor`'s satellite page — so
 it is not done behind your back (`DESIGN.md` §6.3).
+
+---
+
+## Streets under the route
+
+Optional, off by default, and it needs one command on a Mac. The device carries
+no map data and no renderer for it — what it reads is a **tile pack**: 1-bit
+256×256 tiles of OpenStreetMap street geometry, pre-rendered per zoom rung,
+cut to a corridor along one route.
+
+```sh
+# 1. get an extract from Overpass -- roads within a few km of the route
+#    (overpass-turbo.eu; ask for `way[highway]` in a bbox, "geometry" output)
+
+# 2. cut it to the route's corridor and render the tiles
+python3 tools/mktiles.py --osm extract.json --route ride.gpx -o ride.tiles
+python3 tools/mktiles.py --info ride.tiles      # what came out
+
+# 3. put it on the device and point the navigator at it
+scp ride.tiles beepy@beepy.local:~/maps/
+beepy-nav --route ~/routes/ride.gpx --basemap ~/maps/ride.tiles
+```
+
+`--corridor M` sets the half-width (2 km by default). The zoom rungs follow
+from it — a wider corridor gets coarser rungs, because a basemap that runs out
+halfway across the screen looks broken; `--zooms 4,6,10` or `--zooms all`
+overrides. A ±2 km corridor around a 4 km route is about **1.1 MB**, and a rung
+the pack does not carry simply draws no streets, exactly as no pack does.
+
+Streets go **under** everything: basemap, then the ridden track, then the cased
+route, then the markers. That white casing round the route is doing its job
+here — it is what keeps the black line readable crossing a dual carriageway.
+
+Cost, measured: about 7 ms a frame, taking the render p95 from 11.5 ms to
+19.1 ms against a 125 ms frame period.
 
 ---
 
@@ -232,6 +273,7 @@ make sync           # rsync to beepy.local, build there, run `make check`
 make design-gate    # the C pages against mockup.py's frames (needs Pillow)
 make host-replay    # the replay assertions, on a Mac
 make test-frames NAV=host/beepy-nav
+make test-tiles     # the basemap pack: built twice, compared (needs Pillow)
 ```
 
 `make check` is the gate: it byte-compares the `--demo` page dumps against
@@ -247,4 +289,12 @@ Flags that exist for testing: `--replay F`, `--headless`, `--trace F`,
 
 ## Attribution
 
-Any basemap data is © OpenStreetMap contributors (ODbL).
+Basemap data is **© OpenStreetMap contributors**, used under the ODbL. The
+tiles are rendered from an OSM extract in this project's own cartography;
+nothing is cached from a commercial tile service, which is a licensing
+constraint and not a technical one (`DESIGN.md` §6.5).
+
+When a pack is loaded the navigator shows the attribution itself, on the
+OVERVIEW page's title line — spelled `(C) OPENSTREETMAP CONTRIBUTORS`, because
+the 5×7 panel font has no © glyph. If you distribute a pack you built, it
+carries the same obligation.
