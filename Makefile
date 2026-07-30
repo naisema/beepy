@@ -335,8 +335,17 @@ host-replay: host/beepy-nav $(REPLAYS)
 	$(MAKE) test-replay NAV=host/beepy-nav
 
 # 100 NAV renders, draw + resolve only (DESIGN.md 5.4 budgets 30 ms).
+#
+# Three lines, not one: DESIGN.md 6.5 quotes what the basemap costs, and a
+# quoted number nobody can re-derive is a number that rots. The middle line is
+# the control -- the same page, the same route, no pack -- which is what makes
+# the difference between the first and third attributable to the tile layer
+# rather than to the Asok route being a different shape from the demo one.
 bench: beepy-nav/beepy-nav
 	./beepy-nav/beepy-nav --demo --page nav --bench 100
+	./beepy-nav/beepy-nav --demo --page nav-tiles --bench 100
+	./beepy-nav/beepy-nav --demo --page nav-tiles --basemap $(TILEPACK) \
+		--bench 100
 
 # -------------------------------------------------------------------- host
 #
