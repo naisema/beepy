@@ -786,7 +786,7 @@ repaint is not a frame of the ride clock — it does not advance the dead
 reckoning, and it is not counted — but it does go through the §6.4 skip, so a
 key that changes nothing visible still costs no SPI.
 
-`F`, and the two pages of §1.4 behind it, are built as of M6. FIND and CONFIRM
+`F`, and the two pages of §1.4 behind it, are built. FIND and CONFIRM
 are *pages* inside the ride loop, which is what makes them reachable from a
 `--replay` session and therefore testable; their own keys are in §1.4.4,
 including the two places §1.4's first draft had them wrong.
@@ -1634,8 +1634,14 @@ gps-monitor/   view_bars.c view_sky.c main.c       unchanged behaviour
 beepy-nav/     seg.c arrows.c gpx.c route.c map.c tile.c
                search.c router.c
                view_nav.c view_overview.c view_find.c view_confirm.c
-               view_map.c nav.c
+               view_map.c view_quit.c nav.c
 ```
+
+`view_quit.c` (the §1.6 QUIT page) is the smallest file here and the only one
+that draws no map at all — a title bar, four lines and a strip. It is also the
+only **modal** page, which is a fact about `nav.c`'s dispatch rather than about
+this file: `LIVE_QUIT` is tested first and returns, so nothing behind it is
+drawn while it is up.
 
 `view_map.c` (the §1.5 MAP page) owns no marks of its own: it calls
 `view_nav.c`'s `mark_*`, including `mark_speed_badge()`, which was private until
@@ -1750,6 +1756,8 @@ purpose.
 | 4 | Optional raster basemap and its build tooling | `fbshow --verify` on the panel at three rungs, and T-BASEMAP-OPTIONAL: the pre-basemap goldens are unchanged |
 | 5 | FIND + on-device router (Dijkstra, oneway-aware) + CONFIRM | routed path vs a reference route; oneway violations = 0 |
 | 6 | MAP: where you are, with no route (§1.5) | four goldens, three of them in the design gate, and T-MAP — a whole replay with no `--route` at all |
+| 7 | Nationwide basemap: area cuts, a joined pack, destinations in the index (§1.4, §6.5) | T-TILES-MERGE (a joined pack draws the frozen golden), T-ROADS-POIS, and T-FIND-POI — routing to something that is not on the graph |
+| 8 | Leaving: QUIT and ending a route (§1.6) | two goldens, and T-QUIT-CONFIRM / T-QUIT-GO / T-END-ROUTE |
 
 Phase 5 landed with one surprise worth carrying in this table: the reference
 route it was to be checked against **was itself illegal**, so "routed path vs a
@@ -1759,6 +1767,18 @@ Phase 2 is the first genuinely useful build: it navigates. Phase 6 is the one
 that makes it usable *before* you have decided where to go — which, in the
 product owner's words, is "current location in map screen after open beepy-nav
 program", and was the first thing anyone asked for that this program could not do.
+
+Phase 7 came from a question, not a plan: *"I can't find Assumption College
+Thonburi, why?"* Because FIND searched street names and a school is not a
+street — it was being **drawn** on the map the whole time, 16.8 km away and well
+inside every pack. The fix needed no format change and no C at all, and that is
+the phase's real lesson: a place in `BNAVROAD` was already a name plus candidate
+points, and `router.c`'s snap already carried an arbitrary point back to the
+graph. Both had been written for something else.
+
+Phase 8 came from the same place — a rider asking for a way out that was not
+"lose the ride". Two of them, as it turned out, and the program had offered
+neither.
 
 ---
 
@@ -1791,6 +1811,13 @@ actually on the device — same as `gps-monitor`.
 **Out of scope:** no Buildroot package, no `br_defconfig` or `zero2w_defconfig`
 change, no rerouting, no cloud sync, and none of the cycle-computer features
 listed in §14.
+
+**Still true, and worth restating because the pack got a great deal bigger
+without changing it:** the basemap is nationwide and the routing is not. Tiles
+cover Thailand; the graph and the name index are cut from the region extract,
+so `F` can show you a road 400 km away that it cannot route to. Widening that
+is an extract boundary in `tools/mkmaps.sh`, not a code change — about 10 MB of
+pack per 1 000 km² measured over Greater Bangkok.
 
 ---
 

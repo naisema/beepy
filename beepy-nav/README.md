@@ -53,7 +53,8 @@ resamples the line and calls anything past 30° a turn, classified slight /
 turn / sharp / U-turn (`DESIGN.md` §7.4).
 
 A GPX is not the only way in any more: with a road pack loaded, `F` searches
-street names and routes to one on the device. See **Finding a destination**.
+street names *and places* — schools, stations, markets — and routes to one on
+the device. See **Finding a destination**.
 
 ---
 
@@ -526,10 +527,23 @@ make sync           # rsync to beepy.local, build there, run `make check`
 make design-gate    # the C pages against mockup.py's frames (needs Pillow)
 make host-replay    # the replay assertions, on a Mac
 make test-frames NAV=host/beepy-nav
-make test-tiles     # the basemap pack: built twice, compared (needs Pillow)
+make test-tiles     # the basemap pack: built twice, compared; and merging
 make test-roads     # the road packs: built twice, compared against git
-make test-find NAV=host/beepy-nav   # F, a typed query, ENTER, CONFIRM, ENTER
+make test-find NAV=host/beepy-nav   # F, a typed query, ENTER, CONFIRM, ENTER,
+                    # a destination that is not on the graph, and QUIT / E
 ```
+
+`tools/` is the Mac-side half of the project and none of it runs on the device:
+
+| Tool | What it makes |
+|---|---|
+| `mkmaps.sh` | **all of it, in one command** — download, cut, render, merge, install |
+| `pbf2osm.py` | a Geofabrik `.osm.pbf` → the Overpass JSON the pack tools read |
+| `mktiles.py` | the raster basemap, by route corridor, radius or bounding box |
+| `mergetiles.py` | joins tile packs that share a projection frame, so one file can be detailed at home and coarse across a country |
+| `mkpack.py` | the road graph, street names and searchable places |
+| `mknmea.py` | synthetic NMEA rides — the replay fixtures |
+| `fbdiff.py`, `assert_trace.py`, `design_gate.py` | the gates |
 
 `make check` is the gate: it byte-compares the `--demo` page dumps against
 `goldens/` and runs the unit and replay suites. `mockup.py` is the pixel
@@ -549,7 +563,8 @@ in a headless replay.
 
 Basemap and road-pack data are **© OpenStreetMap contributors**, used under the
 ODbL. The tiles are rendered from an OSM extract in this project's own
-cartography, and the road graph and street names are derived from the same data;
+cartography, and the road graph, the street names and the searchable places are
+derived from the same data;
 nothing is cached from a commercial tile service, which is a licensing
 constraint and not a technical one (`DESIGN.md` §6.5).
 

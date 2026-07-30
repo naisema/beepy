@@ -4,13 +4,81 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Workspace layout
 
-This directory is a workspace, not a single project:
+This directory is a workspace holding **two unrelated projects** and a backup.
+They share a device and nothing else — different languages, different build
+systems, different git roots. Work out which one you are in before running
+anything.
 
-- `beepy-buildroot/` — the actual project: a git checkout of [michaelstepner/beepy-buildroot](https://github.com/michaelstepner/beepy-buildroot), which builds a Buildroot Linux SD-card image for the Beepy (Raspberry Pi Zero 2 W + Sharp memory LCD + BlackBerry keyboard). **All commands below must be run from `beepy-buildroot/`, the git root — never from a subdirectory.**
-- `beepy/` — an untracked backup of the `beepy` user's home directory copied off a device (dotfiles, `pip`-installed packages, a `chatgpt_client.py` scratch script). Not part of the build. Note: `beepy/chatgpt_client.py` contains a hardcoded OpenAI API key — it should be revoked and removed rather than edited around.
+### 1. The C applications — this repo's own code, git root `.`
+
+Remote `git@github.com:naisema/beepy.git`, built by the **top-level `Makefile`**.
+These run on the device's *existing* Raspberry Pi OS install, not on a Buildroot
+image, and have nothing to do with `beepy-buildroot/`.
+
+- `beepy-nav/` — a GPS bike navigator: turn-by-turn on a 400×240 1-bit Sharp
+  panel, offline OSM basemap and routing. `beepy-nav/DESIGN.md` is the
+  specification and carries the reasoning behind every constant;
+  `beepy-nav/README.md` is how to ride with it. **Read DESIGN.md before
+  changing anything in `beepy-nav/src/`** — the numbers in that code were each
+  argued for, and several were paid for with a debugging cycle.
+- `gps-monitor/` — the earlier, simpler app: satellite bars and a sky view.
+- `libbeepyfb/` — panel drawing. `cover.c` is the analytic coverage renderer
+  (signed-distance strokes, subsampled polygons) that makes 1-bit output look
+  smooth; `font.c` holds the 5×7 glyph table, which `beepy-nav/mockup.py`
+  parses directly.
+- `libnmea/` — NMEA parsing and the serial port.
+- `tools/` — Mac-side only, all of it: pack builders (`mktiles.py`,
+  `mkpack.py`, `mergetiles.py`, `pbf2osm.py`), the one-command map refresh
+  (`mkmaps.sh`), fixture generators and the gates.
+- `goldens/` — frozen framebuffer dumps. `make check` byte-compares against
+  these; they regenerate only under `GOLDEN_OK=1`.
+- `host/` — Mac build products (gitignored).
+
+### 2. `beepy-buildroot/` — a vendored third-party build, its own git root
+
+A checkout of [michaelstepner/beepy-buildroot](https://github.com/michaelstepner/beepy-buildroot),
+which builds a Buildroot Linux SD-card image. **All commands in the Buildroot
+sections below must be run from `beepy-buildroot/`, never from here.** Nothing
+in section 1 is part of that image.
+
+### 3. Backups, not code
+
+- `beepy/` — an untracked backup of the `beepy` user's home directory copied off a device (dotfiles, `pip`-installed packages, a `chatgpt_client.py` scratch script). Not part of any build. Note: `beepy/chatgpt_client.py` contains a hardcoded OpenAI API key — it should be revoked and removed rather than edited around, and this directory is gitignored and must never be committed.
 - `beepy.tar.gz` — archive of the above home directory.
 
-## Build
+## The C applications — build and gates
+
+Everything here runs from the workspace root.
+
+```sh
+make host           # Mac: portable objects + host/beepy-nav, a replay binary
+make design-gate    # Mac: the C pages vs beepy-nav/mockup.py, pixel for pixel
+make test-tiles     # Mac: the basemap packs (needs Pillow)
+make test-roads     # Mac: the road/place packs
+make sync           # rsync to beepy.local, build there, run `make check`
+```
+
+**`make check` is the gate, and it runs on the DEVICE**, not on the Mac —
+anything touching `/dev/fb1`, evdev or termios only compiles under Linux. It
+byte-compares every `--demo` page dump against `goldens/` and runs the unit and
+replay suites. It takes about 25 minutes on a Pi Zero 2 W; that is normal, not
+a hang.
+
+Standing rules in this project, each learned the hard way:
+
+- **Never modify a committed golden to make a test pass.** A moved golden is a
+  changed display; regenerating is deliberate (`GOLDEN_OK=1 make goldens`) and
+  belongs in its own commit with the reason.
+- **Commit with `git commit -F FILE`, never `-m`.** Messages here carry
+  reasoning and embedded quotes, and `-m` has mangled them more than once.
+- **A test whose "absent" case reads the device config is not a test.** Three
+  assertions had quietly stopped being pairs because one half loaded whatever
+  `~/.config/beepy-nav.conf` named. Name the fixture explicitly, or pass
+  `--no-basemap` / `--no-roads`.
+- Measure rather than estimate, and correct the record in the commit when a
+  measurement contradicts something already written down.
+
+## Buildroot image — build
 
 The build is always run inside the Docker container defined by `docker/Dockerfile` (Ubuntu 24.04 + Buildroot's host dependencies). A full build takes ~3.5 hours.
 
@@ -46,7 +114,7 @@ make linux-savedefconfig                                   # writes output/build
 find output/ -name ".stamp_target_installed" -delete       # force reinstall into target/
 ```
 
-## Architecture
+## Buildroot image — architecture
 
 ### Buildroot external tree — `beepy_drivers/`
 
@@ -114,6 +182,14 @@ Adding an option means both: a new input in `build.yml` *and* a matching executa
 ## The physical device
 
 There is a live Beepy on the local network at **`beepy.local`**, reachable over SSH as `beepy` with the key at `~/.ssh/id_rsa`. `gsm-status`, `dmesg` and `mmcli` on that device are the fastest way to check hardware behaviour.
+
+That device is where the C applications actually run and where `make check` executes. Relevant state on it:
+
+- `~/beepy-src/` — the rsync target of `make sync`; `make check` runs there.
+- `/usr/local/bin/beepy-nav`, `/usr/local/bin/gps-monitor` — the installed binaries.
+- `~/packs/` — the map packs (a few hundred MB; **gitignored, never committed**), named by `~/.config/beepy-nav.conf`.
+- `~/routes/`, `~/rides/` — GPX routes in, ride logs out.
+- The panel is owned by `fbterm`. Taking it means `kill -STOP $(pgrep -x fbterm)` and **`kill -CONT` on the way out** — including on a crash, or the console is left frozen and the device looks dead.
 
 ⚠️ **The running device is not this Buildroot OS at all — it is Raspberry Pi OS.** `gcc --version` reports `gcc (Raspbian 10.2.1-6+rpi1)`, the rootfs is **ext4**, and the kernel is `6.1.21-v7+`, whereas `br_defconfig` specifies the `stable_20250127` tarball and an **f2fs** rootfs. Practical consequences:
 
