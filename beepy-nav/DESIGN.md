@@ -315,7 +315,7 @@ is **type-to-filter** — no on-screen keyboard, no cursor chasing:
 | Title bar, inverted | `FIND` · live hit count |
 | Query, 24 px bold + block cursor | what has been typed so far |
 | Up to 4 matches, nearest first | name · distance + 8-way bearing (`464M NE`) |
-| Selected match | inverted row; `N`/`P` move, ENTER routes |
+| Selected match | inverted row; `↓`/`↑` move, ENTER routes |
 
 The search index is the street names already in the offline pack (`name:en`
 falling back to `name`), matched token-AND, ranked by distance from the current
@@ -323,13 +323,12 @@ fix. POIs and addresses can join the index when packed; **nothing is searchable
 that is not in the pack**, and the hit count says so honestly.
 
 **Routing is on-device Dijkstra over the pack's road graph** — ways joined on
-exact shared coordinates. Measured on the Asok extract: 2,803 nodes built in
-3 ms, shortest path in 0.1 ms, and the 824 m result matched the hand-built
-demo route within 3 m. Even at Pi Zero speeds a corridor pack routes
-instantly; a whole-city pack (~10⁵–10⁶ nodes) is Dijkstra-in-tens-of-ms, still
-fine without any A*/contraction cleverness. Two honest limits: the mockup
-router ignores `oneway` tags (production must not), and beyond pack coverage
-the fallback is straight-line bearing navigation, labelled as such.
+exact shared coordinates. Measured on the Asok extract: 2,803 nodes, and the
+824 m result matched the hand-built demo route within 3.4 m. Even at Pi Zero
+speeds a corridor pack routes instantly; a whole-city pack (~10⁵–10⁶ nodes) is
+Dijkstra-in-tens-of-ms, still fine without any A*/contraction cleverness.
+Beyond pack coverage the fallback would be straight-line bearing navigation,
+labelled as such — that part is **still not built** (§1.4.3).
 
 CONFIRM is the OVERVIEW page's cartography fitted to the *proposed* route —
 start marker, cue dots, destination flag — with the strip carrying the one
@@ -337,7 +336,172 @@ decision: `827M · EST 3 MIN · 2 TURNS` against `ENTER = GO / Q = CANCEL`. ETA
 assumes 17 km/h city riding until there is ride history to do better.
 
 A GPX file remains the other entry: FIND builds a route, a GPX *is* one, and
-everything downstream is identical.
+everything downstream is identical. `router_to()` leaves a `route_t` that
+`route_prepare()` and `route_cues_derive()` have already been over, and
+`main()`'s route loop cannot tell it from a file — which is why nothing in §7
+had to change.
+
+#### 1.4.1 The pack — `BNAVROAD`
+
+`tools/mkpack.py` cuts the graph and the name index on the Mac;
+`beepy-nav/src/search.c` reads them on the device. The header deliberately
+reuses §6.5's shape — magic, `u16` version, `u16 header_bytes`, then `lat0`,
+`lon0` and the two metres-per-degree constants at the same offsets — because
+two packs read by the same program should not differ in the eight fields they
+have in common. Little-endian, fixed-width, no text.
+
+A 64-byte header, then a six-entry section table of `(offset, count)`, then the
+sections in that fixed order:
+
+| Section | Record | Field |
+|---|---|---|
+| NODES | 8 B | `i32` lat×10⁷, `i32` lon×10⁷ |
+| ADJ | 4 B | `u32` first edge of node *i*; node *i*'s edges are `ADJ[i]..ADJ[i+1]-1` |
+| EDGES | 12 B | `u32` to, `u32` length in **millimetres**, `u16` flags, `u16` name |
+| PLACES | 12 B | `u32` name offset, `u32` first point, `u32` point count |
+| POINTS | 8 B | as NODES — the coordinates a name is searchable at |
+| STRINGS | 1 B | NUL-terminated uppercase ASCII |
+
+The complete field table lives at the top of `mkpack.py`, which is the only
+thing that writes it. Five decisions in there are not obvious:
+
+- **CSR, not an edge list.** The edge table is already sorted by source node
+  and the source index is implied by `ADJ`, so a node expansion is one
+  indirection rather than a search. Dijkstra is the only consumer and this is
+  the shape it wants.
+- **Directed, with a flag.** A `oneway` way contributes one edge per segment
+  and no reverse; everything else contributes two. `ROADEDGE_ONEWAY` marks the
+  survivors, so a test can tell "the pack honours `oneway`" from "the pack
+  happens not to contain that edge" — which is exactly what T-ONEWAY needs.
+- **Lengths are integer millimetres.** They are the numbers Dijkstra adds up,
+  they are measured once on the Mac in the pack's own frame, and an integer is
+  the only way "the same extract gives the same route" survives two compilers.
+  `u32` mm reaches 4 295 km.
+- **Every third vertex, not one representative point.** A name's distance is
+  the distance to its *nearest* candidate, because ranking is by distance from
+  the rider and the near end of a 2 km road is not a pack-time decision.
+  `mockup.py` samples `[::3]`; the device does the same arithmetic over the
+  same points, which is why `nav-search.png` reproduces byte for byte.
+- **No route binding.** Unlike a tile pack (`tiles_bind_route()`), this one
+  keeps its own tangent frame. There is no route when FIND runs — building one
+  is what FIND is *for* — so everything crossing the boundary is lat/lon:
+  `roads_project()` takes the fix in, `roads_unproject()` hands the path back.
+
+Determinism is a requirement, not a nicety: `make test-roads` builds each
+committed pack twice and compares against the copy in git, because a golden
+hangs off one of them and T-ONEWAY's three hand-picked **node indices** are only
+meaningful while the numbering is stable.
+
+Asok (`osm-asok.json`, 557 ways): 2 803 nodes, 4 919 directed edges, 117
+searchable names, 883 candidate points, **101 KB**. A 15 km box over inner
+Bangkok (25 484 routable ways): 104 815 nodes, 192 085 edges, 4 319 names,
+**3.8 MB**.
+
+#### 1.4.2 Non-ASCII names, and being honest about them
+
+The 5×7 font is A–Z/0–9 — there is no glyph for U+0E0B, and adding a Thai face
+to a 400×240 1-bit panel is not a font problem, it is a shaping problem. So a
+name is indexed only if it has an ASCII form (`name:en`, else `name` when that
+is ASCII), and **the ones dropped are counted into the header**. The Asok
+extract drops **3** (`ซอยทวีสุข`, `ซอยพร้อมจิต แยก 2`, `ซอยสุขุมวิท 49/16`);
+the Bangkok box drops **1 012** — a quarter of its names, which is the honest
+scale of the problem in this city.
+
+That count is not a diagnostic, it is on the screen: a query with no match
+prints `NOT IN THIS PACK` and, when the pack dropped anything, how many names it
+cannot show. A rider who searches for a soi that is only signposted in Thai
+gets told the pack cannot see it, rather than concluding it does not exist.
+
+#### 1.4.3 `oneway`, and the 824 m that was a wrong-way route
+
+The previous draft of this section listed "the mockup router ignores `oneway`
+(production must not)" as an honest limit. Honouring it turned out to invalidate
+this section's own measurement, and that is worth writing down rather than
+quietly fixing:
+
+- **The 824 m reference route rides 22 hops the wrong way up Ratchadaphisek
+  Road**, which is `oneway=yes` southbound. The shortest *legal* route between
+  the same two points is **864.5 m**. Both numbers are pinned in
+  `tests/test_search.c`: the 824 m against a pack built with `--ignore-oneway`,
+  which is the mockup's behaviour frozen, and the 864.5 m against the real one.
+- **Nearest-node snapping then refuses to route at all.** The nearest node to
+  the route's start is on the southbound carriageway; from there only 11 of
+  2 803 nodes are reachable. The northbound carriageway is 20 m away.
+
+So the endpoints attach to **every node within 25 m**, nearest first, capped at
+32, and Dijkstra runs multi-source with the walk-on leg as each seed's initial
+cost. With one node in range that *is* a nearest-node snap; 25 m is the distance
+§7.3 already calls being on the road (`ROUTE_OFF_CLEAR_M`). The access legs are
+real geometry — the route starts where the rider is, not at a graph node they
+can already see — and they count toward the distance CONFIRM shows.
+
+**T-ONEWAY** is 200 seeded random pairs plus those three hand-picked ones, with
+every hop of every result checked against the pack's own adjacency: zero
+violations, 142 of the 200 routable inside a corridor extract. The three
+hand-picked pairs are each checked **both ways** — illegal on the
+`--ignore-oneway` pack, legal on the real one — because a test that cannot fail
+is worthless.
+
+#### 1.4.4 Keys, and two places the table above was wrong
+
+`F` opens FIND from either ride page. With no pack it says `NO ROAD PACK` on the
+panel's transient row (§7.5's mechanism) and does nothing else: a dead key is
+indistinguishable from a broken program.
+
+FIND is a **page**, not a modal sub-loop. The frame clock keeps running behind
+it, `--key` drives it in a headless replay exactly as it drives `L`, and a
+cancel gives the screen back frame-for-frame (`T-FIND-CANCEL`). That is what
+makes any of it testable.
+
+Two corrections to the table at the top of this section:
+
+- **`N`/`P` cannot move the selection.** Every letter has to reach the query, so
+  the arrows do it. `Esc` backs out, and so does `Backspace` on an empty query —
+  because `Esc` needs the Beepy's symbol layer and a rider must never reach a
+  page they cannot leave with the keys under their thumbs.
+- **The hit count is the total, not the length of the list.** `search_places()`
+  returns the two separately. The mockup's own count stopped at its limit, which
+  would have read "5 HITS" for a query with ninety.
+
+Digits need the symbol layer (§2), which is why the keymap accepts `KEY_0`…`KEY_9`
+from evdev: `SOI 23` is the query in the screenshot and it is not typeable
+without them.
+
+The 24 px query is a **generated glyph table** (`tools/gen_query.py` →
+`src/query24.h`, 40 glyphs at cap 24, 2.4 KB) rather than a live TrueType
+render, by §5.2's argument and for a harder reason: the device has no
+rasterizer. `mockup.py` blits the same table, so the page is byte-comparable and
+is in the design gate. `nav-search.png` moved by 163 pixels when that landed —
+integer tracking, and a block cursor that now sits at the pen rather than at the
+ink edge (typing a space used to walk it backwards over the previous letter).
+
+#### 1.4.5 Cost, measured on the device
+
+| | Asok, 2 803 nodes | Bangkok, 104 815 nodes |
+|---|---|---|
+| open the pack | 1.1 ms | 32 ms |
+| one keystroke → frame (search + draw + resolve) | 4.2 ms | **7.2 ms** |
+| `search_places("SOI 23")` alone | 0.03 ms | 0.99 ms |
+| one route, random pair | 1.1 ms | 55 ms |
+
+A keystroke costs 7 ms at city scale against a 50 ms budget — a
+type-to-filter field that lags a thumb is worse than a menu, and this one does
+not. The 55 ms route is a one-off on ENTER, not a per-frame cost, and it is
+still inside one 125 ms frame of §6.3; it is also a pathological pair, opposite
+corners of a 15 km box. §1.4's "tens of ms" prediction was close.
+
+#### 1.4.6 What is still missing
+
+- **No rerouting.** Going off route still means §7.3's warning and nothing else.
+  A router on the device makes rerouting possible for the first time; it is not
+  built, and the panel does not pretend otherwise.
+- **No straight-line fallback beyond pack coverage.** A destination outside the
+  pack cannot be searched at all, so the case never arises — which is a
+  restriction, not a solution.
+- **No POIs and no addresses.** Street names only.
+- **`F` does not work from the route picker**, which §2 calls "a different
+  program state and not a page". A rider who wants to search must load some GPX
+  first, and that is a real wart.
 
 ---
 
@@ -350,6 +514,7 @@ not a rehearsal of anything:
 | Key | Action |
 |---|---|
 | `Tab` | switch page (there are only two) |
+| `F` | open FIND (§1.4); with no road pack it says so and nothing else |
 | `Z` / `X` | zoom the NAV map out / in — one rung of §6.1's ladder, and switches it to manual |
 | `A` | return the NAV map to auto zoom |
 | `O` | course-up ↔ north-up |
@@ -374,8 +539,10 @@ repaint is not a frame of the ride clock — it does not advance the dead
 reckoning, and it is not counted — but it does go through the §6.4 skip, so a
 key that changes nothing visible still costs no SPI.
 
-`F`, and the `FIND` page of §1.4 that it would open, are **not built**. §1.4 is
-a design for a later milestone; nothing in the shipped program reads the key.
+`F`, and the two pages of §1.4 behind it, are built as of M6. FIND and CONFIRM
+are *pages* inside the ride loop, which is what makes them reachable from a
+`--replay` session and therefore testable; their own keys are in §1.4.4,
+including the two places §1.4's first draft had them wrong.
 
 Letters, not digits: the Beepy's digit row needs the Alt/symbol modifier, which
 `gps-monitor` already found unusable one-handed. Keys come from `/dev/input/event0`
@@ -389,9 +556,13 @@ only way any of this is testable without a physical thumb.
 ```
 beepy-nav --route ROUTE.gpx [-d DEV] [--north-up] [--imperial]
           [--replay F.nmea] [--config FILE] [--key SEC:CHAR]
+          [--basemap PACK.tiles] [--roads PACK.roads]
 ```
 
-`--key` presses a key at a given replay second. It exists because the keymap
+`--key` presses a key at a given replay second, either as a character or by
+name (`enter`, `esc`, `bs`, `space`, `tab`, `down`, `up` — the presses that are
+not characters, and without which the FIND page could only be driven by a
+physical thumb). It exists because the keymap
 is otherwise reachable only by a physical thumb, and a keymap with no tests is
 a keymap that quietly rots: what a key *does* is portable C, and only where
 the press comes *from* is device-specific. `make test-frames` uses it to drive
@@ -418,6 +589,8 @@ quoting rule nobody would remember.
 | `routes_dir` | a path | `$BEEPY_ROUTES`, else `~/routes` | where the chooser looks |
 | `led_alerts` | `0` / `1` | `1` | flash the keyboard LED at cues (§7.5) |
 | `rides_dir` | a path | `~/rides` | where the ride log goes (§7.6); `--no-log` turns it off entirely |
+| `basemap` | a path | none | the OSM raster pack under the map (§6.5); `--no-basemap` defeats it |
+| `roads` | a path | none | the road/name pack FIND searches (§1.4); `--no-roads` defeats it |
 
 Flags also accept `yes`/`no`, `true`/`false`, `on`/`off`. **A command-line flag
 always wins**, because it is the more specific statement of intent: the file
@@ -1167,13 +1340,21 @@ libbeepyfb/    font.c canvas.c fbdev.c input.c     panel, glyphs, keys
 libnmea/       nmea.c serial.c gps.c               sentences -> fix_t
 gps-monitor/   view_bars.c view_sky.c main.c       unchanged behaviour
 beepy-nav/     seg.c arrows.c gpx.c route.c map.c tile.c
-               view_nav.c view_overview.c nav.c
+               search.c router.c
+               view_nav.c view_overview.c view_find.c view_confirm.c nav.c
 ```
 
 `tile.c` (the §6.5 basemap reader) is deliberately linkable on its own: it needs
 libbeepyfb for the blit and nothing at all from the navigator, which is what
 lets `tests/test_tile.c` build pack fixtures byte by byte instead of shelling
 out to a Pillow-dependent tool the device does not have.
+
+`search.c` and `router.c` (§1.4) go further and need **no pixels at all** — libc
+and libm, like `map.c` and `route.c`. That is what lets `tests/test_search.c`
+link them against `route.c` alone, and it is why T-ONEWAY's 203 routes run
+inside `make check` on the device rather than only on the Mac. `router.c` depends
+on `search.c` for the graph and on `route.c` for the `route_t` it fills; nothing
+depends on `router.c` but `nav.c`.
 
 **The split is verifiable, which is the reason to trust it:** `gps-monitor
 --demo --page bars --dump` before and after must produce byte-identical
@@ -1203,6 +1384,14 @@ view_nav 200, view_overview 160, nav main 180 ≈ **1450 lines**.
 | A field failure becomes a test | `tools/ride2fixture.sh LOG ROUTE NAME` turns a log into a `tests/rides/` case, and cross-checks the replayed per-fix trace against the `.tsv` the device itself wrote from the same bytes. They must agree exactly on every route-maths column |
 | **T-LIVE** | 200 s of the real u-blox 7, recorded on the device (§3.1). It carries what no generated fixture does: an empty course field on every epoch, `GLL` and `TXT` sentences, and 15 m of indoor multipath the off-route latch must sit through. Asserted: the latch never fires, `off_m` stays under 40 m and exceeds 10 m somewhere, the heading never moves, the ETA stays unknown, and the drawn position still matches §6.3's closed form to 0.005 m |
 | **T-BASEMAP-OPTIONAL** | the five `nav-*` goldens are rendered with **no** pack and must stay byte-identical, which is the whole claim §6.5 makes for the tile layer. Beside them, the same `nav-tiles` page with no pack and with an unreadable one must be the same frame, and neither may equal the frame with the pack — otherwise "draws nothing" would pass by drawing nothing ever |
+| **T-ONEWAY** | 200 seeded random src/dst pairs plus three hand-picked ones over the real Asok graph, with **every hop of every result** checked against the pack's own directed adjacency: zero violations, and 142 of the 200 routable inside a corridor extract (asserted, so the test cannot pass by never routing). The three hand-picked pairs are the ones where the *undirected* shortest path provably rides a oneway backwards — including §1.4's own 824 m reference route, 22 hops the wrong way up Ratchadaphisek — and each is checked **both ways**: illegal on a pack built with `--ignore-oneway`, legal on the real one. Without that second pack the assertion could not fail |
+| **T-ROADS-DETERMINISM** | `tools/mkpack.py` run twice on the same extract is byte-identical and equal to the committed `tests/roads/*.roads`, for the tile packs' reason and one more: T-ONEWAY's three pairs are **node indices**, and they mean nothing if the numbering moves |
+| **T-ROADS-OPTIONAL** | the FIND page with no pack, and with an unreadable one, are the same frame — and neither is the frame with the pack. Unlike the basemap the difference here is the whole page, because a search with nothing to search cannot honestly show a hit; which is what makes the golden evidence about `search.c` and not only about the layout |
+| **T-FIND** | the whole pre-ride flow from a headless replay: `F`, seven keystrokes, ENTER to route, ENTER to go. Asserted on the state machine rather than on pixels, because the frames move with the ride — the router ran on the device's own graph and found the place that was *typed*, `main()` installed the result by the same line that loads a GPX, and the three screens differ by at least 4 000 pixels each |
+| **T-FIND-NOPACK** | `F` with no pack differs from an un-keyed run *only* inside the panel's bottom row, and is byte-identical two seconds later — the §7.5 transient mechanism, and the proof that the key is neither dead nor destructive |
+| **T-FIND-CANCEL** | two runs of one ride, one of which opened FIND and pressed `Esc`. Twenty seconds later they are the same frame: the page borrowed the screen and gave it back, which is the property that lets FIND be a page inside the ride loop rather than a modal detour |
+| Search semantics | `tests/test_search.c` over a twelve-node hand-written pack (`tests/roads/names.json`), so every branch of the indexer has a case: `name:en` preferred, an ASCII `name` as the fallback, a Thai name dropped **and counted**, an unnamed way still routable, a footway not routable at all. Plus token-AND as substrings, order-independence, case folding, an empty query matching nothing, a miss matching nothing, ranking by distance to the nearest candidate point, and a hit count that is the total rather than the length of the list |
+| Pack reader, the paths that refuse | one byte changed in the committed fixture at a time — magic, version, header size, coordinate scale, a section pointed inside the header — plus two truncations, and every accessor called on a `NULL` pack. Each must refuse with a message, because "no search" is a state the whole feature degrades to |
 | **T-TILES-DETERMINISM** | `tools/mktiles.py` run twice on the same extract, route and options is byte-identical, and equal to the committed `tests/tiles/asok.tiles`. A pack is a binary fixture with a frozen golden hanging off it; without this, rebuilding one would silently move a frame |
 | Tile reader, the paths that draw nothing | `tests/test_tile.c` builds packs byte by byte in C — no Pillow, so it runs inside `make check` on the device — and asserts the cases a golden cannot see: a zoom the pack lacks, a near-miss on the rung, a view 10 km outside the corridor, an absurd view, a missing file, bad magic, a truncated pack, an empty file. Also the two positive claims: a lit pack pixel lands on exactly the screen pixel §6.5's projection names, and a rotated straight line has **no gap in any column** |
 | Console restore | every exit path leaves `fbterm` in `S+`, never `T` — verified on the device for `Q` and `SIGINT`. `SIGKILL` is not an exit path a program can hook, so it leaves `fbterm` in `T+`; the next clean run recovers it on its own (measured), and `kill -CONT $(pgrep -x fbterm)` is the manual answer |
@@ -1256,6 +1445,10 @@ purpose.
 | 4 | Optional raster basemap and its build tooling | `fbshow --verify` on the panel at three rungs, and T-BASEMAP-OPTIONAL: the pre-basemap goldens are unchanged |
 | 5 | FIND + on-device router (Dijkstra, oneway-aware) + CONFIRM | routed path vs a reference route; oneway violations = 0 |
 
+Phase 5 landed with one surprise worth carrying in this table: the reference
+route it was to be checked against **was itself illegal**, so "routed path vs a
+reference route" became two assertions rather than one (§1.4.3).
+
 Phase 2 is the first genuinely useful build: it navigates.
 
 ---
@@ -1279,6 +1472,7 @@ beepy-nav/
   nav-smooth-hard.png / -dither.png   the two full frames  (done)
   Makefile
   src/               per §9
+  tests/roads/       the committed road packs and their extract (done)
   README.md          build, install, keys, config format
 ```
 
