@@ -25,7 +25,8 @@ beepy-nav
 
 # 2. from there:  R  picks a route from ~/routes
 #                 F  types a destination and routes to it
-#                 Q  quits
+#                 E  ends a route without leaving the program
+#                 Q  quits (it asks first)
 
 # ...or go straight to a route you already have
 scp my-ride.gpx beepy.local:routes/
@@ -36,7 +37,7 @@ beepy-nav --basemap ~/packs/home.tiles --roads ~/packs/home.roads
 ```
 
 That is the whole workflow. The panel takes over the screen while it runs and
-gives it back when you press `Q`.
+gives it back when you press `Q` and confirm.
 
 Before the first fix the MAP page says `WAITING FOR FIX` and how many satellites
 the receiver can see. A cold receiver indoors can sit there for minutes; near a
@@ -162,7 +163,26 @@ passed, total distance, distance and time remaining.
 | `U` | metric ↔ imperial |
 | `L` | cue alerts on ↔ off, for this ride only |
 | `H` | hold — freeze the display |
-| `Q` | quit, and give the console back |
+| `E` | end the route — stop navigating, stay on the map, keep riding |
+| `Q` | quit — it asks first, and shows what you would be ending |
+
+### Stopping
+
+There are two different things you can mean by "stop", so there are two keys.
+
+**`E` ends the route.** You arrived, or you have had enough of it, and you want
+to ride home without a navigator nagging you. The route goes away, the MAP page
+comes back with your position still live, and the breadcrumb, the odometer and
+the program all carry on. The ride log for that route is closed and saved.
+
+**`Q` quits — and asks first.** It opens a page telling you what you would be
+ending: how far you have ridden, how long, and whether the ride log is already
+on the card. `Enter` goes through with it; `Q` again backs out and gives you
+the exact screen you left. If you are on a route it also offers `E` there,
+because "stop the ride" is more often what someone reaching for `Q` meant.
+
+The confirmation exists because `Q` used to exit on one press, and on a bike
+that is a ride lost to a thumb landing one key over.
 
 `R` only does something when there is a picker to go back to — that is, when you
 started with a bare `beepy-nav` rather than `--route`. Quitting the picker with

@@ -63,7 +63,8 @@ NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
             beepy-nav/src/config.o beepy-nav/src/ridelog.o \
             beepy-nav/src/tile.o beepy-nav/src/search.o \
             beepy-nav/src/router.o beepy-nav/src/view_find.o \
-            beepy-nav/src/view_confirm.o beepy-nav/src/view_map.o
+            beepy-nav/src/view_confirm.o beepy-nav/src/view_map.o \
+            beepy-nav/src/view_quit.o
 HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h beepy-nav/src/*.h)
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -132,6 +133,13 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	./beepy-nav/beepy-nav --demo --page find-none \
 		--roads $(ROADPACK) --dump out-nav-find-none.fb
 	./beepy-nav/beepy-nav --demo --page confirm --dump out-nav-confirm.fb
+#	The QUIT page of DESIGN.md 1.6, in BOTH its states. Two frames and not one
+#	because the question and the way out both change with whether a route is
+#	loaded, and 1.6's whole claim is that the page tells the truth about what
+#	is being left -- a golden of the riding state would say nothing about the
+#	other truth.
+	./beepy-nav/beepy-nav --demo --page quit     --dump out-nav-quit.fb
+	./beepy-nav/beepy-nav --demo --page quit-map --dump out-nav-quit-map.fb
 	cmp goldens/nav-turn.fb     out-nav-turn.fb
 	cmp goldens/nav-off.fb      out-nav-off.fb
 	cmp goldens/nav-nofix.fb    out-nav-nofix.fb
@@ -146,6 +154,8 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	cmp goldens/nav-find.fb     out-nav-find.fb
 	cmp goldens/nav-find-none.fb out-nav-find-none.fb
 	cmp goldens/nav-confirm.fb  out-nav-confirm.fb
+	cmp goldens/nav-quit.fb     out-nav-quit.fb
+	cmp goldens/nav-quit-map.fb out-nav-quit-map.fb
 #	The five goldens above nav-tiles are rendered with NO pack, and that is
 #	the standing proof that the tile layer is optional: a basemap that is
 #	absent must render exactly what rendered before basemaps existed. The two
@@ -233,6 +243,8 @@ endif
 	./beepy-nav/beepy-nav --demo --page find-none \
 		--roads $(ROADPACK) --dump goldens/nav-find-none.fb
 	./beepy-nav/beepy-nav --demo --page confirm --dump goldens/nav-confirm.fb
+	./beepy-nav/beepy-nav --demo --page quit     --dump goldens/nav-quit.fb
+	./beepy-nav/beepy-nav --demo --page quit-map --dump goldens/nav-quit-map.fb
 	@echo "goldens regenerated - review the diff before committing"
 
 # ----------------------------------------------------------- replay tests
@@ -533,6 +545,51 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK)
 		--mask 0,216,127,239 --max-px 0
 	! python3 tools/fbdiff.py $(RDIR)/nopack-a.fb $(RDIR)/plain-a.fb --max-px 0
 	python3 tools/fbdiff.py $(RDIR)/nopack-b.fb $(RDIR)/plain-b.fb --max-px 0
+	@echo "--- T-QUIT-CONFIRM: Q asks, and a cancel gives the frame back"
+#	DESIGN.md 1.6. Q used to end the program on one press. The claim now is
+#	three-part and each part can fail on its own: Q opens a page (so the frame
+#	CHANGES), a second Q cancels it (so the program is still running to draw a
+#	later frame at all), and what comes back is the frame that was there before
+#	-- BYTE FOR BYTE, because a confirmation that perturbs the ride behind it
+#	has charged the rider something for saying no.
+#
+#	On still.nmea and not ride.nmea, and that is the whole reason the stationary
+#	fixture exists: byte-for-byte is only a meaningful claim where the frame is
+#	not entitled to change on its own, and T-SKIP already proves this one
+#	settles. On a moving ride the same assertion would be measuring the clock.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
+		--dump-at 120:$(RDIR)/quit-before.fb \
+		--key 121:q \
+		--dump-at 122:$(RDIR)/quit-asked.fb \
+		--key 123:q \
+		--dump-at 125:$(RDIR)/quit-cancelled.fb 2> $(RDIR)/quit.log
+	python3 tools/fbdiff.py $(RDIR)/quit-asked.fb $(RDIR)/quit-before.fb \
+		--min-px 4000
+	python3 tools/fbdiff.py $(RDIR)/quit-cancelled.fb $(RDIR)/quit-before.fb \
+		--max-px 0
+#	And it ran to the end of the fixture, which is what says Q did not quit: a
+#	program that exited at 121 s could not have reached 601.
+	grep -q "601 fixes" $(RDIR)/quit.log
+	@echo "--- T-QUIT-GO: ENTER on the page is the exit Q used to be"
+#	The pair. Without it "Q does not quit" would pass on a build where nothing
+#	quits at all, and the page would be a trap rather than a question.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
+		--key 121:q --key 123:enter 2> $(RDIR)/quit-go.log
+	! grep -q "601 fixes" $(RDIR)/quit-go.log
+	@echo "--- T-END-ROUTE: E leaves the route and keeps the program"
+#	The other half of 1.6, and the one a rider reaches for after arriving. E
+#	ends the ROUTE without ending the process: the first pass through run_live()
+#	stops early, the loop takes its no-route branch, and a SECOND pass reports
+#	its own fix count. Two "fixes," lines is that, and one is either a program
+#	that quit or a key that did nothing.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
+		--key 121:e --dump-at 200:$(RDIR)/ended.fb 2> $(RDIR)/end.log
+	test `grep -c "fixes," $(RDIR)/end.log` -eq 2
+#	What it lands on is the MAP page, not the NAV page holding an empty route.
+#	MAP is full width -- there is no inverted turn panel -- so a frame that
+#	still carried one would mean the route was freed and the page was not.
+	python3 tools/fbdiff.py $(RDIR)/ended.fb $(RDIR)/quit-before.fb \
+		--min-px 4000
 	@echo "--- T-FIND-POI: routing to something that is not on the graph"
 #	Every destination before this one WAS a graph node: a street's candidate
 #	points are its own vertices, so the "snap to the nearest node" in router.c
@@ -622,7 +679,7 @@ HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
             host/view_nav.o host/view_overview.o host/fix.o host/chooser.o \
             host/led.o host/config.o host/ridelog.o host/tile.o \
             host/search.o host/router.o host/view_find.o \
-            host/view_confirm.o host/view_map.o \
+            host/view_confirm.o host/view_map.o host/view_quit.o \
             host/nav.o
 
 # beepy-nav is portable end to end (no fbdev, no evdev), so the Mac can link
@@ -631,7 +688,7 @@ HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/arrows.o host/map.o host/gpx.o host/route.o host/fix.o \
            host/chooser.o host/led.o host/config.o host/ridelog.o \
            host/tile.o host/search.o host/router.o host/view_find.o \
-           host/view_confirm.o host/view_map.o \
+           host/view_confirm.o host/view_map.o host/view_quit.o \
            host/nmea.o host/gps.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
 

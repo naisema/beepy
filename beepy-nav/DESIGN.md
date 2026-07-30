@@ -655,6 +655,76 @@ drawn position still matches §6.3's closed form, and that **nothing in the trac
 is NaN** — which needed a new assertion, because every other one in
 `assert_trace.py` is a comparison and every comparison against NaN is false.
 
+### 1.6 Leaving — QUIT, and ending a route — `nav-quit.png`
+
+Two different things a rider means by "stop", and until now the program offered
+one key for both and asked nothing.
+
+**`Q` used to end the program on a single press.** At a desk that is fine. On a
+bike it is a ride ending because a thumb landed one key left of `P` — and it
+does not come back: the loop holding the route, the breadcrumb, the odometer
+and the ride clock is gone. So `Q` opens a question instead.
+
+**Why a page and not a second keypress.** A two-press confirm would have cost no
+screen and reused §7.5's transient, and it was the cheaper design. It answers
+the wrong question. *"Press Q again"* tells a rider what to **do**; it does not
+tell them what they are about to **lose**, and the loss is the entire reason a
+confirmation exists. A page can carry the three facts that actually decide it:
+
+| | why it is on the page |
+|---|---|
+| `12.4KM RIDDEN` | the session odometer — what the ride was worth |
+| `1H 02M ELAPSED` | how long, which is the other half of that |
+| `RIDE LOG SAVED` | whether any of it survives the exit. A rider told nothing has to assume the worst, and assuming the worst means not quitting — which is how a navigator gets left running until the battery decides |
+
+The layout is CONFIRM's, deliberately: the same inverted title bar, the same
+42 px strip, the same two choices in the same corners, and `ENTER` meaning "go
+through with it" on both. A rider who has answered CONFIRM once already knows
+where to look.
+
+**It is the one modal page.** Every other page is somewhere you can *be*, and
+Tab or Esc leaves. This one has two exits and both are decisions, so it is
+drawn before everything else and every key it does not claim is **swallowed** —
+a stray `O` or `Z` changing the map behind an unanswered question is exactly
+how a rider learns to distrust the answer. Cancelling gives the frame back
+*byte for byte*, which T-QUIT-CONFIRM asserts on the stationary fixture: a
+confirmation that perturbs the ride behind it has charged something for saying
+no.
+
+**`E` ends the route and keeps the program**, dropping to the MAP page with the
+position still live. Without it the only ways out of a ride were `R`, which
+demands you pick another one, and `Q`, which ends everything — and neither is
+*"I have arrived, I am going to ride home now"*, which is the most ordinary
+thing a rider does. It is the third line on the QUIT page's strip for that
+reason: someone who opened that page wanted to stop **something**, and stopping
+the ride is more often what they meant.
+
+Mechanically it is free. `E` leaves `run_live()` with a new return code and the
+loop clears `routepath` and goes round — byte for byte what a cancelled route
+picker already did, landing in the same no-route branch. Everything that must
+survive already lives outside `app_t` for the breadcrumb's reasons: the packs,
+the panel, the odometer, the track.
+
+**The odometer** is new and is the session's, not the route's — so it is a true
+answer on MAP as well, where there is no route to be a fraction of. It
+accumulates fix to fix *before* the breadcrumb decimates anything (summing the
+crumb would understate a ride by whatever `CRUMB_MIN_M` threw away), and it is
+gated on the same standstill threshold the heading freeze uses rather than a
+new constant. A receiver sitting still still reports a metre or two of
+multipath a second, which is kilometres over an afternoon in a car park — and
+an odometer that counts a parked bike is worse than none, because this page
+offers the figure as a reason to keep riding.
+
+Verification is two goldens — `nav-quit` and `nav-quit-map`, because the
+question *and* the way out both change with whether a route is loaded, and a
+golden of one says nothing about the other — plus **T-QUIT-CONFIRM** (Q changes
+the frame, a cancel restores it byte for byte, and the ride reaches the end of
+the fixture, which is what says Q did not quit), **T-QUIT-GO** (ENTER really
+does exit — without it "Q does not quit" would pass on a build where nothing
+quits and the page would be a trap), and **T-END-ROUTE** (two `fixes,` lines in
+one run: the first pass stopped and a second began, and the frame it lands on
+is full-width MAP rather than NAV holding an empty route).
+
 ---
 
 ## 2. Keys
@@ -674,7 +744,8 @@ not a rehearsal of anything:
 | `U` | units: metric ↔ imperial |
 | `L` | cue LED alerts on ↔ off, for this ride (§7.5) |
 | `H` | hold — freeze the display |
-| `Q` | quit |
+| `E` | end the route and drop to MAP — stop navigating without stopping the program (§1.6) |
+| `Q` | open QUIT, which asks before it exits (§1.6) |
 
 On the MAP page of §1.5, which is what the program is when there is no route.
 Its own hint row lists the three that matter, and that row is load-bearing: a
@@ -684,7 +755,8 @@ key absent from it was never claimed by the page.
 |---|---|
 | `F` | open FIND — the whole point of the flow: open, see where you are, search, go |
 | `R` | open the route picker; `Q` there comes back to MAP, it does not exit |
-| `Q` | quit |
+| `Q` | open QUIT (§1.6). The question is the shorter one — there is no ride to end |
+| `E` | **not bound** — there is no route to end, and the transient says so rather than the key doing nothing |
 | `O`, `Z` / `X`, `A`, `U`, `H`, `L` | as above; `A` returns to the 6 m/px default rung rather than to a cue fit |
 | `Tab` | **not bound** — there is no OVERVIEW without a route (§1.5) |
 
@@ -696,6 +768,16 @@ page:
 | `N` / `P`, `↓` / `↑` | move the selection |
 | `Enter` | load the route and start riding |
 | `Q`, `Esc` | back to MAP without loading one |
+
+And on the QUIT page of §1.6, which is the one **modal** state in the program —
+nothing behind it is drawn or reachable until it is answered, and every key not
+listed is swallowed rather than passed through:
+
+| Key | Action |
+|---|---|
+| `Enter` | quit for real |
+| `Q`, `Tab`, `Esc` | cancel, back to the exact page and the exact frame it was opened over |
+| `E` | end the route and stay, when there is a route — the way out a rider who pressed Q more often meant |
 
 A key repaints immediately rather than waiting for the next tick of §6.3's
 frame clock: at the 1 Hz stopped rate that would be a whole second between the

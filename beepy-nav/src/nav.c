@@ -118,10 +118,12 @@ static const char USAGE[] =
     "  --dump FILE   write the frame as 384000 raw XRGB bytes\n"
     "  --bench N     time N draw+resolve cycles and print ms/frame\n"
     "\n"
-    "keys: Tab page   F find a destination   R change route   Q quit   H hold\n"
+    "keys: Tab page   F find a destination   R change route   E end route\n"
+"      Q quit (asks first)   H hold\n"
     "      O course-up/north-up   Z/X zoom out/in   A auto zoom\n"
     "      U metric/imperial   L cue alerts on/off\n"
-    "map:  F find   R routes   Q quit -- and O, Z/X/A, U as above; Tab is not\n"
+    "map:  F find   R routes   Q quit (asks first) -- and O, Z/X/A, U as\n"
+"      above; Tab is not\n"
     "      bound, because with no route there is no OVERVIEW to switch to\n"
     "find: type to filter   Down/Up select   Enter route   Esc (or Backspace\n"
     "      on an empty query) cancel;  confirm: Enter go   Q cancel\n";
@@ -141,6 +143,8 @@ enum {
     PAGE_FIND,
     PAGE_FIND_NONE,
     PAGE_CONFIRM,
+    PAGE_QUIT,
+    PAGE_QUIT_MAP,
     PAGE_CLIPTEST,
     PAGE_CLIPTEST_PANEL,
     PAGE_CHOOSER
@@ -154,7 +158,8 @@ enum {
  * opens on it, and it is the one page that never coexists with a loaded route.
  * It is LAST so LIVE_NAV stays zero -- a zeroed app_t is a ride on the NAV
  * page, which is what main()'s reset across R counts on. */
-enum { LIVE_NAV, LIVE_OVERVIEW, LIVE_FIND, LIVE_CONFIRM, LIVE_MAP };
+enum { LIVE_NAV, LIVE_OVERVIEW, LIVE_FIND, LIVE_CONFIRM, LIVE_MAP,
+       LIVE_QUIT };
 
 /* run_live()'s "the rider wants a different route", distinct from any exit
  * status: main() loops back to the picker rather than returning it. Outside
@@ -164,6 +169,10 @@ enum { LIVE_NAV, LIVE_OVERVIEW, LIVE_FIND, LIVE_CONFIRM, LIVE_MAP };
  * router built and goes round the same loop, so a routed destination and a GPX
  * reach run_live() by the identical path (DESIGN.md 1.4). */
 #define RUN_FIND_ROUTE 101
+/* E: end the route and keep the program. The loop treats it exactly as it
+ * treats a cancelled picker -- routepath cleared, round again -- which is
+ * why it needs no new machinery, only a name. */
+#define RUN_END_ROUTE 102
 
 /* The coverage buffer is 96 KB; keep it out of the stack. */
 static cov_t COV;
@@ -235,6 +244,26 @@ static int g_have_ref;
  * At the 5 m floor the first halving is 10 km of riding away. */
 #define CRUMB_MAX MAP_TRACK_MAX
 #define CRUMB_MIN_M 5.0
+/* The session odometer: metres actually travelled, for the QUIT page (1.6).
+ *
+ * At file scope with the breadcrumb, and for its reason: it is a fact about
+ * the SESSION, not about the route, so R and E must not zero it.
+ *
+ * Gated on the same standstill threshold the heading freeze uses rather than a
+ * new constant. A receiver sitting still still reports a metre or two of
+ * multipath every second, which is 5 km over an afternoon in a car park -- and
+ * an odometer that counts a parked bike is worse than no odometer, because the
+ * QUIT page offers it as a reason to keep riding. */
+static double g_odo_m;
+static double g_odo_lat, g_odo_lon;
+static int g_have_odo;
+
+/* The ride log (DESIGN.md 7.6). Up here with the other file-scope state
+ * because the QUIT page reads it: "RIDE LOG SAVED" is the fact that decides
+ * whether ending the ride loses anything, and the page is rendered well above
+ * the point the log used to be declared. */
+static ridelog_t RIDELOG;
+
 static double g_crumb[2 * CRUMB_MAX]; /* lat, lon pairs, oldest first */
 static int g_ncrumb;
 static double g_crumb_en[2 * CRUMB_MAX]; /* the same, projected, per frame */
@@ -336,6 +365,16 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
         break;
     case PAGE_CONFIRM:
         view_confirm_demo(cov);
+        break;
+    /* Both states, because the two differ in the question AND in the way out
+     * the strip offers, and a golden of one would say nothing about the other.
+     * 1.6's whole claim is that the page tells the truth about what is being
+     * left, and there are two truths. */
+    case PAGE_QUIT:
+        view_quit_demo(cov, 1);
+        break;
+    case PAGE_QUIT_MAP:
+        view_quit_demo(cov, 0);
         break;
     case PAGE_CLIPTEST:
         view_cliptest(cov);
@@ -496,6 +535,8 @@ typedef struct {
      * program. Distinct from quit, because the panel, the evdev grab and the
      * process all survive it -- only the route does not. */
     int pick_again;
+    int end_route;  /* E: leave this route, stay in the program */
+    int quit_from;  /* the page QUIT was opened over, to cancel back to */
     int can_pick; /* a picker exists to go back to */
 
     int rate_5hz; /* ask the receiver for 5 Hz at startup (DESIGN.md 6.3) */
@@ -893,9 +934,23 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
     char clock[8], togo[16], total[16], remain[16], etabuf[24];
 
     cov_begin(cov);
-    /* DESIGN.md 1.5. First, because it is the one page that does not read the
-     * route at all -- and the one page that can be on screen when there is no
-     * route to read. */
+    /* DESIGN.md 1.6, before everything: it is the only MODAL page, so while it
+     * is up nothing behind it is drawn or reachable. Putting it first is what
+     * makes that true of the renderer as well as of the key handler. */
+    if (a->page == LIVE_QUIT) {
+        quit_t q;
+        q.riding = a->have_route;
+        q.ridden_m = g_odo_m;
+        q.elapsed_s = a->t;
+        q.logging = RIDELOG.tsv != NULL;
+        q.units = a->ctx.units;
+        view_quit(cov, &q);
+        cov_resolve(cov, cv);
+        return;
+    }
+    /* DESIGN.md 1.5. First of the rest, because it is the one page that does
+     * not read the route at all -- and the one page that can be on screen when
+     * there is no route to read. */
     if (a->page == LIVE_MAP) {
         livemap_t lm;
         lm.have_pos = a->have_pos && a->have_dr;
@@ -1081,8 +1136,6 @@ trace_write(FILE *f, const app_t *a, double zoom_mpp, int presented)
                 (180.0 / M_PI));
 }
 
-static ridelog_t RIDELOG;
-
 static void
 trace_open(const char *path)
 {
@@ -1260,6 +1313,22 @@ on_epoch(app_t *a, time_t now)
      * degrees, so it is the one thing here that does not depend on the frame
      * above. It is the session's track, not the route's. */
     crumb_add(a->fx.lat, a->fx.lon);
+    /* The odometer, from the SAME fix and before any decimation: the crumb
+     * drops points closer together than CRUMB_MIN_M, and summing it would
+     * understate a ride by however much that threw away. Gated on the
+     * standstill threshold the heading freeze already uses rather than a new
+     * constant -- a receiver sitting still reports a metre or two of multipath
+     * a second, which is kilometres over an afternoon, and an odometer that
+     * counts a parked bike is worse than none: the QUIT page offers the figure
+     * as a reason to keep riding. */
+    if (g_have_odo && a->fx.speed_kmh >= DR_MOVING_KMH) {
+        double oe, on;
+        geo_project(g_odo_lat, g_odo_lon, a->fx.lat, a->fx.lon, &oe, &on);
+        g_odo_m += hypot(oe, on);
+    }
+    g_odo_lat = a->fx.lat;
+    g_odo_lon = a->fx.lon;
+    g_have_odo = 1;
     /* Section 7's whole machinery, and only where there is a route to run it
      * against: the MAP page skips it rather than snapping to an empty array. */
     if (a->have_route) {
@@ -1886,9 +1955,59 @@ confirm_key(app_t *a, int ch)
     return 1;
 }
 
+/* End the route and keep the program: back to the MAP page with the position
+ * still live. The mechanism is the one R and a cancelled picker already use --
+ * leave run_live(), clear the route, come round again -- so nothing here has to
+ * unwind a ride in place. Everything that must survive (the breadcrumb, the
+ * odometer, the packs, the panel) already lives outside app_t. */
+static void
+end_route(app_t *a)
+{
+    a->end_route = 1;
+    a->quit = 1;
+}
+
+/* QUIT (DESIGN.md 1.6): the two decisions its strip advertises, plus the third
+ * way out for a rider who wanted to stop the RIDE rather than the program. */
+static int
+quit_key(app_t *a, int ch)
+{
+    switch (ch) {
+    case '\n':
+    case '\r':
+        a->quit = 1;
+        return 1; /* no repaint: the next thing that happens is the exit */
+    case 'e':
+    case 'E':
+        /* Only when there is one. On MAP the strip offers Tab instead, so this
+         * cannot be reached by a rider following the screen -- but a thumb is
+         * not following the screen, and a key that silently ends nothing is
+         * better than one that ends the program by falling through. */
+        if (!a->have_route)
+            return 0;
+        end_route(a);
+        return 1;
+    case 'q':
+    case 'Q':
+    case '\t':
+    case 27: /* Esc, the same cancel CONFIRM takes */
+        a->page = a->quit_from;
+        break;
+    default:
+        /* Everything else is swallowed. It is a modal page: a stray O or Z
+         * changing the map behind an unanswered question would be the bug that
+         * makes a rider distrust the answer. */
+        return 1;
+    }
+    key_repaint(a);
+    return 1;
+}
+
 static int
 handle_key(app_t *a, int ch)
 {
+    if (a->page == LIVE_QUIT)
+        return quit_key(a, ch);
     if (a->page == LIVE_FIND)
         return find_key(a, ch);
     if (a->page == LIVE_CONFIRM)
@@ -1920,8 +2039,24 @@ handle_key(app_t *a, int ch)
         break;
     case 'q':
     case 'Q':
-        a->quit = 1;
-        return 1; /* no repaint: the next thing that happens is the exit */
+        /* DESIGN.md 1.6. Q used to end the program on one press, which on a
+         * bike is a ride lost to a thumb landing one key over. It opens the
+         * question instead, and the question knows which page it came from. */
+        a->quit_from = a->page;
+        a->page = LIVE_QUIT;
+        break;
+    case 'e':
+    case 'E':
+        /* End the route, keep the navigator. Without this the only ways out of
+         * a ride were R, which demands you pick another one, and Q, which ends
+         * the program -- and neither is "I have arrived, I am going to ride
+         * home now". */
+        if (!a->have_route) {
+            note_show(a, "NO ROUTE");
+            break;
+        }
+        end_route(a);
+        return 1;
     case 'h':
     case 'H':
         a->hold = !a->hold;
@@ -2666,7 +2801,7 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
      * handed back to the picker untouched. Releasing and re-taking would flash
      * fbterm between the two screens, and re-taking can fail. The same is true
      * of a GO from CONFIRM, which is the same hand-off to a different caller. */
-    if (!a->pick_again && !a->find_go && g_panel_open) {
+    if (!a->pick_again && !a->find_go && !a->end_route && g_panel_open) {
         fb_release(&g_panel);
         g_panel_open = 0;
         g_fb = NULL;
@@ -2676,6 +2811,8 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
             a->epochs, a->nv.pct, a->ctx.full_scans);
     if (a->find_go)
         return RUN_FIND_ROUTE;
+    if (a->end_route)
+        return RUN_END_ROUTE;
     return a->pick_again ? RUN_PICK_AGAIN : 0;
 }
 
@@ -2748,6 +2885,10 @@ main(int argc, char **argv)
                 page = PAGE_FIND_NONE;
             else if (!strcmp(p, "confirm"))
                 page = PAGE_CONFIRM;
+            else if (!strcmp(p, "quit"))
+                page = PAGE_QUIT;
+            else if (!strcmp(p, "quit-map"))
+                page = PAGE_QUIT_MAP;
             else if (!strcmp(p, "cliptest"))
                 page = PAGE_CLIPTEST;
             else if (!strcmp(p, "cliptest-panel"))
@@ -3042,7 +3183,8 @@ main(int argc, char **argv)
 
         rc = run_live(&APP, devpath, replaypath, headless, pace_opt, do_print,
                       no_log ? NULL : rides);
-        if (rc != RUN_PICK_AGAIN && rc != RUN_FIND_ROUTE)
+        if (rc != RUN_PICK_AGAIN && rc != RUN_FIND_ROUTE &&
+            rc != RUN_END_ROUTE)
             return rc;
 
         /* A different route is a different ride: the old one's state cannot
@@ -3089,6 +3231,15 @@ main(int argc, char **argv)
             /* The destination the router built supersedes whatever file was
              * loaded before it, or this loop would reload that file on the next
              * R-free pass through. */
+            routepath = NULL;
+            continue;
+        }
+        if (rc == RUN_END_ROUTE) {
+            /* E (DESIGN.md 1.6). Byte for byte what a cancelled picker does,
+             * and for the same reason: clearing routepath drops this pass into
+             * the no-route branch above, which is the MAP page. The rider keeps
+             * the program, the position, the breadcrumb and the odometer, and
+             * loses only the route they asked to be rid of. */
             routepath = NULL;
             continue;
         }

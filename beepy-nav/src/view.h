@@ -211,6 +211,21 @@ typedef struct {
     int units;
 } confirm_t;
 
+/* The QUIT page (DESIGN.md 1.6): the one modal question in the program.
+ *
+ * It carries figures rather than only a question because the thing being
+ * confirmed is a LOSS -- the ride ends here -- and a rider deciding whether to
+ * accept that is entitled to know what they are ending. All three are facts the
+ * loop already holds, not estimates: metres actually travelled this session,
+ * seconds actually on the clock, and whether the bytes are on the card. */
+typedef struct {
+    int riding;        /* a route is loaded: the question mentions the ride */
+    double ridden_m;   /* the session odometer, metres */
+    double elapsed_s;  /* the ride clock */
+    int logging;       /* a ride log is open, so the ride survives the exit */
+    int units;
+} quit_t;
+
 void view_turn_panel(cov_t *c, const panel_t *p);
 void view_nav_map(cov_t *c, const navmap_t *m);
 void view_nav(cov_t *c, const navmap_t *m, const panel_t *p);
@@ -218,6 +233,7 @@ void view_map(cov_t *c, const livemap_t *m);
 void view_overview(cov_t *c, const overview_t *o);
 void view_find(cov_t *c, const find_t *f);
 void view_confirm(cov_t *c, const confirm_t *cf);
+void view_quit(cov_t *c, const quit_t *q);
 
 /* Map marks shared by the pages that draw a map; defined in view_nav.c, where
  * they were transcribed from mockup.py. OVERVIEW, CONFIRM and MAP are the same
@@ -278,6 +294,7 @@ void view_find_demo(cov_t *c, roads_t *g, int zero);
 /* mockup.py's page_confirm(): the same Asok route the basemap demo rides,
  * proposed rather than under way. */
 void view_confirm_demo(cov_t *c);
+void view_quit_demo(cov_t *c, int riding);
 
 /* The clipping test of DESIGN.md 10: the NAV map at a zoom where the route
  * leaves the view on all four sides. Nothing but the panel may put ink in
