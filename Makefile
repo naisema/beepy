@@ -68,10 +68,12 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	cmp goldens/gm-sky.fb  out-sky.fb
 	./beepy-nav/beepy-nav --demo --page nav     --dump out-nav-turn.fb
 	./beepy-nav/beepy-nav --demo --page nav-off --dump out-nav-off.fb
+	./beepy-nav/beepy-nav --demo --page nav-nofix --dump out-nav-nofix.fb
 	./beepy-nav/beepy-nav --demo --page arrows  --dump out-nav-arrows.fb
 	./beepy-nav/beepy-nav --demo --page overview --dump out-nav-overview.fb
 	cmp goldens/nav-turn.fb     out-nav-turn.fb
 	cmp goldens/nav-off.fb      out-nav-off.fb
+	cmp goldens/nav-nofix.fb    out-nav-nofix.fb
 	cmp goldens/nav-arrows.fb   out-nav-arrows.fb
 	cmp goldens/nav-overview.fb out-nav-overview.fb
 	@echo "check: PASS - demo dumps byte-identical to goldens"
@@ -84,6 +86,7 @@ endif
 	./gps-monitor/gps-monitor --demo --page sky  --dump goldens/gm-sky.fb
 	./beepy-nav/beepy-nav --demo --page nav     --dump goldens/nav-turn.fb
 	./beepy-nav/beepy-nav --demo --page nav-off --dump goldens/nav-off.fb
+	./beepy-nav/beepy-nav --demo --page nav-nofix --dump goldens/nav-nofix.fb
 	./beepy-nav/beepy-nav --demo --page arrows  --dump goldens/nav-arrows.fb
 	./beepy-nav/beepy-nav --demo --page overview --dump goldens/nav-overview.fb
 	@echo "goldens regenerated - review the diff before committing"
@@ -114,7 +117,7 @@ RROUTE     = beepy-nav/tests/gpx/loop.gpx
 MKNMEA     = python3 tools/mknmea.py --gpx $(RROUTE)
 ASSERT     = python3 tools/assert_trace.py
 REPLAYS    = $(RDIR)/ride.nmea $(RDIR)/stationary.nmea $(RDIR)/detour.nmea \
-             $(RDIR)/rough.nmea $(RDIR)/still.nmea
+             $(RDIR)/rough.nmea $(RDIR)/still.nmea $(RDIR)/nofix.nmea
 # The four rides above run one frame per fix; these three run again at the
 # real 8 Hz, because 6.1's smoothing, 6.3's dead reckoning, 6.4's frame skip
 # and 7.5's alerts all happen BETWEEN fixes and a one-frame-per-fix trace
@@ -131,6 +134,16 @@ $(RDIR)/stationary.nmea: tools/mknmea.py $(RROUTE)
 
 $(RDIR)/detour.nmea: tools/mknmea.py $(RROUTE)
 	$(MKNMEA) --speed 25 --detour 100:900:300 --seed 3 -o $@
+
+# ride.nmea with thirty seconds of the fix voided in the middle -- SAME seed,
+# same speed, same brake points, so the trajectory is identical byte for byte
+# and only the RMC status, the GGA quality, the satellite count and the HDOP
+# change. That is what lets T-NOFIX compare frames against the ride that never
+# lost anything: any difference between the two runs is the gap and nothing
+# else. It is also what a receiver actually does under a bridge -- it keeps
+# talking, it just stops claiming a position.
+$(RDIR)/nofix.nmea: tools/mknmea.py $(RROUTE)
+	$(MKNMEA) --speed 25 --brake --seed 1 --nofix 200:230 -o $@
 
 $(RDIR)/rough.nmea: tools/mknmea.py $(RROUTE)
 	$(MKNMEA) --speed 25 --noise 2 --dropout 100:140 --nofix 300:330 \
@@ -186,6 +199,9 @@ test-frames: $(NAV) $(REPLAYS)
 	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless $(FPS8) \
 		--dump-at 120.5:$(RDIR)/plain-a.fb \
 		--dump-at 122.5:$(RDIR)/plain-b.fb \
+		--dump-at 190:$(RDIR)/plain-pre.fb \
+		--dump-at 215:$(RDIR)/plain-gap.fb \
+		--dump-at 250:$(RDIR)/plain-post.fb \
 		--trace-frames $(RDIR)/ride-frames.tsv
 	$(ASSERT) $(RDIR)/ride-frames.tsv --dr-closed-form 0.005 --dr-ease
 	@echo "--- T-DR-SNAP: and one beyond 5 m taken whole, on its own frame"
@@ -216,6 +232,42 @@ test-frames: $(NAV) $(REPLAYS)
 	python3 tools/fbdiff.py $(RDIR)/note-b.fb $(RDIR)/plain-b.fb --max-px 0
 	@echo "--- T-SKIP: a display that stopped changing stops being sent"
 	$(ASSERT) $(RDIR)/still-frames.tsv --settles presented
+	@echo "--- T-NOFIX: thirty seconds with no fix (DESIGN.md 1.1)"
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/nofix.nmea --headless $(FPS8) \
+		--dump-at 190:$(RDIR)/nofix-pre.fb \
+		--dump-at 215:$(RDIR)/nofix-gap.fb \
+		--dump-at 250:$(RDIR)/nofix-post.fb \
+		--trace-frames $(RDIR)/nofix-frames.tsv
+	$(ASSERT) $(RDIR)/nofix-frames.tsv --nofix 4 --any nofix "==" 1 \
+		--dr-closed-form 0.005
+	@echo "    ... and the same ride WITHOUT the gap, frame against frame"
+#	Before the gap the two runs are the same program on the same bytes, so
+#	the frames are identical. This is the control: without it, a NO FIX that
+#	appeared thirty seconds early would still satisfy everything below.
+	python3 tools/fbdiff.py $(RDIR)/nofix-pre.fb $(RDIR)/plain-pre.fb \
+		--max-px 0
+#	Inside the gap the bottom row of the PANEL (x 0-127, y 224-239) has not
+#	merely changed text -- its background has flipped. A row of paper text
+#	swapped for another row of paper text differs by a few hundred pixels;
+#	--min-px is what makes this an assertion about polarity.
+	python3 tools/fbdiff.py $(RDIR)/nofix-gap.fb $(RDIR)/plain-gap.fb \
+		--mask 0,0,399,223 --mask 128,224,399,239 --min-px 1200
+#	Twenty seconds after the fixes return, the run that lost them draws the
+#	same frame as the run that never did: the panel is back to the three-row
+#	stack, the map has re-snapped, and the countdown latch re-armed on
+#	recovery has landed on the same rung. Recovery is clean or this fails.
+#
+#	The compass badge is masked, and it is the only thing that is. The
+#	smoothed heading of 6.1 is an infinite-impulse filter, so twenty seconds
+#	(36 tau) after the gap the two runs differ by about 1e-13 degrees -- and
+#	the needle's base edge sits exactly on a half-pixel boundary, where
+#	coverage resolves at exactly 50 % and the threshold's own tie-break
+#	flips. Twelve pixels of the needle's rim change and nothing else in the
+#	frame does. That is the same at-threshold case tools/design_gate.py
+#	exempts by name, measured rather than assumed: the assertion below is
+#	--max-px 0 everywhere outside a 29x39 box.
+	python3 tools/fbdiff.py $(RDIR)/nofix-post.fb $(RDIR)/plain-post.fb \
+		--mask 138,4,166,42 --max-px 0
 	@echo "test-frames: PASS"
 
 host-replay: host/beepy-nav $(REPLAYS)

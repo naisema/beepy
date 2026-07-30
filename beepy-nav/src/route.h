@@ -207,6 +207,18 @@ void nav_reset(nav_t *nv);
 /* Switch ladders and reset the countdown latch. Idempotent. */
 void nav_set_units(navctx_t *ctx, int units);
 
+/* Re-arm the countdown latch and nothing else.
+ *
+ * The latch of 1.1.1 is monotone non-increasing "while approaching a given
+ * cue", and that premise dies across a stretch with no fix (1.1): the world
+ * moved unobserved, so the value frozen at the start of the gap is not a floor
+ * the distance measured at the end of it may only decrease from. The rider may
+ * even have turned round. Recovery from NO FIX calls this so the countdown
+ * resumes from the re-snapped position rather than from the frozen number --
+ * -1 is "no cue yet", which re-seeds on the next evaluation, exactly as
+ * nav_set_units() does for the same reason. */
+void nav_relatch(navctx_t *ctx);
+
 /* Re-run just the countdown of route_progress() -- what a units toggle needs
  * between fixes, without disturbing the ETA ring or the off-route latch. */
 void route_countdown_refresh(const route_t *r, navctx_t *ctx, nav_t *nv);

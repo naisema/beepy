@@ -308,6 +308,16 @@ nav_set_units(navctx_t *ctx, int units)
 }
 
 void
+nav_relatch(navctx_t *ctx)
+{
+    /* See route.h. Only the latch: the off-route run length, the ETA ring and
+     * the window hint all remain the best information available, and throwing
+     * them away because the receiver went quiet would cost a full scan and a
+     * re-earned ETA for nothing. */
+    ctx->shown_cue = -1;
+}
+
+void
 nav_reset(nav_t *nv)
 {
     memset(nv, 0, sizeof *nv);

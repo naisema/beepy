@@ -44,6 +44,11 @@ eight times a second and none of which a per-fix trace can see:
   --led-quiet T0 T1     nothing rings between those ride seconds
   --settles COL         once the column reaches zero it stays there -- 6.4's
                         frame skip on a display that has stopped changing
+  --nofix SECS          1.1's NO FIX rule, over every gap the trace contains:
+                        the row does not appear before SECS have passed, does
+                        appear within SECS + 1, is gone on the frame after the
+                        fixes return, and while it is up the countdown the
+                        panel prints and the position it draws do not move
 
 Each assertion prints PASS or FAIL with the offending row; the exit status is
 0 only when all of them pass.
@@ -321,6 +326,69 @@ class Checker:
                     f"row {first} of {len(v)}, {len(v) - first} skipped"
                     if not after else f"{len(after)} later, first {after[0]}")
 
+    def nofix(self, secs):
+        """DESIGN.md 1.1: NO FIX after `secs` without a valid fix, and nothing
+        derived from position moving while it is up.
+
+        The gaps are found in the trace rather than named by the caller: a
+        fixture that stopped emitting fixes somewhere other than where the
+        Makefile thought would otherwise be asserted about the wrong seconds.
+        A gap is a run of frames between two fix rows longer than `secs`."""
+        t, isfix, nf = self.col("t"), self.col("isfix"), self.col("nofix")
+        cq = self.col("cue_q")
+        de, dn = self.col("dr_e"), self.col("dr_n")
+        fixes = [i for i, f in enumerate(isfix) if f >= 0.5]
+        if not fixes:
+            self.report(False, "NO FIX", "no fix rows in the trace")
+            return
+
+        gaps, early, late, moved, stuck = [], [], [], [], []
+        for a, b in zip(fixes, fixes[1:]):
+            if t[b] - t[a] <= secs:
+                continue
+            gaps.append((t[a], t[b]))
+            for i in range(a, b + 1):
+                # Before SECS have elapsed the panel must say nothing: a
+                # warning that fires on one dropped sentence is a warning a
+                # rider learns to ignore.
+                if t[i] - t[a] < secs and nf[i]:
+                    early.append((i, t[i]))
+            # ... and it must have appeared within a second of the deadline.
+            if not any(nf[i] for i in range(a, b + 1)
+                       if t[i] <= t[a] + secs + 1.0):
+                late.append((a, t[a]))
+            # Frozen while the row is up. The drawn position stopped two
+            # seconds into the gap (DR_MAX_EXTRAP), which is a second before
+            # the row appeared, so "constant over the whole nofix stretch" is
+            # exactly the claim -- no phantom distance crosses the gap.
+            up = [i for i in range(a, b + 1) if nf[i]]
+            for i in up[1:]:
+                if abs(cq[i] - cq[up[0]]) > 1e-9:
+                    stuck.append((i, f"cue_q {cq[i]:g} != {cq[up[0]]:g}"))
+                if (abs(de[i] - de[up[0]]) > 1e-6
+                        or abs(dn[i] - dn[up[0]]) > 1e-6):
+                    moved.append((i, f"drawn position moved {de[i] - de[up[0]]:+.3f},"
+                                     f"{dn[i] - dn[up[0]]:+.3f} m"))
+        # Recovery: cleared on the fix that ends the gap, so no frame from
+        # there on may still carry it until the next gap opens.
+        back = [(i, t[i]) for a, b in zip(fixes, fixes[1:])
+                if t[b] - t[a] > secs
+                for i in range(b, min(b + 20, len(t)))
+                if nf[i] and isfix[i] >= 0.5]
+
+        self.report(bool(gaps), f"the trace contains a gap longer than {secs:g} s",
+                    f"{len(gaps)} gaps, first {gaps[0] if gaps else '-'}")
+        self.report(not early, f"NO FIX does not appear inside {secs:g} s",
+                    "" if not early else f"{len(early)} rows, first {early[0]}")
+        self.report(not late, f"NO FIX appears within {secs + 1:g} s of the gap",
+                    "" if not late else f"{len(late)} gaps, first {late[0]}")
+        self.report(not back, "NO FIX is gone on the fix that ends the gap",
+                    "" if not back else f"{len(back)} rows, first {back[0]}")
+        self.report(not stuck, "the countdown does not advance during a gap",
+                    "" if not stuck else f"{len(stuck)} rows, first {stuck[0]}")
+        self.report(not moved, "the drawn position is frozen during a gap",
+                    "" if not moved else f"{len(moved)} rows, first {moved[0]}")
+
     def zero(self, name):
         v = self.col(name)
         bad = [(i, x) for i, x in enumerate(v) if x != 0.0]
@@ -378,6 +446,8 @@ def main(argv):
             c.led_quiet(t0, float(next(it)))
         elif a == "--settles":
             c.settles(next(it))
+        elif a == "--nofix":
+            c.nofix(float(next(it)))
         elif a == "--rows":
             pass
         else:

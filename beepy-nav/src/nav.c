@@ -98,8 +98,8 @@ static const char USAGE[] =
     "  --rate-5hz    ask the receiver for 200 ms fixes at startup;\n"
     "                --no-rate-5hz is the default (see DESIGN.md 6.3)\n"
     "  --demo        render a static design state instead of navigating\n"
-    "  --page P      nav, nav-off, overview, arrows, chooser, cliptest,\n"
-    "                cliptest-panel -- and with\n"
+    "  --page P      nav, nav-off, nav-nofix, overview, arrows, chooser,\n"
+    "                cliptest, cliptest-panel -- and with\n"
     "                --route it picks the page the ride opens on\n"
     "  --dump FILE   write the frame as 384000 raw XRGB bytes\n"
     "  --bench N     time N draw+resolve cycles and print ms/frame\n"
@@ -111,6 +111,7 @@ static const char USAGE[] =
 enum {
     PAGE_NAV,
     PAGE_NAV_OFF,
+    PAGE_NAV_NOFIX,
     PAGE_OVERVIEW,
     PAGE_ARROWS,
     PAGE_CLIPTEST,
@@ -130,7 +131,10 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes)
     cov_begin(cov);
     switch (page) {
     case PAGE_NAV_OFF:
-        view_nav_demo(cov, 85);
+        view_nav_demo(cov, 85, 0);
+        break;
+    case PAGE_NAV_NOFIX:
+        view_nav_demo(cov, 0, 1);
         break;
     case PAGE_OVERVIEW:
         view_overview_demo(cov);
@@ -153,7 +157,7 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes)
         break;
     }
     default:
-        view_nav_demo(cov, 0);
+        view_nav_demo(cov, 0, 0);
         break;
     }
     cov_resolve(cov, cv);
@@ -171,7 +175,7 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes)
 /* Frame captures during a replay. Two pages and a moving map cannot be
  * caught by --demo, and DESIGN.md 10's fbshow --verify needs a file to
  * compare the panel against, so the interesting seconds are named up front. */
-#define MAX_DUMPS 4
+#define MAX_DUMPS 8
 typedef struct {
     double at;
     const char *path;
@@ -189,6 +193,31 @@ static int g_ndumps;
 #define DR_EASE 3         /* frames a correction inside 5 m is spread over  */
 #define DR_MAX_EXTRAP 2.0 /* seconds: after this the position simply holds  */
 #define DR_MAX_CATCHUP 2.0/* seconds of missed frames worth redrawing       */
+
+/* --- NO FIX, DESIGN.md 1.1 ----------------------------------------------
+ *
+ * "GPS state earns panel space only when it is a problem -- NO FIX replaces
+ * the bottom row, inverted, when the fix is lost."
+ *
+ * Measured in SECONDS and not in missed epochs, so one rule covers the
+ * receiver's measured 1 Hz (3), the optional 5 Hz of 6.3, and a dropout that
+ * stops the sentences altogether rather than merely voiding them.
+ *
+ * FOUR seconds, from that 1 Hz cadence. One dropped epoch leaves a 2 s hole
+ * between good fixes and two leave 3 s; neither is news, and a warning that
+ * blinks on every dropped sentence is a warning a rider learns to ignore --
+ * which would cost exactly the trust the row exists to earn. Four fires on
+ * the third consecutive miss. Below three the rule is unsafe at 1 Hz; above
+ * five the panel is lying for longer than the dead reckoning it is covering
+ * for, which is 2 s (DR_MAX_EXTRAP). Four sits between the two bounds with a
+ * second of margin on each side.
+ *
+ * DR_MAX_EXTRAP is the other half of the same decision and is already the
+ * code's: the extrapolation of 6.3 clamps at 2 s, so by the time this fires
+ * the drawn position has been frozen for two seconds and cannot have run on
+ * down a road the bike may not be on. Dead reckoning is honest for a second
+ * or two and no longer. */
+#define NOFIX_S 4.0
 
 /* --- cue alerts, DESIGN.md 7.5 ------------------------------------------ */
 
@@ -266,7 +295,14 @@ typedef struct {
     int have_pos;
     double e, n; /* the fix, in route metres */
 
-    long epochs;
+    /* NO FIX (1.1). last_fix_t is on the ride clock, which is why that clock
+     * has to keep running through a gap -- see clock_advance(). */
+    double last_fix_t;
+    int nofix;
+
+    long epochs;    /* epochs carrying a usable position: FIXES  */
+    long epoch_seq; /* epochs seen at all, fix or not            */
+    int have_t0;
     double t0; /* first epoch, seconds since midnight */
     double t;  /* this epoch, seconds since t0        */
 
@@ -700,6 +736,12 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         p.batt = read_battery();
         p.clock = clock;
         p.note = a->note && a->frame_t < a->note_until ? a->note : NULL;
+        /* DESIGN.md 1.1. Everything above is already frozen by construction
+         * -- the countdown and the metres-off are the fix's (1.1.1), and the
+         * marker's extrapolation clamps at DR_MAX_EXTRAP -- so this row is
+         * the only thing that has to change, and its whole job is to say that
+         * the rest has stopped. */
+        p.nofix = a->nofix;
         view_nav(cov, &m, &p);
     }
     cov_resolve(cov, cv);
@@ -761,9 +803,14 @@ ftrace_open(const char *path)
         perror(path);
         exit(1);
     }
+    /* cue_q and nofix are the DESIGN.md 1.1 pair: the number the PANEL prints
+     * (quantised and latched, not the raw metres of cue_m) and whether the
+     * bottom row has been taken over. A per-fix trace can see neither -- the
+     * gap they describe is precisely the stretch with no fix rows in it. */
     fputs("#t\tisfix\tsince_fix\tbase_e\tbase_n\tbase_crs\tbase_spd\tdt\t"
           "err_e\terr_n\tfix_err\tease_w\tdr_e\tdr_n\tcourse_deg\t"
-          "heading_deg\tpresented\tms\tled\toff_latched\tcue_i\tcue_m\n",
+          "heading_deg\tpresented\tms\tled\toff_latched\tcue_i\tcue_m\t"
+          "cue_q\tnofix\n",
           g_ftrace);
 }
 
@@ -780,13 +827,13 @@ ftrace_row(const app_t *a, double t, int isfix, int presented, double ms)
     fprintf(g_ftrace,
             "%.4f\t%d\t%ld\t%.4f\t%.4f\t%.6f\t%.4f\t%.4f\t%.4f\t%.4f\t"
             "%.4f\t%.4f\t%.4f\t%.4f\t%.3f\t%.3f\t%d\t%.3f\t%d\t%d\t"
-            "%d\t%.2f\n",
+            "%d\t%.2f\t%d\t%d\n",
             t, isfix, a->frames_since_fix, a->fix_e, a->fix_n,
             a->fix_course * (180.0 / M_PI), a->fix_speed, dt, a->err_e,
             a->err_n, a->fix_err, a->ease_w, a->dr_e, a->dr_n,
             a->raw_course * (180.0 / M_PI), a->heading * (180.0 / M_PI),
             presented, ms, isfix ? a->alert_fired : 0, a->nv.off,
-            a->rnv.cue_i, a->rnv.cue_m);
+            a->rnv.cue_i, a->rnv.cue_m, a->nv.cue_q, a->nofix);
 }
 
 /* --------------------------------------------------------- the fix cycle */
@@ -798,14 +845,49 @@ static double
 epoch_seconds(const app_t *a)
 {
     double secs = fix_utc_seconds(a->gps.utc), t;
-    if (a->epochs == 0)
-        return 0.0;
-    if (secs < 0.0)
-        return (double)a->epochs;
+    if (secs < 0.0 || !a->have_t0)
+        return (double)a->epoch_seq;
     t = secs - a->t0;
     if (t < -43200.0) /* midnight, once a ride */
         t += 86400.0;
     return t;
+}
+
+/* The ride clock, advanced once per EPOCH -- with a position or without one.
+ *
+ * That distinction is the whole of NO FIX (1.1). The warning is a duration and
+ * a clock that stops the moment the fix does can never measure it: before this
+ * existed, `t` was frozen for the length of every gap, so "four seconds
+ * without a fix" was four seconds that never elapsed. Two other rules were
+ * quietly dead for the same reason -- 7.2's "after 30 s lost, widen to a full
+ * scan" could not trigger, because the only clock it reads had stopped, and
+ * the frames drawn during a gap were all stamped with the last fix's second.
+ *
+ * A receiver with no almanac yet emits GGA with an EMPTY time field, which is
+ * exactly the indoor cold-start case, so the fallback counts epochs instead.
+ * At the measured 1 Hz that is the same clock to within the drift of a device
+ * that is not moving. */
+static void
+clock_advance(app_t *a)
+{
+    double secs = fix_utc_seconds(a->gps.utc);
+    if (secs >= 0.0) {
+        if (!a->have_t0) {
+            /* The first epoch carrying a time sets the origin, and sets it
+             * so the clock does not jump: `a->t` may already have been
+             * counting epochs through a cold start, and stitching the two
+             * here is cheaper than a second clock. On a warm receiver this
+             * is the first epoch and the subtraction is of zero. */
+            a->t0 = secs - a->t;
+            a->have_t0 = 1;
+        }
+        a->t = secs - a->t0;
+        if (a->t < -43200.0) /* midnight, once a ride */
+            a->t += 86400.0;
+    } else {
+        a->t = (double)a->epoch_seq;
+    }
+    a->epoch_seq++;
 }
 
 /* One completed NMEA epoch: everything the two pages consume, recomputed in
@@ -814,21 +896,27 @@ epoch_seconds(const app_t *a)
 static int
 on_epoch(app_t *a, time_t now)
 {
-    double secs;
-    if (!fix_from_gps(&a->gps, now, &a->fx))
-        return 0; /* no position this epoch; nothing to recompute */
+    int got = fix_from_gps(&a->gps, now, &a->fx);
+
+    /* The clock first, and unconditionally: an epoch that carries no position
+     * still carries the second it happened in, and NO FIX is measured in
+     * those seconds. */
+    clock_advance(a);
+    if (!got)
+        return 0; /* no position this epoch; nothing else to recompute */
 
     a->epochs++;
-    secs = fix_utc_seconds(a->fx.utc);
-    if (secs >= 0.0) {
-        if (a->epochs == 1)
-            a->t0 = secs;
-        a->t = secs - a->t0;
-        if (a->t < -43200.0) /* midnight, once a ride */
-            a->t += 86400.0;
-    } else {
-        a->t = (double)(a->epochs - 1);
+    /* DESIGN.md 1.1, recovery. The countdown latch is monotone only "while
+     * approaching a given cue", and the gap just ended broke that: the world
+     * moved unobserved and the frozen value is not a floor the re-snapped
+     * distance may only decrease from. Re-armed BEFORE route_progress(), so
+     * this fix's countdown is the first value of the new sequence rather than
+     * the last of the old one. */
+    if (a->nofix) {
+        nav_relatch(&a->ctx);
+        a->nofix = 0;
     }
+    a->last_fix_t = a->t;
 
     geo_project(a->rt.lat0, a->rt.lon0, a->fx.lat, a->fx.lon, &a->e, &a->n);
     a->have_pos = 1;
@@ -972,6 +1060,11 @@ frame_at(app_t *a, double t)
 
     pace_to(t);
     a->frame_t = t;
+    /* DESIGN.md 1.1, evaluated on the FRAME clock and not on the fix clock:
+     * a fix is the one event that cannot happen during the gap this measures,
+     * so a rule that only ran on fixes could never fire. Cleared in
+     * on_epoch(), which is where recovery is decided. */
+    a->nofix = t - a->last_fix_t >= NOFIX_S;
     dr_advance(a, t, dt);
     render_state(a);
 
@@ -1872,6 +1965,8 @@ main(int argc, char **argv)
                 page = PAGE_NAV;
             else if (!strcmp(p, "nav-off"))
                 page = PAGE_NAV_OFF;
+            else if (!strcmp(p, "nav-nofix"))
+                page = PAGE_NAV_NOFIX;
             else if (!strcmp(p, "overview"))
                 page = PAGE_OVERVIEW;
             else if (!strcmp(p, "arrows"))

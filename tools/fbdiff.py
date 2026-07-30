@@ -18,6 +18,13 @@ packed 1bpp canvases, or 400x240 PNGs.
                     evidence of a displaced shape, which is what --edges-only
                     is there to catch.
 --max-px N          pass if unmasked differing pixels <= N (default 0)
+--min-px N          ALSO require at least N differing pixels. The assertion
+                    "this region did not merely change, it inverted": a row of
+                    text swapped for another row of text differs by a few
+                    hundred pixels, and a 128x16 cell whose background flipped
+                    differs by most of its 2048. Without a floor, a test that
+                    a warning APPEARED passes just as happily when it appeared
+                    in the wrong polarity.
 --edges-only        additionally require every differing pixel to sit on an
                     ink/paper edge in BOTH frames (an opposite-colour
                     4-neighbour) -- shape-boundary drift, not missing shapes
@@ -57,6 +64,7 @@ def on_edge(f, x, y):
 
 def main(argv):
     args, masks, max_px, edges, out = [], [], 0, False, None
+    min_px = 0
     at_thresh = set()
     it = iter(argv)
     for a in it:
@@ -71,6 +79,8 @@ def main(argv):
                          else tuple(int(v) for v in m.split(",")))
         elif a == "--max-px":
             max_px = int(next(it))
+        elif a == "--min-px":
+            min_px = int(next(it))
         elif a == "--edges-only":
             edges = True
         elif a == "--out":
@@ -114,8 +124,10 @@ def main(argv):
                 d.rectangle([x * 3, y * 3, x * 3 + 2, y * 3 + 2], outline=0)
         img.save(out)
 
-    ok = len(diffs) <= max_px and (not edges or nonedge == 0)
-    print(f"fbdiff: {len(diffs)} differing px (limit {max_px})"
+    ok = (len(diffs) <= max_px if not min_px else len(diffs) >= min_px) \
+        and (not edges or nonedge == 0)
+    print(f"fbdiff: {len(diffs)} differing px "
+          + (f"(floor {min_px})" if min_px else f"(limit {max_px})")
           + (f", {hidden} more inside masks" if masks else "")
           + (f", {tied} at-threshold" if at_thresh else "")
           + (f", {nonedge} fail edges-only" if edges else "")

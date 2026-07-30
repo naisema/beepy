@@ -77,7 +77,84 @@ the information.
 
 **GPS state earns panel space only when it is a problem** — `NO FIX` replaces
 the bottom row, inverted, when the fix is lost; a healthy receiver is not
-information.
+information. §1.1.2 is the whole of that rule.
+
+### 1.1.2 NO FIX — when it fires, and what stops moving
+
+A navigator that loses its fix and goes on drawing the same confident panel is
+not merely unhelpful, it is *lying*, and it is lying at the exact moment the
+rider most needs to know to look up. This is the one failure on this device
+whose symptom is indistinguishable from working correctly: a frozen panel and a
+panel with nothing to say look the same.
+
+**Four seconds.** The receiver is measured at 1 Hz (§3), so:
+
+| Missed epochs | Gap between good fixes | Verdict |
+|---|---|---|
+| 1 | 2 s | not news — one dropped sentence |
+| 2 | 3 s | still not news |
+| 3 | 4 s | **`NO FIX`** |
+
+The rule is stated in seconds, not in missed epochs, so one constant covers
+1 Hz, the optional 5 Hz of §6.3, and a receiver that stops talking altogether
+rather than merely voiding its sentences. Below three seconds the warning
+flickers on ordinary jitter, and a warning that cries wolf is worse than none —
+it spends the trust the row exists to earn. Above five it is silent for longer
+than the dead reckoning it is covering for. Four sits between the two bounds
+with a second of margin either side.
+
+**Inverted, and inverted for a reason.** A paper bar with ink text, in the
+arrival row's own 16 px cell. The panel is solid ink, so paper is the one
+treatment available here that cannot be read as ordinary content (§4: two pixel
+words, no shades) — a row of paper text saying `NO FIX` would look exactly like
+the ETA it replaced. There is no spare line to put it on: §1.1's three rows
+already fill the panel to the bottom edge, and arrival is the row this panel can
+most afford to lose, by the same argument §7.5 makes for its transient. It
+**outranks** that transient: `ALERTS OFF` is a preference the rider expressed
+two seconds ago; `NO FIX` is a fault they do not yet know about.
+
+**What stale means.** Everything on the screen derived from position stops
+pretending, and each of the three does it by a mechanism that already existed:
+
+| Quantity | While the fix is gone | Because |
+|---|---|---|
+| Position marker | frozen after 2 s (`DR_MAX_EXTRAP`) | §6.3's extrapolation is honest for a second or two; past that a marker sliding on down the road is an invention. It is frozen a full second *before* the row appears |
+| Countdown | frozen at its last latched value | §8 recomputes `nav_t` per **fix**, and there are none. The panel never counts down from dead reckoning |
+| Map, heading, speed badge | hold their last value | The map is drawn about the frozen marker, and the EWMA converges to the last course and stops |
+
+**One signal, not five.** No hollowed marker, no dashed route, no blanked
+speed. Line style is already fully committed on this screen (§4: route vs
+track, ahead vs ridden) and a second staleness encoding would be a second thing
+to learn under load — and would collide with §7.3's off-route treatment of the
+same marker. The inverted row is the qualifier: while it is up, *every* number
+on the panel is the last one known, and that is a single fact to hold rather
+than five.
+
+**Recovery re-snaps rather than resumes.** When fixes return the row goes on the
+fix that ends the gap, and the countdown latch is **re-armed** (`nav_relatch`).
+§1.1.1's latch is monotone non-increasing "while approaching a given cue", and a
+gap breaks that premise outright: the world moved unobserved, the rider may have
+turned round, and the frozen value is not a floor the re-measured distance may
+only decrease from. So the first fix back seeds a new sequence from the
+re-snapped position. Nothing else is thrown away — the off-route run length, the
+ETA ring and the snap window hint are all still the best information available,
+and discarding them would buy a full route scan and a re-earned ETA for nothing.
+
+**The ride clock has to keep running.** Three rules in this document are
+measured in ride seconds and every one of them was dead before this section:
+the four seconds above, §6.3's 2 s extrapolation clamp, and §7.2's "after 30 s
+lost, widen to a full scan". The clock used to advance only on epochs that
+carried a position, so during exactly the gap these rules describe, it stopped.
+It now advances once per **epoch**, fix or not — and where a cold receiver emits
+`GGA` with an empty time field, it counts epochs instead, which at 1 Hz is the
+same clock.
+
+**The OVERVIEW page is not covered.** Its strip carries position-derived
+numbers too (`% DONE`, `TO GO`, `ETA`), and they go equally stale. It is left
+alone deliberately for now: it is a page a rider switches to on purpose to see
+the whole route, not the instrument they read at a junction, and giving it a
+second inverted treatment is a design decision its own strip layout has not been
+made for. This is a known gap, not an oversight.
 
 Map region:
 
@@ -896,6 +973,8 @@ rendered frame, carrying every quantity each of those four is built from, and
 | **T-CUE-LED-MUTE** | `--key 120:l --key 250:l` mutes across cues 0–2. Nothing rings in the muted window, twenty-three rungs ring instead of thirty, and the cue whose approach straddles the un-mute rings **only its 50 m rung** — the 500 and 200 it passed while muted were consumed, not queued |
 | **T-CUE-LED-MUTE** (panel) | the transient is byte-compared against the same frame from an un-keyed run: it differs *only* inside the bottom row, and two seconds later the two frames are byte-identical |
 | **T-SKIP** | on a ride with the jitter turned off, 600 of 601 frames are skipped — the presents stop at the first identical frame and never resume |
+| **T-NOFIX** | §1.1.2 over `nofix.nmea`, which is `ride.nmea` with thirty seconds of the fix voided and *nothing else changed*. The gaps are found in the trace rather than named by the Makefile: for each one, `NO FIX` does not appear inside 4 s, does appear within 5 s, is gone on the fix that ends the gap, and while it is up neither the countdown the panel prints (`cue_q`) nor the position it draws moves by so much as a micrometre — which is where "no phantom distance crosses the gap" is actually asserted |
+| **T-NOFIX** (pixels) | three frames against the same three from the ride that never lost anything. At t=190 they are byte-identical, which is the control — without it a `NO FIX` that fired thirty seconds early would satisfy everything else. At t=215 the panel's bottom row differs by **1 556 of its 2 048 pixels**: that floor (`fbdiff --min-px`) is what makes it an assertion about *polarity* rather than about text, since a row swapped for another row of text moves a few hundred. At t=250 they are identical again everywhere outside the compass badge — recovery is clean, and the badge is the at-threshold tie described in the Makefile |
 
 The `fix_err` column exists for T-DR alone: it is the one quantity that cannot
 be recovered from the others, because the prediction it was measured against

@@ -309,6 +309,27 @@ panel_row(cov_t *c, int y, const char *s)
     cov_text(c, (PANEL_W - cov_text_w(s, 2)) / 2, y, s, 2, COV_PAPER);
 }
 
+/* DESIGN.md 1.1: "NO FIX replaces the bottom row, inverted, when the fix is
+ * lost". A paper bar with ink text, filling the 16 px cell the arrival row
+ * occupies -- the panel is solid ink, so a bar of paper is the one treatment
+ * on this screen that cannot be read as ordinary content, and with two pixel
+ * words (4) it is the only emphasis there is. A row of paper text in the same
+ * place would look exactly like the ETA it replaced.
+ *
+ * It is drawn in the arrival row's cell rather than added below it because
+ * the three rows already fill the panel to the bottom edge (1.1); there is no
+ * spare line, and arrival is the row this panel can most afford to lose -- the
+ * same argument 7.5 makes for the transient. It outranks that transient:
+ * "ALERTS OFF" is a preference the rider expressed two seconds ago, and NO FIX
+ * is a fault they do not yet know about. */
+static void
+panel_nofix(cov_t *c)
+{
+    cov_fill_rect(c, 0, H - 16, PANEL_W - 1, H - 1, COV_PAPER);
+    cov_text(c, (PANEL_W - cov_text_w("NO FIX", 2)) / 2, H - 16, "NO FIX", 2,
+             COV_INK);
+}
+
 void
 view_turn_panel(cov_t *c, const panel_t *p)
 {
@@ -378,16 +399,19 @@ view_turn_panel(cov_t *c, const panel_t *p)
     if (p->togo_m >= 0.0) {
         fmt_togo(buf, sizeof buf, p->togo_m, p->units);
         panel_row(c, 208, buf);
-        panel_row(c, 224, p->note ? p->note : p->eta);
-    } else {
+    } else if (p->batt >= 0) {
         /* No route: nothing to count down to, so the pair that has always
          * been true of the device goes back in. */
-        if (p->batt >= 0) {
-            snprintf(buf, sizeof buf, "%d%%", p->batt);
-            panel_row(c, 208, buf);
-        }
-        panel_row(c, 224, p->note ? p->note : p->clock);
+        snprintf(buf, sizeof buf, "%d%%", p->batt);
+        panel_row(c, 208, buf);
     }
+    /* The bottom row, in order of precedence: a lost fix, then a transient
+     * confirmation, then the value the row belongs to. */
+    if (p->nofix)
+        panel_nofix(c);
+    else
+        panel_row(c, 224,
+                  p->note ? p->note : (p->togo_m >= 0.0 ? p->eta : p->clock));
 }
 
 /* -------------------------------------------------------------- the map */
@@ -528,7 +552,7 @@ static const double DEMO_ROUTE[] = {
 #define DEMO_NPTS ((int)(sizeof DEMO_ROUTE / sizeof DEMO_ROUTE[0] / 2))
 
 void
-view_nav_demo(cov_t *c, int off)
+view_nav_demo(cov_t *c, int off, int nofix)
 {
     navmap_t m;
     panel_t p;
@@ -557,6 +581,11 @@ view_nav_demo(cov_t *c, int off)
     p.off = off;
     p.units = UNITS_METRIC;
     p.note = NULL;
+    /* The frozen NO FIX state draws the same map and the same countdown as
+     * the turn page: that is the point of it. A lost fix does not blank the
+     * screen, it stops the numbers moving and says so on one row -- and the
+     * only way to see that the rest is unchanged is to render the pair. */
+    p.nofix = nofix;
     /* The demo carries the raw metres the design's sample state names, and
      * quantises them here exactly as the live path does -- so the reference
      * frames show what a rider would actually see (1.1.1): 410 -> "400". */
@@ -608,6 +637,7 @@ clip_panel(panel_t *p)
     p->clock = "09:40";
     p->units = UNITS_METRIC;
     p->note = NULL;
+    p->nofix = 0;
 }
 
 void

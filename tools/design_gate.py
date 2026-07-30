@@ -55,6 +55,12 @@ PANEL_MAX = 0         # exact-by-construction: the panel must be identical
 PAGES = (
     ("nav", "nav", lambda m, n: m.page_nav(n, basemap=False)),
     ("nav-off", "nav-off", lambda m, n: m.page_nav(n, basemap=False, off=85)),
+    # The NO FIX state of DESIGN.md 1.1: the same turn page with the bottom
+    # row inverted. It earns a gate entry of its own because the inversion is
+    # the only place on this screen where the panel's polarity flips, and a
+    # renderer that got it a pixel out would still "look right".
+    ("nav-nofix", "nav-nofix",
+     lambda m, n: m.page_nav(n, basemap=False, nofix=True)),
     ("overview", "nav-overview", lambda m, n: m.page_overview()),
     ("arrows", "nav-arrows", lambda m, n: m.page_arrows()),
 )

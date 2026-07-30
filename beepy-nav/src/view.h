@@ -32,6 +32,12 @@ typedef struct {
     /* A transient confirmation, or NULL. It takes the bottom row for about a
      * second and a half and then gives it back -- see view_turn_panel(). */
     const char *note;
+    /* DESIGN.md 1.1: "GPS state earns panel space only when it is a problem".
+     * Set once the receiver has gone NOFIX_S seconds without a valid fix, and
+     * the bottom row becomes an INVERTED "NO FIX" -- outranking both arrival
+     * and the transient. Everything on this panel derived from position is
+     * frozen while it is set; the panel says so rather than pretending. */
+    int nofix;
 } panel_t;
 
 /* The map on the right. Route geometry is metres east/north of any origin;
@@ -112,8 +118,8 @@ void mark_cased_route(cov_t *c, const double *segs, int nsegs, double outer,
 void view_arrows(cov_t *c);
 
 /* The static demo state page_nav() renders: off = 0 for the turn page,
- * metres off-route for the OFF ROUTE variant. */
-void view_nav_demo(cov_t *c, int off);
+ * metres off-route for the OFF ROUTE variant, nofix for the NO FIX one. */
+void view_nav_demo(cov_t *c, int off, int nofix);
 
 /* The static demo state page_overview() renders. */
 void view_overview_demo(cov_t *c);

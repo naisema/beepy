@@ -1079,7 +1079,7 @@ def auto_zoom(dist, ahead_px):
     return ZOOMS[-1]
 
 
-def turn_panel(c, off=None):
+def turn_panel(c, off=None, nofix=False):
     """
     Left third, inverted: arrow over distance over unit, the stack from the
     reference. The strip along the bottom carries the state that has nowhere
@@ -1131,11 +1131,21 @@ def turn_panel(c, off=None):
         row(208, f"{int(togo) - int(togo) % 50}M")
     else:
         row(208, f"{math.floor(togo / 100) / 10:.1f}KM")
-    row(224, NAV["eta_txt"])
+
+    # DESIGN.md 1.1: "GPS state earns panel space only when it is a problem --
+    # NO FIX replaces the bottom row, inverted, when the fix is lost." A paper
+    # bar with ink text, in the arrival row's own 16 px cell: the panel is
+    # solid ink, so a bar of paper is the one treatment here that cannot be
+    # read as ordinary content, and there is no spare line to put it on.
+    if nofix:
+        c.rect(0, H - 16, PANEL_W - 1, H - 1, PAPER)
+        text(c, (PANEL_W - tw("NO FIX", 2)) // 2, H - 16, "NO FIX", 2, INK)
+    else:
+        row(224, NAV["eta_txt"])
 
 
 def page_nav(name, basemap=False, off=None, course_up=True, dither=False,
-             route=None, streets=None):
+             route=None, streets=None, nofix=False):
     c = Canvas()
     rt = route or dict(pts=ROUTE_M, pos_i=POS_I, pos_f=POS_F,
                        turn_i=TURN_I, pin_i=PIN_I,
@@ -1195,7 +1205,7 @@ def page_nav(name, basemap=False, off=None, course_up=True, dither=False,
 
     saved = (NAV["turn"], NAV["then_d"])
     NAV["turn"], NAV["then_d"] = rt["turn"], rt["then_d"]
-    turn_panel(c, off)
+    turn_panel(c, off, nofix)
     NAV["turn"], NAV["then_d"] = saved
     c.rect(PANEL_W, 0, PANEL_W, H - 1, INK)
     finish(resolve(c.img, dither), name)
