@@ -1,0 +1,78 @@
+{
+  "_comment": [
+    "A hand-written Overpass-shaped extract for the ONE rule in",
+    "tools/mkpack.py that osm-asok.json cannot exercise: the fallback from",
+    "name:en to name. Every way in the real extract that lacks name:en has a",
+    "Thai name, so the ASCII-name branch is never taken there, and a branch",
+    "with no test is a branch that quietly rots.",
+    "",
+    "Five ways, one for each case the indexer has to get right:",
+    "  1  name:en and name       -> indexed as the name:en form",
+    "  2  name only, ASCII       -> indexed as the name (the fallback)",
+    "  3  name only, non-ASCII   -> dropped, and COUNTED in the header",
+    "  4  no name at all         -> routable, never searchable",
+    "  5  name:en, same as 1     -> one place with points from two ways",
+    "",
+    "Coordinates are on a 0.001 degree grid near the Asok junction so the",
+    "numbers in tests/test_search.c are readable; nothing depends on where."
+  ],
+  "elements": [
+    {
+      "type": "way", "id": 1,
+      "tags": {"highway": "primary", "name:en": "MAIN ROAD",
+               "name": "ถนนหลัก",
+               "oneway": "yes"},
+      "geometry": [
+        {"lat": 13.740, "lon": 100.560},
+        {"lat": 13.741, "lon": 100.560},
+        {"lat": 13.742, "lon": 100.560},
+        {"lat": 13.743, "lon": 100.560}
+      ]
+    },
+    {
+      "type": "way", "id": 2,
+      "tags": {"highway": "residential", "name": "SECOND STREET"},
+      "geometry": [
+        {"lat": 13.740, "lon": 100.560},
+        {"lat": 13.740, "lon": 100.561},
+        {"lat": 13.740, "lon": 100.562}
+      ]
+    },
+    {
+      "type": "way", "id": 3,
+      "tags": {"highway": "residential",
+               "name": "ซอยทดสอบ"},
+      "geometry": [
+        {"lat": 13.741, "lon": 100.560},
+        {"lat": 13.741, "lon": 100.561}
+      ]
+    },
+    {
+      "type": "way", "id": 4,
+      "tags": {"highway": "residential"},
+      "geometry": [
+        {"lat": 13.740, "lon": 100.562},
+        {"lat": 13.741, "lon": 100.562},
+        {"lat": 13.742, "lon": 100.562},
+        {"lat": 13.743, "lon": 100.562},
+        {"lat": 13.743, "lon": 100.560}
+      ]
+    },
+    {
+      "type": "way", "id": 5,
+      "tags": {"highway": "primary", "name:en": "MAIN ROAD"},
+      "geometry": [
+        {"lat": 13.743, "lon": 100.559},
+        {"lat": 13.744, "lon": 100.559}
+      ]
+    },
+    {
+      "type": "way", "id": 6,
+      "tags": {"highway": "footway", "name:en": "NOT A ROAD AT ALL"},
+      "geometry": [
+        {"lat": 13.740, "lon": 100.560},
+        {"lat": 13.740, "lon": 100.559}
+      ]
+    }
+  ]
+}

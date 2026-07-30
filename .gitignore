@@ -19,7 +19,9 @@ out-*.fb
 /beepy-nav/tests/test_gpx
 /beepy-nav/tests/test_route
 /beepy-nav/tests/test_tile
+/beepy-nav/tests/test_search
 out-*.tiles
+out-*.roads
 
 # Generated animation (9+ MB, regenerable via sim.py)
 sim-anim.bin
@@ -34,6 +36,7 @@ sim-anim.bin
 /beepy-nav/tests/replay/*.nmea
 /beepy-nav/tests/replay/*.tsv
 /beepy-nav/tests/replay/*.fb
+/beepy-nav/tests/replay/*.log
 
 # OS / tooling noise
 .DS_Store

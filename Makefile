@@ -28,6 +28,19 @@ TILEROUTE  ?= beepy-nav/tests/gpx/asok.gpx
 TILEOSM    ?= beepy-nav/osm-asok.json
 TILEOPTS   ?= --corridor 1000 --zooms 2.5,4,6
 
+# The committed road/name pack (DESIGN.md 1.4) and what rebuilds it. Committed
+# for the same reason the tile pack is: `check` runs on the DEVICE, where there
+# is no Overpass extract -- and here the fixture is not only a golden's input
+# but the subject of T-ONEWAY, which needs BOTH forms of it. The second pack is
+# built with --ignore-oneway on purpose: it is the mockup router's behaviour,
+# frozen, and it is what makes T-ONEWAY a test that can fail.
+ROADPACK   ?= beepy-nav/tests/roads/asok.roads
+ROADOPEN   ?= beepy-nav/tests/roads/asok-nooneway.roads
+ROADNAMES  ?= beepy-nav/tests/roads/names.roads
+ROADOSM    ?= beepy-nav/osm-asok.json
+ROADNAMESIN ?= beepy-nav/tests/roads/names.json
+ROADREF    ?= 13.740,100.560
+
 DEVICE  ?= beepy@beepy.local
 SSHKEY  ?= $(HOME)/.ssh/id_rsa
 REMOTE_DIR ?= beepy-src
@@ -47,7 +60,8 @@ NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
             beepy-nav/src/route.o beepy-nav/src/view_overview.o \
             beepy-nav/src/fix.o beepy-nav/src/chooser.o beepy-nav/src/led.o \
             beepy-nav/src/config.o beepy-nav/src/ridelog.o \
-            beepy-nav/src/tile.o
+            beepy-nav/src/tile.o beepy-nav/src/search.o \
+            beepy-nav/src/router.o
 HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h beepy-nav/src/*.h)
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -357,6 +371,7 @@ HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
             host/seg.o host/arrows.o host/map.o host/gpx.o host/route.o \
             host/view_nav.o host/view_overview.o host/fix.o host/chooser.o \
             host/led.o host/config.o host/ridelog.o host/tile.o \
+            host/search.o host/router.o \
             host/nav.o
 
 # beepy-nav is portable end to end (no fbdev, no evdev), so the Mac can link
@@ -364,7 +379,7 @@ HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
 HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/arrows.o host/map.o host/gpx.o host/route.o host/fix.o \
            host/chooser.o host/led.o host/config.o host/ridelog.o \
-           host/tile.o \
+           host/tile.o host/search.o host/router.o \
            host/nmea.o host/gps.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
 
@@ -378,13 +393,15 @@ host/beepy-nav: $(HOST_NAV)
 # so they are the ones that can be checked by assertion instead of by frame
 # comparison. Runs in either lane; `check` runs it on the device.
 UNIT_TESTS = beepy-nav/tests/test_map beepy-nav/tests/test_gpx \
-             beepy-nav/tests/test_route beepy-nav/tests/test_tile
+             beepy-nav/tests/test_route beepy-nav/tests/test_tile \
+             beepy-nav/tests/test_search
 
 test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
 	./beepy-nav/tests/test_map
 	./beepy-nav/tests/test_gpx
 	./beepy-nav/tests/test_route
 	./beepy-nav/tests/test_tile
+	./beepy-nav/tests/test_search
 
 beepy-nav/tests/test_map: beepy-nav/tests/test_map.c beepy-nav/src/map.c $(HDRS)
 	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
@@ -412,6 +429,18 @@ beepy-nav/tests/test_tile: beepy-nav/tests/test_tile.c beepy-nav/src/tile.c \
 	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
 		beepy-nav/tests/test_tile.c beepy-nav/src/tile.c \
 		libbeepyfb/cover.c libbeepyfb/canvas.c libbeepyfb/font.c $(LDLIBS)
+
+# search.c and router.c have no pixels in them either, so like map/gpx/route
+# they are checked by assertion. route.c joins the link because router_to()
+# leaves a prepared route_t -- which is the point of it -- and gpx.c because
+# route.c calls route_load(). No cover.c: nothing here draws.
+beepy-nav/tests/test_search: beepy-nav/tests/test_search.c \
+                             beepy-nav/src/search.c beepy-nav/src/router.c \
+                             beepy-nav/src/route.c beepy-nav/src/gpx.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
+		beepy-nav/tests/test_search.c beepy-nav/src/search.c \
+		beepy-nav/src/router.c beepy-nav/src/route.c \
+		beepy-nav/src/gpx.c $(LDLIBS)
 
 # 25 000 points is 1.2 MB -- bigger than the rest of the repo, and it would
 # be rsynced to the device on every sync. Generated, not committed.
@@ -464,6 +493,57 @@ test-tiles: host/beepy-nav $(TILEPACK)
 	rm -f out-tiles-1.tiles out-tiles-2.tiles
 	@echo "test-tiles: PASS"
 
+# ---------------------------------------------------- the road pack fixture
+#
+# Mac lane only: mkpack.py wants the 450 KB Overpass extract, which is excluded
+# from `sync` by name.
+#
+# DETERMINISM matters more here than it does for the tiles. The tile pack feeds
+# one golden; these three feed a golden, every assertion in tests/test_search.c,
+# and T-ONEWAY's three hand-picked NODE INDICES -- which are only meaningful
+# while the node numbering is stable. So: build each of them twice, compare the
+# two, then compare against the committed copy.
+test-roads: $(ROADPACK) $(ROADOPEN) $(ROADNAMES)
+	@echo "--- T-ROADS-DETERMINISM: same extract, same bytes, twice"
+	python3 tools/mkpack.py --osm $(ROADOSM) --route $(TILEROUTE) \
+		-o out-roads-1.roads --quiet
+	python3 tools/mkpack.py --osm $(ROADOSM) --route $(TILEROUTE) \
+		-o out-roads-2.roads --quiet
+	cmp out-roads-1.roads out-roads-2.roads
+	cmp out-roads-1.roads $(ROADPACK)
+	python3 tools/mkpack.py --osm $(ROADOSM) --route $(TILEROUTE) \
+		--ignore-oneway -o out-roads-3.roads --quiet
+	cmp out-roads-3.roads $(ROADOPEN)
+	! cmp -s out-roads-1.roads out-roads-3.roads
+	python3 tools/mkpack.py --osm $(ROADNAMESIN) --ref $(ROADREF) \
+		-o out-roads-4.roads --quiet
+	cmp out-roads-4.roads $(ROADNAMES)
+	rm -f out-roads-1.roads out-roads-2.roads out-roads-3.roads \
+		out-roads-4.roads
+#	The name index, from the outside: DESIGN.md 1.4 says only what is in the
+#	pack is searchable and that the count of what was dropped is honest, so both
+#	numbers are asserted here rather than left to the C tests alone.
+	@echo "--- T-ROADS-NAMES: name:en, the ASCII fallback, and what was dropped"
+	python3 tools/mkpack.py --info $(ROADPACK) | \
+		grep -q "557 ways indexed, 3 names dropped"
+	python3 tools/mkpack.py --info $(ROADNAMES) | \
+		grep -q "5 ways indexed, 1 names dropped"
+	python3 tools/mkpack.py --info $(ROADNAMES) | grep -q "'MAIN ROAD'"
+	python3 tools/mkpack.py --info $(ROADNAMES) | grep -q "'SECOND STREET'"
+	@echo "test-roads: PASS"
+
+# Rebuilding the fixtures is deliberate, like regenerating a golden.
+roads:
+ifndef ROADS_OK
+	$(error refusing to rebuild the committed packs without ROADS_OK=1)
+endif
+	python3 tools/mkpack.py --osm $(ROADOSM) --route $(TILEROUTE) \
+		-o $(ROADPACK)
+	python3 tools/mkpack.py --osm $(ROADOSM) --route $(TILEROUTE) \
+		--ignore-oneway -o $(ROADOPEN)
+	python3 tools/mkpack.py --osm $(ROADNAMESIN) --ref $(ROADREF) \
+		-o $(ROADNAMES)
+
 # Rebuilding the fixture is deliberate, like regenerating a golden.
 tiles: 
 ifndef TILES_OK
@@ -491,10 +571,12 @@ sync:
 clean:
 	rm -f gps-monitor/gps-monitor beepy-nav/beepy-nav \
 		$(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx out-*.fb \
-		$(RDIR)/*.nmea $(RDIR)/*.tsv $(RDIR)/*.fb \
-		out-tiles-*.tiles beepy-nav/tests/test_tile \
+		$(RDIR)/*.nmea $(RDIR)/*.tsv $(RDIR)/*.fb $(RDIR)/*.log \
+		out-tiles-*.tiles out-roads-*.roads out-*.roads \
+		beepy-nav/tests/test_tile beepy-nav/tests/test_search \
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
 .PHONY: all check goldens host test-unit test-replay test-frames \
-	host-replay tables design-gate test-tiles tiles bench sync clean
+	host-replay tables design-gate test-tiles tiles test-roads roads \
+	bench sync clean
