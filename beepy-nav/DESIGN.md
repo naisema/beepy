@@ -833,6 +833,34 @@ The clipping test earns its place: the turn panel is the only part of this
 screen that is never allowed to be painted over, and it is the one thing a map
 bug would destroy.
 
+Everything above is one row per **fix**, which is the wrong clock for half of
+what this program now does. §6.1's smoothing, §6.3's extrapolation, §6.4's
+frame skip and §7.5's alerts all happen *between* fixes, and a trace with one
+row per fix cannot see any of them. `--trace-frames` writes one row per
+rendered frame, carrying every quantity each of those four is built from, and
+`make test-frames` asserts them:
+
+| What | How |
+|---|---|
+| **T-DR** | the drawn position equals §6.3's closed form — `base + bearing(course)·speed·dt`, plus the correction being eased in — recomputed from the trace's own columns, to 5 mm over 10 000 frames |
+| **T-DR** (ease) | a correction of 5 m or less is spread over exactly three frames, weights 3/4, 2/4, 1/4 and then gone; one beyond 5 m leaves no ease at all and the frame drawn *is* the fix |
+| **T-HEAD-EWMA** | the heading trace is the circular EWMA of §6.1 with **τ = 0.55 s** — the constant this section adopted, asserted rather than assumed. τ = 0.47, the exact-equivalent reading rejected above, misses by 1.5°, so the test really does pin the choice |
+| **T-HEAD-EWMA** (freeze) | below 3 km/h the heading does not move at all |
+| **T-CUE-LED** | each of 500/200/50 m fires at most once per cue, only on a fix, and **never while the off-route latch is set**; ten of ten cues ring all three rungs on a clean ride |
+| **T-SKIP** | on a ride with the jitter turned off, 600 of 601 frames are skipped — the presents stop at the first identical frame and never resume |
+
+The `fix_err` column exists for T-DR alone: it is the one quantity that cannot
+be recovered from the others, because the prediction it was measured against
+belonged to the extrapolation base the row has already replaced. Without it a
+trace cannot tell an eased correction from one that never happened.
+
+T-SKIP needs a fixture that `stationary.nmea` deliberately is not. A real
+receiver at a standstill jitters by a metre or three, which is what makes the
+heading freeze worth having — and under it the map still shifts by a fraction
+of a pixel, so 39% of frames are skipped rather than all of them and the claim
+cannot be stated exactly. `still.nmea` (`--hold-jitter 0`) is unrealistic on
+purpose.
+
 ---
 
 ## 11. Phases

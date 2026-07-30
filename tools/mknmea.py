@@ -23,7 +23,9 @@ replay assertion that passes today passes tomorrow.
   --hz N              sentences per second (default 1)
   --seed N            RNG seed (default 1)
   --noise SIGMA       gaussian position jitter, metres
-  --stationary MIN[@AT]   hold still for MIN minutes at AT metres along
+  --hold-jitter M     jitter while holding still, metres (default 3); 0 is
+                    the deliberately unrealistic fixture DESIGN.md 6.4 needs
+--stationary MIN[@AT]   hold still for MIN minutes at AT metres along
                           (default at the start), with 1-3 m of jitter
   --detour OFF:AT:LEN     splice an excursion peaking OFF metres off the
                           route, starting at AT and lasting LEN metres
@@ -181,6 +183,7 @@ def main(argv):
     hz = 1.0
     seed = 1
     noise = 0.0
+    hold_jitter = 3.0
     stationary = None
     detour = None
     dropout = nofix = None
@@ -208,6 +211,8 @@ def main(argv):
             seed = int(next(it))
         elif a == "--noise":
             noise = float(next(it))
+        elif a == "--hold-jitter":
+            hold_jitter = float(next(it))
         elif a == "--stationary":
             v = next(it)
             mins, _, at = v.partition("@")
@@ -282,15 +287,22 @@ def main(argv):
         course = math.degrees(math.atan2(tx, ty)) % 360.0
         v = speed_at(sm)
 
-        # Holding still: 1-3 m of jitter and no reported speed, which is what
-        # a real receiver does at a light and what makes the heading freeze
-        # of DESIGN.md 6.1 worth having.
+        # Holding still: a few metres of jitter and no reported speed, which
+        # is what a real receiver does at a light and what makes the heading
+        # freeze of DESIGN.md 6.1 worth having.
+        #
+        # --hold-jitter 0 turns it off. That is not realistic and is not meant
+        # to be: it is the fixture DESIGN.md 6.4's frame skip needs. A display
+        # that has genuinely stopped changing must stop being sent, and under
+        # even a metre of jitter the map still shifts by a fraction of a pixel
+        # and the claim cannot be stated exactly.
         holding = stationary is not None and sm >= stationary[1] and \
             held < stationary[0]
         if holding:
             v = 0.0
-            e += rng.uniform(-3.0, 3.0)
-            n += rng.uniform(-3.0, 3.0)
+            if hold_jitter > 0.0:
+                e += rng.uniform(-hold_jitter, hold_jitter)
+                n += rng.uniform(-hold_jitter, hold_jitter)
             held += dt
 
         # A detour is a real excursion, not a teleport: the offset eases out

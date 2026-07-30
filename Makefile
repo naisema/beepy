@@ -114,7 +114,14 @@ RROUTE     = beepy-nav/tests/gpx/loop.gpx
 MKNMEA     = python3 tools/mknmea.py --gpx $(RROUTE)
 ASSERT     = python3 tools/assert_trace.py
 REPLAYS    = $(RDIR)/ride.nmea $(RDIR)/stationary.nmea $(RDIR)/detour.nmea \
-             $(RDIR)/rough.nmea
+             $(RDIR)/rough.nmea $(RDIR)/still.nmea
+# The four rides above run one frame per fix; these three run again at the
+# real 8 Hz, because 6.1's smoothing, 6.3's dead reckoning, 6.4's frame skip
+# and 7.5's alerts all happen BETWEEN fixes and a one-frame-per-fix trace
+# cannot see any of them. Three and not four: `detour` carries both an eased
+# correction and a snapped one, so `rough` -- the most expensive of the four
+# -- has nothing left to add here.
+FPS8       = --fps 8
 
 $(RDIR)/ride.nmea: tools/mknmea.py $(RROUTE)
 	$(MKNMEA) --speed 25 --brake --seed 1 -o $@
@@ -128,6 +135,15 @@ $(RDIR)/detour.nmea: tools/mknmea.py $(RROUTE)
 $(RDIR)/rough.nmea: tools/mknmea.py $(RROUTE)
 	$(MKNMEA) --speed 25 --noise 2 --dropout 100:140 --nofix 300:330 \
 		--seed 7 -o $@
+
+# Deliberately unrealistic: a receiver at a standstill jitters, which is why
+# stationary.nmea does. This one does not, and that is the point -- DESIGN.md
+# 6.4 claims a display that has stopped changing stops being sent, and under
+# even a metre of jitter the map shifts by a fraction of a pixel and the claim
+# cannot be stated exactly. It is also the only fixture where 6.1's heading
+# FREEZE is what is under test rather than its smoothing.
+$(RDIR)/still.nmea: tools/mknmea.py $(RROUTE)
+	$(MKNMEA) --stationary 11@0 --hold-jitter 0 --duration 600 --seed 2 -o $@
 
 test-replay: $(NAV) $(REPLAYS)
 	@echo "--- T-RIDE: a ride along its own route"
@@ -155,7 +171,38 @@ test-replay: $(NAV) $(REPLAYS)
 	$(NAV) --demo --page cliptest-panel --dump $(RDIR)/clip-panel.fb
 	python3 tools/fbdiff.py $(RDIR)/clip.fb $(RDIR)/clip-panel.fb \
 		--mask 130,0,399,239 --max-px 0
+	$(MAKE) test-frames NAV="$(NAV)"
 	@echo "test-replay: PASS"
+
+# ------------------------------------------------- the 8 Hz frame clock
+#
+# One row per rendered FRAME (--trace-frames), which is the only place the
+# maths of 6.1, 6.3, 6.4 and 7.5 is visible: all four happen between fixes.
+# Every expected value is recomputed by tools/assert_trace.py from the columns
+# the navigator wrote, from the closed form in the design -- never compared
+# against a stored answer from a previous run.
+test-frames: $(NAV) $(REPLAYS)
+	@echo "--- T-DR: extrapolation, and a correction eased over three frames"
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless $(FPS8) \
+		--trace-frames $(RDIR)/ride-frames.tsv
+	$(ASSERT) $(RDIR)/ride-frames.tsv --dr-closed-form 0.005 --dr-ease
+	@echo "--- T-DR-SNAP: and one beyond 5 m taken whole, on its own frame"
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/detour.nmea --headless $(FPS8) \
+		--trace-frames $(RDIR)/detour-frames.tsv
+	$(ASSERT) $(RDIR)/detour-frames.tsv --dr-closed-form 0.005 --dr-ease
+	@echo "--- T-HEAD-EWMA: tau = 0.55 s (DESIGN.md 6.1), and the freeze"
+	$(ASSERT) $(RDIR)/ride-frames.tsv --head-ewma 0.55 0.01 \
+		--any base_spd ">" 2.0
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
+		--trace-frames $(RDIR)/still-frames.tsv
+	$(ASSERT) $(RDIR)/still-frames.tsv --head-ewma 0.55 0.01 \
+		--any base_spd "<" 0.8
+	@echo "--- T-CUE-LED: 500/200/50 m, once each, never off route"
+	$(ASSERT) $(RDIR)/ride-frames.tsv --cue-led 10
+	$(ASSERT) $(RDIR)/detour-frames.tsv --cue-led 9 --any off_latched "==" 1
+	@echo "--- T-SKIP: a display that stopped changing stops being sent"
+	$(ASSERT) $(RDIR)/still-frames.tsv --settles presented
+	@echo "test-frames: PASS"
 
 host-replay: host/beepy-nav $(REPLAYS)
 	$(MAKE) test-replay NAV=host/beepy-nav
@@ -264,5 +311,5 @@ clean:
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
-.PHONY: all check goldens host test-unit test-replay host-replay tables \
-	design-gate bench sync clean
+.PHONY: all check goldens host test-unit test-replay test-frames \
+	host-replay tables design-gate bench sync clean

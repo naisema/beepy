@@ -717,7 +717,15 @@ trace_row(const app_t *a, double zoom_mpp, int presented)
 /* One row per rendered FRAME rather than per fix -- the DESIGN.md 6.3 maths
  * happens eight times a second and a per-fix trace cannot see any of it. Every
  * quantity the extrapolation is built from is here, so tools/assert_trace.py
- * can recompute the closed form and check the drawn position against it. */
+ * can recompute the closed form and check the drawn position against it.
+ *
+ * fix_err -- the distance between where the last frame said we were and where
+ * the new fix says we are -- is the one value that cannot be recovered from
+ * the others, because the prediction it was measured against belonged to the
+ * PREVIOUS extrapolation base, which this row has already replaced. It is
+ * also the whole of 6.3's decision: at or under DR_SNAP_M the correction is
+ * eased over three frames, over it the fix is taken whole. Without the column
+ * a trace cannot tell an eased correction from one that never happened. */
 static FILE *g_ftrace;
 
 static void
@@ -729,8 +737,8 @@ ftrace_open(const char *path)
         exit(1);
     }
     fputs("#t\tisfix\tsince_fix\tbase_e\tbase_n\tbase_crs\tbase_spd\tdt\t"
-          "err_e\terr_n\tease_w\tdr_e\tdr_n\tcourse_deg\theading_deg\t"
-          "presented\tms\tled\toff_latched\tcue_i\tcue_m\n",
+          "err_e\terr_n\tfix_err\tease_w\tdr_e\tdr_n\tcourse_deg\t"
+          "heading_deg\tpresented\tms\tled\toff_latched\tcue_i\tcue_m\n",
           g_ftrace);
 }
 
@@ -745,11 +753,12 @@ ftrace_row(const app_t *a, double t, int isfix, int presented, double ms)
     if (dt > DR_MAX_EXTRAP)
         dt = DR_MAX_EXTRAP;
     fprintf(g_ftrace,
-            "%.4f\t%d\t%ld\t%.4f\t%.4f\t%.6f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t"
-            "%.4f\t%.4f\t%.3f\t%.3f\t%d\t%.3f\t%d\t%d\t%d\t%.2f\n",
+            "%.4f\t%d\t%ld\t%.4f\t%.4f\t%.6f\t%.4f\t%.4f\t%.4f\t%.4f\t"
+            "%.4f\t%.4f\t%.4f\t%.4f\t%.3f\t%.3f\t%d\t%.3f\t%d\t%d\t"
+            "%d\t%.2f\n",
             t, isfix, a->frames_since_fix, a->fix_e, a->fix_n,
             a->fix_course * (180.0 / M_PI), a->fix_speed, dt, a->err_e,
-            a->err_n, a->ease_w, a->dr_e, a->dr_n,
+            a->err_n, a->fix_err, a->ease_w, a->dr_e, a->dr_n,
             a->raw_course * (180.0 / M_PI), a->heading * (180.0 / M_PI),
             presented, ms, isfix ? a->alert_fired : 0, a->nv.off,
             a->rnv.cue_i, a->rnv.cue_m);
