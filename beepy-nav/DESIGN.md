@@ -21,6 +21,9 @@ That is the entire program. It follows a route and shows you where you are on
 it. It is not a cycle computer: **no data-field pages, no elevation profile, no
 menu page, no ride recording, no satellite page.** An earlier draft had all of
 those and they are gone — see §14 for what was removed and what that bought.
+(One thing came back, deliberately and in a much smaller form: §7.6's raw NMEA
+log, which records the receiver rather than the ride and exists so that a
+failure on a road can be replayed on a desk.)
 
 The layout of the NAV page follows `Screenshot 2569-07-29 at 16.54.16.png` in
 this directory: an inverted panel across the left third holding the turn arrow
@@ -414,6 +417,7 @@ quoting rule nobody would remember.
 | `rate_5hz` | `0` / `1` | `0` | ask the receiver for 5 Hz at startup (§6.3) |
 | `routes_dir` | a path | `$BEEPY_ROUTES`, else `~/routes` | where the chooser looks |
 | `led_alerts` | `0` / `1` | `1` | flash the keyboard LED at cues (§7.5) |
+| `rides_dir` | a path | `~/rides` | where the ride log goes (§7.6); `--no-log` turns it off entirely |
 
 Flags also accept `yes`/`no`, `true`/`false`, `on`/`off`. **A command-line flag
 always wins**, because it is the more specific statement of intent: the file
@@ -874,6 +878,79 @@ An unwritable LED (no udev rule) still accepts the toggle and still shows the
 confirmation: the state is the rider's intent, and the one-line warning at
 startup is where "there is no LED here" is said.
 
+### 7.6 The ride log — evidence, not ride recording
+
+§14 removed *ride recording* from this program and that removal stands: there
+is no `.trk` journal, no GPX writer, no ODO persistence, no trip counters and
+no accumulated totals — none of the silently-wrong-number class of bug that
+left with them. What this section adds is a different thing wearing a similar
+name. It records the **receiver**, not the ride.
+
+The argument is one sentence long: **every bug in this program so far was found
+by a replay, and a failure in the field currently leaves nothing to replay.**
+The off-by-one in the countdown latch, the map rotating a fix late, the
+window hint walking off down the route — each was a fixture and an assertion
+within an hour of being seen, because there was a byte stream to point the
+navigator at. On a road there is a rider's memory of a panel that looked wrong.
+
+So, whenever the program is following a route on a real port:
+
+```
+~/rides/YYYYMMDD-HHMMSS.nmea   the raw byte stream, verbatim
+~/rides/YYYYMMDD-HHMMSS.tsv    the per-fix trace -- --trace's own columns
+```
+
+Always on; `--no-log` turns it off and `rides_dir` moves it. A replay is not
+logged, because a replay already *is* a log.
+
+**Verbatim, before the parser.** The bytes go down exactly as they came off the
+wire — line endings, bad checksums, empty fields, half a sentence cut short by
+a USB reset, and anything that is not NMEA at all. Re-serialising the parsed
+sentences would produce a clean file that reproduces none of the malformed
+input worth studying, which is to say none of the input that causes bugs. The
+UBX exchange of §6.3 is captured too: those bytes never reach the parser, and
+without them the log would have a hole exactly where the receiver was being
+configured.
+
+**Two crash budgets, because SIGKILL and a power cut are different failures.**
+
+| Cadence | Call | Protects against | Cost |
+|---|---|---|---|
+| every epoch | `fflush` | SIGKILL, a segfault, `kill -9` — the kernel keeps what it has been handed even when the process is gone | one `write(2)` a second |
+| ≤ every 30 s | `fsync` | the battery falling out | ~500 bytes at risk |
+
+Thirty seconds is the budget §14 named while arguing this feature out of
+existence, and it is still the right one: at ~60 KB an hour it is half a
+kilobyte. Splitting the two is what makes the flush affordable and the guarantee
+strong — the earlier draft of this had only the 30 s `fsync`, which would have
+let a `kill -9` take up to a 4 KB stdio buffer, nine epochs, with it.
+
+**A partial file is a valid replay input by construction.** The reader is
+line-oriented and drops a final unterminated line, so the worst a kill can do is
+lose the sentence that was mid-flight. Verified rather than asserted: §10.
+
+**The log may never take the navigator down.** An unwritable directory, a full
+disk, a write that fails mid-ride — each is one line on stderr, once, and then
+the ride continues unlogged. This is the same argument §2.1 makes about the
+config file, applied to the same rider at the same roadside.
+
+**And it will not start below ~50 MB free.** Not a quota: at 60 KB an hour the
+guard is about a month of continuous riding and it will never be what stops a
+ride. It exists because the failure worth preventing is not "the log grew" but
+"the log took the last of the disk and nobody was told". Refusing one more file
+out loud is an acceptable outcome; silence on a full disk is not.
+
+**`tools/ride2fixture.sh` is the point of all of it.** It copies a log into
+`beepy-nav/tests/replay/`, replays it against the route to produce both traces,
+and prints the Makefile lines to paste — a field failure becomes a regression
+test in one command. It also does the check nothing else can: the `.tsv` written
+*on the device* is compared against the one the replay produces from the same
+bytes. The route maths is a pure function of the sentences, so those columns
+must agree exactly, and a disagreement means the replay is not a rehearsal of
+the ride and every assertion built on it would be measuring the wrong program.
+The heading columns are excluded by design — §6.1's EWMA is over a time
+constant and a live clock does not land on a replay's frame grid.
+
 ---
 
 ## 8. Data model
@@ -950,6 +1027,8 @@ view_nav 200, view_overview 160, nav main 180 ≈ **1450 lines**.
 | Off route | replay the same ride with a synthetic 100 m detour spliced in; assert the latch fires once and clears once |
 | Cue classifier | hand-label the junctions of one real GPX, assert the derived set matches |
 | Clipping | render at a zoom where the route leaves the map on all four sides; assert no ink lands in x < 130 |
+| Ride log survives a kill | `kill -9` the navigator mid-ride against a live port, then `--replay` the partial `.nmea` it left. The file must load, the fixes must be the ones that were on the wire, and the loss must be at most the sentence in flight — the flush cadence of §7.6, measured rather than argued |
+| A field failure becomes a test | `tools/ride2fixture.sh LOG ROUTE NAME` turns a log into a `tests/replay/` case, and cross-checks the replayed per-fix trace against the `.tsv` the device itself wrote from the same bytes. They must agree exactly on every route-maths column |
 | Console restore | every exit path leaves `fbterm` in `S+`, never `T` — verified on the device for `Q` and `SIGINT`. `SIGKILL` is not an exit path a program can hook, so it leaves `fbterm` in `T+`; the next clean run recovers it on its own (measured), and `kill -CONT $(pgrep -x fbterm)` is the manual answer |
 
 The clipping test earns its place: the turn panel is the only part of this
@@ -1071,7 +1150,7 @@ it is gone.
 | Data-field pages and the grid engine | −220 lines, and no field catalogue, config format or auto-fit-per-cell logic |
 | Elevation page | GPS-altitude filtering, ascent hysteresis, grade windowing and VAM all disappear — §8.3 of the old draft was the most error-prone maths in the program, and it was only feeding a page nobody asked for |
 | Menu page | No modal input handling, no submenu stack; settings become a config file and four keys |
-| Ride recording | No `.trk` journal, no crash-recovery conversion, no `fsync` policy, no ODO persistence |
+| Ride recording | No `.trk` journal, no crash-recovery conversion, no ODO persistence. **§7.6 later brought back a raw NMEA log and only that** — a record of the receiver rather than of the ride, for replaying a field failure. None of the accumulated totals came back with it, and neither did the class of bug they carried |
 | Satellite page | No satellite arrays, no GSV reassembly, no sky projection or label placement in `nav` |
 | Trip counters | No distance-accumulation gating, no auto-pause, no moving-vs-elapsed timers |
 

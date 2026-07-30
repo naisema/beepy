@@ -37,7 +37,7 @@ NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
             beepy-nav/src/arrows.o beepy-nav/src/map.o beepy-nav/src/gpx.o \
             beepy-nav/src/route.o beepy-nav/src/view_overview.o \
             beepy-nav/src/fix.o beepy-nav/src/chooser.o beepy-nav/src/led.o \
-            beepy-nav/src/config.o
+            beepy-nav/src/config.o beepy-nav/src/ridelog.o
 HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h beepy-nav/src/*.h)
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -286,13 +286,13 @@ HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
             host/nmea.o host/gps.o \
             host/seg.o host/arrows.o host/map.o host/gpx.o host/route.o \
             host/view_nav.o host/view_overview.o host/fix.o host/chooser.o \
-            host/led.o host/config.o host/nav.o
+            host/led.o host/config.o host/ridelog.o host/nav.o
 
 # beepy-nav is portable end to end (no fbdev, no evdev), so the Mac can link
 # and run it -- which is what makes the M2 design gate a fast loop.
 HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/arrows.o host/map.o host/gpx.o host/route.o host/fix.o \
-           host/chooser.o host/led.o host/config.o \
+           host/chooser.o host/led.o host/config.o host/ridelog.o \
            host/nmea.o host/gps.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
 

@@ -46,6 +46,7 @@
 #include "fix.h"
 #include "led.h"
 #include "map.h"
+#include "ridelog.h"
 #include "route.h"
 #include "view.h"
 
@@ -97,6 +98,9 @@ static const char USAGE[] =
     "                setting in it is overridden by the flag for it\n"
     "  --rate-5hz    ask the receiver for 200 ms fixes at startup;\n"
     "                --no-rate-5hz is the default (see DESIGN.md 6.3)\n"
+    "  --no-log      do not record the ride. On a real port the raw NMEA and\n"
+    "                the per-fix trace go to ~/rides/YYYYMMDD-HHMMSS.{nmea,tsv}\n"
+    "                unless this says otherwise (rides_dir in the config)\n"
     "  --demo        render a static design state instead of navigating\n"
     "  --page P      nav, nav-off, nav-nofix, overview, arrows, chooser,\n"
     "                cliptest, cliptest-panel -- and with\n"
@@ -751,26 +755,28 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
 
 static FILE *g_trace;
 
+/* The ride log (DESIGN.md 7.6) carries the SAME columns, because the point of
+ * it is that a log lifted off the device is a --trace by another name: the
+ * assertions of section 10 read it unchanged, and tools/ride2fixture.sh can
+ * check the replay against what the device actually computed. Two formats
+ * would be two things to keep in step. */
 static void
-trace_open(const char *path)
+trace_header(FILE *f)
 {
-    g_trace = fopen(path, "w");
-    if (!g_trace) {
-        perror(path);
-        exit(1);
-    }
+    if (!f)
+        return;
     fputs("#t\tlat\tlon\tseg\talong_m\toff_m\toff_latched\tcue_i\tcue_m\t"
           "togo_m\tpct\teta_s\theading_deg\tzoom_mpp\tpresented\t"
           "course_deg\tresidual_deg\n",
-          g_trace);
+          f);
 }
 
 static void
-trace_row(const app_t *a, double zoom_mpp, int presented)
+trace_write(FILE *f, const app_t *a, double zoom_mpp, int presented)
 {
-    if (!g_trace)
+    if (!f)
         return;
-    fprintf(g_trace,
+    fprintf(f,
             "%.3f\t%.7f\t%.7f\t%d\t%.2f\t%.2f\t%d\t%d\t%.2f\t%.2f\t%.3f\t"
             "%.1f\t%.2f\t%.2f\t%d\t%.2f\t%.2f\n",
             a->t, a->fx.lat, a->fx.lon, a->nv.seg, a->nv.along, a->nv.off_m,
@@ -779,6 +785,26 @@ trace_row(const app_t *a, double zoom_mpp, int presented)
             a->raw_course * (180.0 / M_PI),
             wrap_pi(a->raw_course - (a->course_up ? a->heading : 0.0)) *
                 (180.0 / M_PI));
+}
+
+static ridelog_t RIDELOG;
+
+static void
+trace_open(const char *path)
+{
+    g_trace = fopen(path, "w");
+    if (!g_trace) {
+        perror(path);
+        exit(1);
+    }
+    trace_header(g_trace);
+}
+
+static void
+trace_row(const app_t *a, double zoom_mpp, int presented)
+{
+    trace_write(g_trace, a, zoom_mpp, presented);
+    trace_write(RIDELOG.tsv, a, zoom_mpp, presented);
 }
 
 /* One row per rendered FRAME rather than per fix -- the DESIGN.md 6.3 maths
@@ -1213,6 +1239,10 @@ ubx_await_ack(int fd, unsigned char cls, unsigned char id, int ms)
             return -1;
         if (read(fd, &b, 1) != 1)
             return -1;
+        /* These bytes never reach the parser, so without this the log would
+         * have a hole in it exactly where the receiver was being configured
+         * -- which is the one part of a startup a bug report would want. */
+        ridelog_raw(&RIDELOG, (const char *)&b, 1);
         if (have == (int)sizeof w) {
             memmove(w, w + 1, sizeof w - 1);
             have--;
@@ -1681,7 +1711,7 @@ chooser_run(char *out, size_t outsz, fb_t *fb, const char *dir)
 
 static int
 run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
-         int pace_opt, int do_print)
+         int pace_opt, int do_print, const char *ridesdir)
 {
     canvas_t *cv, *prev;
     FILE *replay = NULL;
@@ -1747,6 +1777,15 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
             return 1;
         }
         have_port = 1;
+        /* DESIGN.md 7.6. On a real port and following a real route, always --
+         * this is the only lane where a failure has no other record. A replay
+         * is skipped because it already HAS a log, and copying it into
+         * ~/rides on every test run would be noise. Failure to open one is a
+         * warning and nothing more: ridelog.c holds the line that logging may
+         * never take the navigator down. */
+        if (ridesdir)
+            ridelog_open(&RIDELOG, ridesdir, time(NULL));
+        trace_header(RIDELOG.tsv);
         if (a->rate_5hz) {
             int ack = ubx_set_rate(port.fd, UBX_5HZ_MS);
             /* Said out loud either way. A silent "5 Hz requested" that the
@@ -1760,6 +1799,9 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
     }
 #else
     (void)devpath;
+    /* There is no serial port in the host lane, so there is nothing to record
+     * verbatim -- a replay already IS the log this module would have made. */
+    (void)ridesdir;
     if (!replaypath) {
         fputs("beepy-nav: no serial port in the host lane; use --replay\n",
               stderr);
@@ -1833,6 +1875,11 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
                 char b;
                 if (read(port.fd, &b, 1) != 1)
                     break;
+                /* DESIGN.md 7.6: verbatim, and BEFORE the parser. Line
+                 * endings, bad checksums, half a sentence cut off by a USB
+                 * reset -- all of it goes down exactly as it arrived, because
+                 * the malformed input is the input worth having. */
+                ridelog_raw(&RIDELOG, &b, 1);
                 if (b == '\n' || b == '\r') {
                     if (ll)
                         break;
@@ -1888,6 +1935,13 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
 
         keys_due(a, a->t);
 
+        /* Once per epoch: flush what the kernel can keep across a SIGKILL,
+         * and fsync on DESIGN.md 7.6's 30 s budget. After on_epoch(), so the
+         * ride clock the fsync cadence reads has already advanced -- and
+         * before the frame, so a crash during a render still leaves the
+         * sentences that caused it on disk. */
+        ridelog_tick(&RIDELOG, a->t);
+
         if (a->hold) {
             pace_to(a->t);
             led_tick(a->t);
@@ -1902,6 +1956,7 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
     stats_flush(a, 1);
 
     led_off();
+    ridelog_close(&RIDELOG);
     if (g_trace)
         fclose(g_trace);
     if (g_ftrace)
@@ -1929,10 +1984,11 @@ main(int argc, char **argv)
     const char *tracepath = NULL, *devpath = "/dev/ttyACM0";
     const char *ftracepath = NULL;
     int page = PAGE_NAV, bench = 0, demo = 0, headless = 0, do_print = 0;
-    int pace_opt = -1, i;
+    int pace_opt = -1, i, no_log = 0;
     double fps = DR_FPS;
     char err[320];
     char cfgpath[CFG_PATH_MAX], routes[CFG_PATH_MAX];
+    char rides[RIDELOG_PATH_MAX];
     navcfg_t cfg;
     canvas_t *cv;
 #ifdef NAV_DEVICE
@@ -2042,6 +2098,8 @@ main(int argc, char **argv)
             cfg.rate_5hz = 1;
         else if (!strcmp(a, "--no-rate-5hz"))
             cfg.rate_5hz = 0;
+        else if (!strcmp(a, "--no-log"))
+            no_log = 1;
         else if (!strcmp(a, "--config") && i + 1 < argc)
             i++; /* already read, above */
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
@@ -2062,6 +2120,13 @@ main(int argc, char **argv)
         snprintf(routes, sizeof routes, "%s", cfg.routes_dir);
     else
         chooser_default_dir(routes, sizeof routes);
+    /* Same shape for the ride log (DESIGN.md 7.6): the config's rides_dir, or
+     * ~/rides. Resolved here so --no-log is a single NULL further down rather
+     * than a flag threaded through run_live(). */
+    if (cfg.rides_dir[0])
+        snprintf(rides, sizeof rides, "%s", cfg.rides_dir);
+    else
+        ridelog_default_dir(rides, sizeof rides);
 
     /* ---------------------------------------------------- static pages */
     if (demo) {
@@ -2160,5 +2225,6 @@ main(int argc, char **argv)
         trace_open(tracepath);
     if (ftracepath)
         ftrace_open(ftracepath);
-    return run_live(&APP, devpath, replaypath, headless, pace_opt, do_print);
+    return run_live(&APP, devpath, replaypath, headless, pace_opt, do_print,
+                    no_log ? NULL : rides);
 }

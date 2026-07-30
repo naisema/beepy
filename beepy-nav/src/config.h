@@ -31,6 +31,10 @@ typedef struct {
      * using it, and keeps this file from having to name a default it would
      * then have to keep in step with chooser.c. */
     char routes_dir[CFG_PATH_MAX];
+    /* Where the ride log goes (DESIGN.md 7.6). Empty means ~/rides, decided
+     * by ridelog_default_dir() for the same reason routes_dir is: a default
+     * named twice is a default that drifts. */
+    char rides_dir[CFG_PATH_MAX];
 } navcfg_t;
 
 void cfg_defaults(navcfg_t *c);
