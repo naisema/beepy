@@ -819,12 +819,53 @@ things this proved beyond what the synthetic grid could:
   never touches names (the GPX carries the route), but any tooling that does
   should expect this.
 
-Production shape (phase 4): a Mac-side tool cuts an extract along the route
-corridor (±2 km), classifies highways into two weights, and pre-renders 1-bit
-tiles per zoom level of the ladder in §6.1; the device blits tiles under the
-track/route/marker layers. 256×256 at 1 bit is 8 KB per tile against 53 GB
-free. The layering already exists — `nav-turn-nomap.png` is the same renderer
-with the tile layer absent.
+**The pack format, first.** `tools/mktiles.py` cuts the corridor and renders
+the tiles on the Mac; `beepy-nav/src/tile.c` reads them on the device. The
+format is written out here and in that tool's own header because it is an
+on-disk contract between two machines and two languages — and because the
+second pack this device will want (roads *and names*, for search and routing)
+should not gratuitously differ from it.
+
+#### The pack
+
+One file, little-endian, fixed-width, no text: a 64-byte header (magic
+`BNAVTILE`, version, tile size, `lat0`/`lon0` and the two metres-per-degree
+constants of §6.1, the corridor width), a 32-byte entry per zoom rung (`mpp`,
+the tile-grid origin `tx0`/`ty0`, `nx`/`ny`, the offset of that rung's index),
+then one `u32` index per rung — `nx*ny` file offsets, `0` meaning the tile is
+blank and cost nothing — then the tiles: 256 rows of 32 bytes, MSB first, bit
+set = ink. 8 KB each, as this section always claimed. The complete field table
+lives at the top of `tools/mktiles.py`, which is the only thing that writes it.
+
+The address of a world point is
+`px = floor(e/mpp)`, `py = floor(-n/mpp)` — the tangent-plane metres of §6.1
+divided by the rung, y down, so a tile's row 0 is its north edge. The pack is
+referenced to the **route's first point**, which is the same rule
+`route_load()` uses, so a pack built for a route and that route share a
+coordinate frame exactly; a pack used with a *different* route is corrected by
+translation (`tiles_bind_route()`), which costs under a centimetre per
+kilometre in scale.
+
+Determinism is a requirement, not a nicety: the pack is a committed binary
+fixture and a frozen golden hangs off it, so `make test-tiles` builds it twice
+and compares sha256 against the committed copy. Every coordinate is floored to
+an integer pack pixel **once, globally**, before any tile is drawn — which is
+also what makes the seams invisible, since Bresenham is translation-invariant
+under the integer tile offsets and the two halves of a street crossing a
+boundary meet exactly.
+
+#### Which rungs, and why not all twelve
+
+The ladder has twelve rungs; a 2 km corridor gets **five** — 1.5, 2.5, 4, 6,
+10 m/px. The rule is not taste: the NAV map is 270 px wide, so at a rung
+coarser than `2·corridor/270` the screen is wider than anything the pack
+contains and the streets would stop partway across the display. A basemap that
+runs out mid-screen reads as a rendering fault, not as a map. Auto-zoom only
+goes past 10 m/px when the next cue is more than 1.4 km away, which is the case
+where there is least to look at anyway, and a rung the pack does not carry
+draws nothing — the same code path, and the same frame, as no pack at all.
+`--zooms` overrides this for anyone who wants the coarse end.
+
 
 ---
 
