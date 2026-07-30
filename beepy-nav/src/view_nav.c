@@ -36,11 +36,13 @@ static double g_segs[4 * MAXPTS];
 
 /* ------------------------------------------------------------------ marks
  *
- * The six mark_* routines are shared with view_overview.c and declared in
- * view.h. They live here because this is where they were transcribed from
- * mockup.py, and because the OVERVIEW page is the same cartography at a
- * different zoom -- two copies would be two things to keep in step with the
- * mockup. speed_badge() stays private: only the NAV map has one. */
+ * The mark_* routines are shared with view_overview.c, view_confirm.c and
+ * view_map.c, and declared in view.h. They live here because this is where they
+ * were transcribed from mockup.py, and because those pages are the same
+ * cartography at a different zoom -- two copies would be two things to keep in
+ * step with the mockup. mark_speed_badge() was private while only the NAV map
+ * had one; the MAP page of 1.5 has the same instrument, so it joined them
+ * rather than being copied. */
 
 /* White disc, black ring, solid black chevron -- which is what the
  * reference resolves to at threshold. The white fill doubles as a halo: it
@@ -131,8 +133,8 @@ mark_compass(cov_t *c, double x, double y, double theta, double r)
 
 /* Same ring construction as the position marker, so the two read as one
  * family of round instruments. */
-static void
-speed_badge(cov_t *c, double x, double y, int kmh, double r, int units)
+void
+mark_speed_badge(cov_t *c, double x, double y, int kmh, double r, int units)
 {
     char s[16]; /* "%d" of an int is up to 11 chars + NUL, whatever the km/h */
     /* Centred by the same arithmetic the metric literal encoded: cov_text_w
@@ -538,7 +540,7 @@ view_nav_map(cov_t *c, const navmap_t *m)
 
     mark_position(c, cx, cy, 13, m->residual);
     mark_compass(c, MAP_X + 21, 27, theta, 11);
-    speed_badge(c, W - 33, 33, m->spd_kmh, 27, m->units);
+    mark_speed_badge(c, W - 33, 33, m->spd_kmh, 27, m->units);
     mark_scale_bar(c, MAP_X + 7, H - 8, mpp, m->units);
 }
 

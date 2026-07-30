@@ -71,11 +71,12 @@ _Static_assert((int)CUE_STRAIGHT == (int)ARROW_STRAIGHT &&
                "cue_t.kind is passed straight to arrow_draw()");
 
 static const char USAGE[] =
-    "usage: beepy-nav --route FILE.gpx [-d DEV] [--replay F.nmea]\n"
+    "usage: beepy-nav [--route FILE.gpx] [-d DEV] [--replay F.nmea]\n"
     "       beepy-nav --demo --page PAGE [--dump FILE] [--bench N]\n"
     "\n"
-    "  --route FILE  the GPX to follow; omitted, the routes in ~/routes\n"
-    "                (or $BEEPY_ROUTES) are offered on the panel\n"
+    "  --route FILE  the GPX to follow; omitted, the program opens on the\n"
+    "                MAP page -- where you are, with no route -- and R\n"
+    "                offers the routes in ~/routes (or $BEEPY_ROUTES)\n"
     "  -d DEV        NMEA serial port (default /dev/ttyACM0)\n"
     "  --replay F    read NMEA from a file instead, paced to the clock the\n"
     "                sentences carry; exits cleanly at end of file\n"
@@ -109,16 +110,19 @@ static const char USAGE[] =
     "                the per-fix trace go to ~/rides/YYYYMMDD-HHMMSS.{nmea,tsv}\n"
     "                unless this says otherwise (rides_dir in the config)\n"
     "  --demo        render a static design state instead of navigating\n"
-    "  --page P      nav, nav-off, nav-nofix, nav-tiles, overview,\n"
-    "                overview-tiles, arrows, chooser, find, find-none,\n"
-    "                confirm, cliptest, cliptest-panel -- and with\n"
-    "                --route it picks the page the ride opens on\n"
+    "  --page P      nav, nav-off, nav-nofix, nav-tiles, map, map-nofix,\n"
+    "                map-wait, map-tiles, overview, overview-tiles, arrows,\n"
+    "                chooser, find, find-none, confirm, cliptest,\n"
+    "                cliptest-panel -- and with --route it picks the page\n"
+    "                the ride opens on\n"
     "  --dump FILE   write the frame as 384000 raw XRGB bytes\n"
     "  --bench N     time N draw+resolve cycles and print ms/frame\n"
     "\n"
     "keys: Tab page   F find a destination   R change route   Q quit   H hold\n"
     "      O course-up/north-up   Z/X zoom out/in   A auto zoom\n"
     "      U metric/imperial   L cue alerts on/off\n"
+    "map:  F find   R routes   Q quit -- and O, Z/X/A, U as above; Tab is not\n"
+    "      bound, because with no route there is no OVERVIEW to switch to\n"
     "find: type to filter   Down/Up select   Enter route   Esc (or Backspace\n"
     "      on an empty query) cancel;  confirm: Enter go   Q cancel\n";
 
@@ -127,6 +131,10 @@ enum {
     PAGE_NAV_OFF,
     PAGE_NAV_NOFIX,
     PAGE_NAV_TILES,
+    PAGE_MAP,
+    PAGE_MAP_NOFIX,
+    PAGE_MAP_WAIT,
+    PAGE_MAP_TILES,
     PAGE_OVERVIEW,
     PAGE_OVERVIEW_TILES,
     PAGE_ARROWS,
@@ -140,8 +148,13 @@ enum {
 /* The live pages. FIND and CONFIRM are pages and not a modal sub-loop, which is
  * the whole reason they are testable: the frame clock keeps running behind them,
  * --key drives them in a headless replay exactly as it drives L, and the ride
- * that resumes after a cancel never noticed they were there. */
-enum { LIVE_NAV, LIVE_OVERVIEW, LIVE_FIND, LIVE_CONFIRM };
+ * that resumes after a cancel never noticed they were there.
+ *
+ * LIVE_MAP (DESIGN.md 1.5) is the page there is no route behind: the program
+ * opens on it, and it is the one page that never coexists with a loaded route.
+ * It is LAST so LIVE_NAV stays zero -- a zeroed app_t is a ride on the NAV
+ * page, which is what main()'s reset across R counts on. */
+enum { LIVE_NAV, LIVE_OVERVIEW, LIVE_FIND, LIVE_CONFIRM, LIVE_MAP };
 
 /* run_live()'s "the rider wants a different route", distinct from any exit
  * status: main() loops back to the picker rather than returning it. Outside
@@ -174,6 +187,96 @@ static roads_t *g_roads;
 static route_t g_found;
 static int g_have_found;
 
+/* --- the world frame (DESIGN.md 1.5, 6.1) --------------------------------
+ *
+ * Every position inside the program is metres east/north of ONE reference, and
+ * with a route loaded that reference is the route's first point (route.c). The
+ * MAP page has no route, so the reference has to come from somewhere else, and
+ * the order below is not arbitrary:
+ *
+ *   1. the BASEMAP pack's own reference. A tile pack is pre-rendered in its own
+ *      tangent frame (6.5), and tiles_bind_route() exists to translate between
+ *      that frame and the caller's -- so using the pack's reference makes the
+ *      translation exactly zero and the streets land where they were drawn.
+ *   2. the ROAD pack's, so that the map and FIND's distances are measured from
+ *      the same origin. That pack keeps its own frame by design (1.4.1).
+ *   3. the first fix, when there is neither pack. Then the frame is whatever
+ *      the rider is standing on, which is all a bare map needs.
+ *
+ * At file scope because it outlives every route: R zeroes app_t, and the frame
+ * a breadcrumb was recorded against must not be zeroed with it. */
+static double g_ref_lat, g_ref_lon;
+static int g_have_ref;
+
+/* --- the breadcrumb (DESIGN.md 1.5) --------------------------------------
+ *
+ * The track travelled this SESSION, which is a different thing from the ridden
+ * track the NAV page draws: that one is the part of the route already covered
+ * and dies with the route. This one is where the rider has actually been, and it
+ * is kept across R and across a routed destination for the same reason g_tiles
+ * is -- it outlives the route, so it lives outside app_t.
+ *
+ * In LAT/LON, not in world metres, and that is the load-bearing decision: the
+ * frame changes when a route loads (its first point becomes the origin), so a
+ * breadcrumb in metres would silently bend at every route change. Degrees cross
+ * that boundary unharmed, exactly as 1.4.1 argues for the road pack, and the
+ * cost is one projection per point per frame -- 2048 of them is a few thousand
+ * multiplies against a 125 ms budget.
+ *
+ * MIN_M, because a receiver at a standstill jitters by metres: without a floor
+ * ten minutes at a traffic light would fill the buffer with a scribble the size
+ * of the marker. Five metres is under one pixel at every rung coarser than
+ * 5 m/px, so nothing visible is lost.
+ *
+ * WHEN IT FILLS every second point is dropped, in place, and recording carries
+ * on. So the whole session survives at coarsening resolution rather than its
+ * beginning being forgotten: the older a stretch is, the sparser it is drawn,
+ * which is the right trade for a mark whose job is "roughly where have I been".
+ * At the 5 m floor the first halving is 10 km of riding away. */
+#define CRUMB_MAX MAP_TRACK_MAX
+#define CRUMB_MIN_M 5.0
+static double g_crumb[2 * CRUMB_MAX]; /* lat, lon pairs, oldest first */
+static int g_ncrumb;
+static double g_crumb_en[2 * CRUMB_MAX]; /* the same, projected, per frame */
+
+static void
+crumb_add(double lat, double lon)
+{
+    int i;
+    if (g_ncrumb > 0) {
+        double e, n;
+        geo_project(g_crumb[2 * (g_ncrumb - 1)], g_crumb[2 * (g_ncrumb - 1) + 1],
+                    lat, lon, &e, &n);
+        if (hypot(e, n) < CRUMB_MIN_M)
+            return;
+    }
+    if (g_ncrumb >= CRUMB_MAX) {
+        for (i = 0; 2 * i < g_ncrumb; i++) {
+            g_crumb[2 * i] = g_crumb[4 * i];
+            g_crumb[2 * i + 1] = g_crumb[4 * i + 1];
+        }
+        g_ncrumb = i;
+    }
+    g_crumb[2 * g_ncrumb] = lat;
+    g_crumb[2 * g_ncrumb + 1] = lon;
+    g_ncrumb++;
+}
+
+/* The breadcrumb in the current world frame, for the page to draw. Recomputed
+ * every frame rather than cached, because the frame itself can change (a route
+ * loads, R starts another) and a cache keyed on nothing would be the bug this
+ * whole lat/lon representation exists to prevent. */
+static const double *
+crumb_world(int *n)
+{
+    int i;
+    for (i = 0; i < g_ncrumb; i++)
+        geo_project(g_ref_lat, g_ref_lon, g_crumb[2 * i], g_crumb[2 * i + 1],
+                    &g_crumb_en[2 * i], &g_crumb_en[2 * i + 1]);
+    *n = g_ncrumb;
+    return g_crumb_en;
+}
+
 /* ------------------------------------------------------------------ demo */
 
 static void
@@ -193,6 +296,24 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
      * is optional -- see the Makefile's `check`. */
     case PAGE_NAV_TILES:
         view_nav_tiles_demo(cov, tiles);
+        break;
+    /* The MAP page of DESIGN.md 1.5, in its four states: a position, a position
+     * that has gone stale, no position yet, and a position over a basemap. The
+     * fourth is separate rather than a --basemap on the first for exactly the
+     * reason nav-tiles is separate from nav -- a frozen design state must not
+     * pick up a pack from the config -- and it carries geometry in the PACK's
+     * own reference frame, which is the frame this page introduced. */
+    case PAGE_MAP:
+        view_map_demo(cov, 0);
+        break;
+    case PAGE_MAP_NOFIX:
+        view_map_demo(cov, 1);
+        break;
+    case PAGE_MAP_WAIT:
+        view_map_wait_demo(cov);
+        break;
+    case PAGE_MAP_TILES:
+        view_map_tiles_demo(cov, tiles);
         break;
     case PAGE_OVERVIEW:
         view_overview_demo(cov, 0);
@@ -346,6 +467,13 @@ typedef struct {
     int alert_cue, alert_done, alert_fired;
 
     int page, hold, quit, course_up;
+
+    /* 0 on the MAP page of DESIGN.md 1.5, and only there: `rt` is then an empty
+     * route_t and every rule of section 7 is skipped rather than run against
+     * nothing. It is a flag and not a test of rt.npt because "there is no route"
+     * is a statement about the program's mode -- which page it opens on, which
+     * keys are bound -- and not about how many points an array happens to hold. */
+    int have_route;
 
     /* --- FIND and CONFIRM (DESIGN.md 1.4) ------------------------------- */
 
@@ -589,7 +717,12 @@ render_state(app_t *a)
     const route_t *r = &a->rt;
 
     a->rnv = a->nv;
-    if (!a->have_pos || !a->have_dr || a->nv.seg < 0)
+    /* have_route as well as seg: there is nothing to re-snap against on the MAP
+     * page, and route_snap() on an empty route_t would index a segment that
+     * does not exist. The seg test alone would be enough today (nav_reset()
+     * leaves it -1 and nothing else sets it), but the invariant worth stating is
+     * the mode, not the sentinel. */
+    if (!a->have_route || !a->have_pos || !a->have_dr || a->nv.seg < 0)
         return;
     /* Anchored on the last real match, never on the previous frame's: the
      * window hint must not be able to walk off down the route on its own. */
@@ -760,6 +893,40 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
     char clock[8], togo[16], total[16], remain[16], etabuf[24];
 
     cov_begin(cov);
+    /* DESIGN.md 1.5. First, because it is the one page that does not read the
+     * route at all -- and the one page that can be on screen when there is no
+     * route to read. */
+    if (a->page == LIVE_MAP) {
+        livemap_t lm;
+        lm.have_pos = a->have_pos && a->have_dr;
+        /* The last known position, which is exactly what 1.1.2 asks to keep
+         * drawn through a loss: fix_t is not cleared by an epoch with no fix in
+         * it, and the marker itself froze two seconds ago (DR_MAX_EXTRAP). */
+        lm.lat = a->fx.lat;
+        lm.lon = a->fx.lon;
+        lm.pos_e = a->dr_e;
+        lm.pos_n = a->dr_n;
+        lm.track = crumb_world(&lm.ntrack);
+        lm.spd_kmh = (int)(a->fx.speed_kmh + 0.5);
+        lm.course_up = a->course_up;
+        lm.units = a->ctx.units;
+        lm.mpp_manual = a->mpp_manual;
+        lm.heading = a->heading;
+        lm.have_heading = a->have_heading;
+        lm.residual =
+            a->have_heading
+                ? wrap_pi(a->raw_course - (a->course_up ? a->heading : 0.0))
+                : 0.0;
+        lm.tiles = g_tiles;
+        lm.nofix = a->nofix;
+        lm.note = a->note && a->frame_t < a->note_until ? a->note : NULL;
+        /* "The satellite count if the receiver is talking at all" -- epoch_seq
+         * counts epochs seen, fix or not, so this is exactly that condition. */
+        lm.sats = a->epoch_seq > 0 ? a->fx.sats : -1;
+        view_map(cov, &lm);
+        cov_resolve(cov, cv);
+        return;
+    }
     if (a->page == LIVE_FIND) {
         find_t f;
         f.query = a->query;
@@ -959,11 +1126,17 @@ ftrace_open(const char *path)
     /* cue_q and nofix are the DESIGN.md 1.1 pair: the number the PANEL prints
      * (quantised and latched, not the raw metres of cue_m) and whether the
      * bottom row has been taken over. A per-fix trace can see neither -- the
-     * gap they describe is precisely the stretch with no fix rows in it. */
+     * gap they describe is precisely the stretch with no fix rows in it.
+     *
+     * `crumb` is 1.5's breadcrumb length. It is here rather than derivable
+     * because the 5 m floor and the halving are decisions this trace is the only
+     * outside view of: a column that merely counted fixes would tell nothing
+     * about either. Last, so every assertion written against the columns before
+     * it still reads the same file. */
     fputs("#t\tisfix\tsince_fix\tbase_e\tbase_n\tbase_crs\tbase_spd\tdt\t"
           "err_e\terr_n\tfix_err\tease_w\tdr_e\tdr_n\tcourse_deg\t"
           "heading_deg\tpresented\tms\tled\toff_latched\tcue_i\tcue_m\t"
-          "cue_q\tnofix\n",
+          "cue_q\tnofix\tcrumb\n",
           g_ftrace);
 }
 
@@ -980,13 +1153,13 @@ ftrace_row(const app_t *a, double t, int isfix, int presented, double ms)
     fprintf(g_ftrace,
             "%.4f\t%d\t%ld\t%.4f\t%.4f\t%.6f\t%.4f\t%.4f\t%.4f\t%.4f\t"
             "%.4f\t%.4f\t%.4f\t%.4f\t%.3f\t%.3f\t%d\t%.3f\t%d\t%d\t"
-            "%d\t%.2f\t%d\t%d\n",
+            "%d\t%.2f\t%d\t%d\t%d\n",
             t, isfix, a->frames_since_fix, a->fix_e, a->fix_n,
             a->fix_course * (180.0 / M_PI), a->fix_speed, dt, a->err_e,
             a->err_n, a->fix_err, a->ease_w, a->dr_e, a->dr_n,
             a->raw_course * (180.0 / M_PI), a->heading * (180.0 / M_PI),
             presented, ms, isfix ? a->alert_fired : 0, a->nv.off,
-            a->rnv.cue_i, a->rnv.cue_m, a->nv.cue_q, a->nofix);
+            a->rnv.cue_i, a->rnv.cue_m, a->nv.cue_q, a->nofix, g_ncrumb);
 }
 
 /* --------------------------------------------------------- the fix cycle */
@@ -1071,16 +1244,34 @@ on_epoch(app_t *a, time_t now)
     }
     a->last_fix_t = a->t;
 
-    geo_project(a->rt.lat0, a->rt.lon0, a->fx.lat, a->fx.lon, &a->e, &a->n);
+    /* No route AND no pack: the frame is wherever the rider turned out to be
+     * (DESIGN.md 1.5). Bound here rather than in main() because this is the
+     * first moment the answer exists, and the tile pack is told so that a
+     * basemap acquired later still lines up. */
+    if (!g_have_ref) {
+        g_ref_lat = a->fx.lat;
+        g_ref_lon = a->fx.lon;
+        g_have_ref = 1;
+        tiles_bind_route(g_tiles, g_ref_lat, g_ref_lon);
+    }
+    geo_project(g_ref_lat, g_ref_lon, a->fx.lat, a->fx.lon, &a->e, &a->n);
     a->have_pos = 1;
-    /* The ride clock, not the wall clock. DESIGN.md 7.2's "after 30 s lost"
-     * is about how long the RECEIVER has been quiet, which the sentences
-     * themselves say; wall time would also make the rule untestable, because
-     * an unpaced replay of an hour's riding takes a second. */
-    route_snap(&a->rt, &a->ctx, a->e, a->n, (time_t)a->t, &a->nv);
-    route_offroute_update(&a->ctx, &a->nv);
-    route_cue_ahead(&a->rt, &a->nv);
-    route_progress(&a->rt, &a->ctx, a->t, &a->nv);
+    /* The breadcrumb (1.5) is recorded whether or not there is a route, and in
+     * degrees, so it is the one thing here that does not depend on the frame
+     * above. It is the session's track, not the route's. */
+    crumb_add(a->fx.lat, a->fx.lon);
+    /* Section 7's whole machinery, and only where there is a route to run it
+     * against: the MAP page skips it rather than snapping to an empty array. */
+    if (a->have_route) {
+        /* The ride clock, not the wall clock. DESIGN.md 7.2's "after 30 s lost"
+         * is about how long the RECEIVER has been quiet, which the sentences
+         * themselves say; wall time would also make the rule untestable, because
+         * an unpaced replay of an hour's riding takes a second. */
+        route_snap(&a->rt, &a->ctx, a->e, a->n, (time_t)a->t, &a->nv);
+        route_offroute_update(&a->ctx, &a->nv);
+        route_cue_ahead(&a->rt, &a->nv);
+        route_progress(&a->rt, &a->ctx, a->t, &a->nv);
+    }
     dr_on_fix(a, a->e, a->n, a->fx.course, a->fx.speed_kmh, a->t);
     a->alert_fired = alerts_update(a);
     return 1;
@@ -1093,8 +1284,14 @@ on_epoch(app_t *a, time_t now)
 static double
 live_zoom(const app_t *a)
 {
-    return a->mpp_manual > 0.0 ? a->mpp_manual
-                               : map_auto_zoom(a->nv.cue_m, SCR_H * 0.72);
+    if (a->mpp_manual > 0.0)
+        return a->mpp_manual;
+    /* Auto-zoom fits the next CUE (DESIGN.md 6.1), and the MAP page has no
+     * route and therefore no cue to fit: its ladder has a default rung instead,
+     * which is what Z and X step away from and A comes back to. */
+    if (!a->have_route)
+        return MAP_MPP_DEFAULT;
+    return map_auto_zoom(a->nv.cue_m, SCR_H * 0.72);
 }
 
 /* -------------------------------------------------------- the frame clock
@@ -1698,13 +1895,24 @@ handle_key(app_t *a, int ch)
         return confirm_key(a, ch);
     switch (ch) {
     case '\t':
+        /* DESIGN.md 1.5: not bound on MAP. Tab's promise is "switch page (there
+         * are only two)", and both of those are pages OF a ride -- OVERVIEW
+         * without a route would have to draw a route it does not have. It is
+         * left unbound rather than made a no-op with a message, because this
+         * page's own strip lists the keys it has (F / R / Q): a key that is not
+         * on that line was never claimed, which is the honest form of "does
+         * nothing" and the one case §2's "a dead key is indistinguishable from
+         * a broken program" does not apply to. */
+        if (a->page == LIVE_MAP)
+            return 0;
         a->page = a->page == LIVE_NAV ? LIVE_OVERVIEW : LIVE_NAV;
         break;
     case 'r':
     case 'R':
         /* Only where there is a picker to go back to: a --route on the command
          * line or a replay has no list behind it, and a key that silently does
-         * nothing is worse than one that is not bound. */
+         * nothing is worse than one that is not bound. From MAP it is the way
+         * a route gets loaded at all (1.5). */
         if (a->can_pick) {
             a->pick_again = 1;
             a->quit = 1;
@@ -1745,7 +1953,8 @@ handle_key(app_t *a, int ch)
     case 'U':
         nav_set_units(&a->ctx, a->ctx.units == UNITS_METRIC ? UNITS_IMPERIAL
                                                             : UNITS_METRIC);
-        route_countdown_refresh(&a->rt, &a->ctx, &a->nv);
+        if (a->have_route)
+            route_countdown_refresh(&a->rt, &a->ctx, &a->nv);
         break;
     /* DESIGN.md 7.5. The confirmation is not decoration: muting is the one
      * setting on this device whose effect is INVISIBLE in the direction that
@@ -1763,7 +1972,11 @@ handle_key(app_t *a, int ch)
      * is searchable that is not in the pack. With no pack there is nothing to
      * type into, and the one thing this key must not be is silent: a dead key
      * is indistinguishable from a broken program. The transient row says which
-     * of the two it is, once, and the ride carries on underneath. */
+     * of the two it is, once, and the ride carries on underneath.
+     *
+     * "Any page" now includes MAP, which is the whole point of 1.5's flow --
+     * open the program, see where you are, search a destination, go. The MAP
+     * strip has its own transient row for exactly this message. */
     case 'f':
     case 'F':
         if (!g_roads) {
@@ -2224,6 +2437,30 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
     }
     RC.fb = &g_panel;
     RC.have_fb = g_panel_open;
+    /* One frame before the first sentence arrives.
+     *
+     * Every other frame on this panel is owed to the frame clock of 6.3, and
+     * that clock does not start until there is a fix to extrapolate from -- so
+     * with a receiver that is cold, unplugged, or simply half a second from its
+     * first GGA, the panel would go on showing whatever fbterm left on it. On a
+     * --route ride that was survivable: somebody who passed a route is watching
+     * for a route. On the MAP page of 1.5 it is the entire first impression, and
+     * "open the program and see where you are" cannot begin with a stale
+     * terminal. This is the same frame the first fixless epoch would have drawn a
+     * second later -- WAITING FOR FIX, and its satellite count once there is
+     * one -- drawn now instead.
+     *
+     * Not frame_at(): this is not a frame of the ride clock. It owes no trace
+     * row, it must not advance the dead reckoning, and there is no ride second
+     * to stamp it with yet. It does take the 6.4 skip's bookkeeping, so the real
+     * first frame is presented only if it differs. */
+    if (RC.have_fb) {
+        a->frame_t = 0.0;
+        render_state(a);
+        render_live(a, &COV, RC.cv);
+        memcpy(RC.prev->bits, RC.cv->bits, (size_t)RC.cv->stride * RC.cv->h);
+        fb_present(RC.fb, RC.cv);
+    }
     if (!replaypath) {
         memset(&port, 0, sizeof port);
         snprintf(port.path, sizeof port.path, "%s", devpath);
@@ -2491,6 +2728,14 @@ main(int argc, char **argv)
                 page = PAGE_NAV_NOFIX;
             else if (!strcmp(p, "nav-tiles"))
                 page = PAGE_NAV_TILES;
+            else if (!strcmp(p, "map"))
+                page = PAGE_MAP;
+            else if (!strcmp(p, "map-nofix"))
+                page = PAGE_MAP_NOFIX;
+            else if (!strcmp(p, "map-wait"))
+                page = PAGE_MAP_WAIT;
+            else if (!strcmp(p, "map-tiles"))
+                page = PAGE_MAP_TILES;
             else if (!strcmp(p, "overview"))
                 page = PAGE_OVERVIEW;
             else if (!strcmp(p, "overview-tiles"))
@@ -2698,6 +2943,9 @@ main(int argc, char **argv)
     fix_init(&APP.fx);
     nav_init(&APP.ctx);
     nav_reset(&APP.nv);
+    /* --page picks the page a ride opens on; with no --route the program opens
+     * on MAP regardless, because that is what "no route" means (DESIGN.md 1.5)
+     * and there is no ride to open a page of. */
     APP.page = page == PAGE_OVERVIEW ? LIVE_OVERVIEW : LIVE_NAV;
     APP.course_up = !cfg.north_up;
     APP.fps = fps;
@@ -2710,65 +2958,82 @@ main(int argc, char **argv)
     nav_set_units(&APP.ctx, cfg.units);
     led_init(cfg.led_alerts);
 
-    if (!routepath) {
+    /* DESIGN.md 1.5: with no --route the program opens on MAP, not on the route
+     * picker. That is the whole change in the startup flow -- the picker is
+     * still there, one R away, and R is a page change rather than an exit now.
+     *
+     * The picker used to run HERE, before the loop, which is why the loop below
+     * could assume a route existed. It runs only after an R now, inside the
+     * loop, and nothing before the loop opens the panel: run_live() does it on
+     * the first frame exactly as it does for a --route ride. */
 #ifdef NAV_DEVICE
-        /* Never under --headless or --demo: neither has a panel to draw the
-         * list on nor a key to answer with, and a program that silently
-         * waits for a keypress that cannot arrive is worse than an error. */
-        if (headless) {
-            fputs("beepy-nav: --headless needs an explicit --route\n", stderr);
-            return 2;
-        }
-        if (fb_open(&g_panel, "/dev/fb1") < 0)
-            return 1;
-        g_panel_open = 1;
-        g_fb = &g_panel;
-        atexit(cleanup);
-        tty_raw();
-        evdev_open(1);
-        fb_take(&g_panel);
-        if (chooser_run(chosen, sizeof chosen, &g_panel, routes) != 0) {
-            fb_release(&g_panel);
-            g_panel_open = 0;
-            g_fb = NULL;
-            return 0; /* the rider quit the picker; not an error */
-        }
-        /* The panel and the grab carry straight into the ride: releasing
-         * and re-taking them would flash fbterm between the list and the
-         * first frame. */
-        routepath = chosen;
-        APP.can_pick = 1; /* R has somewhere to go back to */
-#else
-        fputs("beepy-nav: no route (--route FILE.gpx)\n", stderr);
-        fputs(USAGE, stderr);
-        return 2;
+    /* R has somewhere to go from MAP. Not from a --route ride, where DESIGN.md
+     * 2's argument still holds: that started from a command line and has no list
+     * behind it, and a key that silently does nothing is worse than one that is
+     * not bound. */
+    if (!routepath && !headless)
+        APP.can_pick = 1;
 #endif
-    }
     /* Ride, and come back here if the rider pressed R. The picker keeps the
      * panel and the grab across the hand-off in both directions, so changing
      * route never drops to fbterm and never re-opens the framebuffer. */
     for (;;) {
         int rc;
 
-        /* Either a file or a destination the router built, and from here on
-         * nothing can tell which: route_load() and router_to() both leave a
-         * prepared route_t with cues, and this loop, run_live(), the two ride
-         * pages and the ride log see exactly one kind of route (DESIGN.md 1.4:
-         * "a GPX IS one, and everything downstream is identical"). */
+        /* Either a file, or a destination the router built, or nothing at all.
+         * The first two are indistinguishable from here on: route_load() and
+         * router_to() both leave a prepared route_t with cues, and this loop,
+         * run_live(), the ride pages and the ride log see exactly one kind of
+         * route (DESIGN.md 1.4: "a GPX IS one, and everything downstream is
+         * identical"). The third is the MAP page, and `have_route` is what the
+         * rest of the program tests instead of an array length. */
         if (g_have_found) {
             APP.rt = g_found;
             memset(&g_found, 0, sizeof g_found);
             g_have_found = 0;
-        } else if (route_load(routepath, &APP.rt, err, sizeof err)) {
-            fprintf(stderr, "beepy-nav: %s\n", err);
-            return 1;
+            APP.have_route = 1;
+        } else if (routepath) {
+            if (route_load(routepath, &APP.rt, err, sizeof err)) {
+                fprintf(stderr, "beepy-nav: %s\n", err);
+                return 1;
+            }
+            APP.have_route = 1;
+        } else {
+            /* route_init() leaves an empty, valid route_t, so nothing below has
+             * to test a pointer -- only `have_route`, which says what mode the
+             * program is in rather than what an array happens to hold. */
+            route_init(&APP.rt);
+            APP.have_route = 0;
+            APP.page = LIVE_MAP;
         }
-        fprintf(stderr, "beepy-nav: %s -- %d points, %.2f km, %d cues\n",
-                APP.rt.name, APP.rt.npt, APP.rt.total_m / 1000.0, APP.rt.ncue);
-        /* The route decides the world frame (its first point), so the pack
-         * has to be told which frame it is being asked about -- again after
-         * every R, because the next route has a different origin. */
-        tiles_bind_route(g_tiles, APP.rt.lat0, APP.rt.lon0);
+        if (APP.have_route)
+            fprintf(stderr, "beepy-nav: %s -- %d points, %.2f km, %d cues\n",
+                    APP.rt.name, APP.rt.npt, APP.rt.total_m / 1000.0,
+                    APP.rt.ncue);
+        /* The world frame, and the pack's translation into it. With a route it
+         * is the route's first point, exactly as it has always been -- again
+         * after every R, because the next route has a different origin. With no
+         * route it is a pack's own reference, which is the case tiles_bind_route()
+         * was written for and never had until now: the offset is then zero and
+         * the streets land where they were rendered. With neither, on_epoch()
+         * binds the first fix. */
+        if (APP.have_route) {
+            g_ref_lat = APP.rt.lat0;
+            g_ref_lon = APP.rt.lon0;
+            g_have_ref = 1;
+        } else if (g_tiles) {
+            g_ref_lat = tiles_ref_lat(g_tiles);
+            g_ref_lon = tiles_ref_lon(g_tiles);
+            g_have_ref = 1;
+        } else if (g_roads) {
+            g_ref_lat = roads_ref_lat(g_roads);
+            g_ref_lon = roads_ref_lon(g_roads);
+            g_have_ref = 1;
+        } else {
+            g_have_ref = 0;
+        }
+        if (g_have_ref)
+            tiles_bind_route(g_tiles, g_ref_lat, g_ref_lon);
 
         if (tracepath)
             trace_open(tracepath);
@@ -2787,8 +3052,10 @@ main(int argc, char **argv)
          * with the ride, and the next one opens its own.
          *
          * Everything the ride is ABOUT to need has already been moved out:
-         * g_found holds the routed destination, and the pack and the panel are
-         * at file scope precisely because they outlive this memset. */
+         * g_found holds the routed destination, and the pack, the panel and the
+         * breadcrumb are at file scope precisely because they outlive this
+         * memset -- the breadcrumb is the SESSION's track, and a rider who
+         * changes route has not been anywhere else. */
         route_free(&APP.rt);
         {
             /* The rider's SESSION decisions survive the reset; the route's do
@@ -2804,6 +3071,13 @@ main(int argc, char **argv)
             memset(&APP, 0, sizeof APP);
             nav_init(&APP.ctx);
             nav_init(&APP.rctx);
+            /* A zeroed nav_t is not a reset one: nav_reset() sets seg, cue_i
+             * and eta_s to their "nothing known yet" values, and zero means
+             * "on segment 0, approaching cue 0, arriving now". It was
+             * survivable while every pass through this loop loaded a route
+             * that immediately re-snapped; with the MAP page it is not, because
+             * seg 0 of an empty route is a segment that does not exist. */
+            nav_reset(&APP.nv);
             nav_set_units(&APP.ctx, units);
             APP.alerts = alerts;
             APP.course_up = course_up;
@@ -2811,15 +3085,22 @@ main(int argc, char **argv)
             APP.fps = fps_keep > 0.0 ? fps_keep : DR_FPS;
             APP.alert_cue = -1;
         }
-        if (rc == RUN_FIND_ROUTE)
+        if (rc == RUN_FIND_ROUTE) {
+            /* The destination the router built supersedes whatever file was
+             * loaded before it, or this loop would reload that file on the next
+             * R-free pass through. */
+            routepath = NULL;
             continue;
+        }
 #ifdef NAV_DEVICE
         APP.can_pick = 1;
         if (chooser_run(chosen, sizeof chosen, &g_panel, routes) != 0) {
-            fb_release(&g_panel);
-            g_panel_open = 0;
-            g_fb = NULL;
-            return 0; /* quit from the picker: the rider is done */
+            /* Quit from the picker. Back to MAP rather than out of the program:
+             * R is a page change now (1.5), and a rider who opens the list and
+             * changes their mind has not asked to be dropped to a shell. Q on
+             * MAP is how the program ends, and the strip says so. */
+            routepath = NULL;
+            continue;
         }
         routepath = chosen;
 #else

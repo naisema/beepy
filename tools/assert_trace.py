@@ -21,6 +21,14 @@ per fix the navigator writes.
   --zero COL            every value is exactly zero
   --any COL OP V        at least one row satisfies OP V -- the guard against
                         an assertion that passes because nothing happened
+  --finite              no NaN and no infinity anywhere in the trace. Worth its
+                        own assertion because every other one here is written
+                        with a comparison, and every comparison against NaN is
+                        false -- so a column that has quietly become NaN makes
+                        --max, --always and --monotone-* pass, silently. It is
+                        the state a page rendered from an unset frame reaches
+                        first (DESIGN.md 1.5: no route means no snap, so a
+                        position derived from one would be 0/0)
   --rows                print the row count and exit 0
 
 Over a `--trace-frames` TSV, which is one row per rendered FRAME rather than
@@ -151,6 +159,16 @@ class Checker:
         falls = sum(1 for i in range(1, len(v)) if v[i - 1] >= 0.5 > v[i])
         self.report(rises == want, f"{name} rises exactly {want}x",
                     f"rose {rises}x, fell {falls}x")
+
+    def finite(self):
+        bad = []
+        for i, r in enumerate(self.rows):
+            for n in self.names:
+                if not math.isfinite(r.get(n, 0.0)):
+                    bad.append((i, n, r[n]))
+        self.report(not bad, f"every cell of {len(self.names)} columns finite",
+                    f"{len(self.rows)} rows" if not bad else
+                    f"{len(bad)} cells, first {bad[0]}")
 
     def any_(self, name, op, val):
         v = self.col(name)
@@ -430,6 +448,8 @@ def main(argv):
         elif a == "--any":
             n, op = next(it), next(it)
             c.any_(n, op, float(next(it)))
+        elif a == "--finite":
+            c.finite()
         elif a == "--dr-closed-form":
             c.dr_closed_form(float(next(it)))
         elif a == "--dr-ease":

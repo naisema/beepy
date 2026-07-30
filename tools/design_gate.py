@@ -32,9 +32,15 @@ because such a pixel cannot tell a correct renderer from a displaced one,
 not because any page needs it to pass.
 
 The first bullet is checked by running fbdiff twice: once unmasked for the
-total, once with --mask panel. Panel differences are the masked count, and
-the gate requires it to be zero -- the mask is used to measure the region,
-not to excuse it.
+total, once with the page's EXACT region masked. Differences inside that
+region are the masked count, and the gate requires it to be zero -- the mask
+is used to measure the region, not to excuse it.
+
+For the NAV pages the exact region is the turn panel (`--mask panel`, x < 130).
+The MAP page of DESIGN.md 1.5 has no panel; its exact-by-construction region is
+the inverted bottom strip, which is a block fill plus 5x7 text and nothing else.
+So the region is a per-page property, and the fifth element of each PAGES entry
+is the fbdiff mask that names it.
 
 Needs Pillow, so this is a Mac-lane target: `make design-gate`.
 """
@@ -56,22 +62,42 @@ PANEL_MAX = 0         # exact-by-construction: the panel must be identical
 # reads -- so the two sides of the gate are searching the same city.
 ROADS = os.path.join(NAVDIR, "tests", "roads", "asok.roads")
 
-# page name -> how mockup.py renders it, and any extra flags the C binary needs.
+# The exact-by-construction regions, as fbdiff masks. "panel" is fbdiff's own
+# name for x < 130; the MAP strip is given as a rectangle because it is a region
+# only this gate cares about.
+EXACT_PANEL = ("panel",)
+EXACT_MAP_STRIP = ("0,198,399,239",)       # MAP with a position: the 42 px strip
+EXACT_MAP_WAIT = ("0,216,399,239",)        # and without one: the hint row alone
+
+# page name -> how mockup.py renders it, the exact-by-construction region, and
+# any extra flags the C binary needs.
 # nav-turn-off is rendered here WITHOUT the synthetic basemap, because
 # view_nav.c draws route and track only (DESIGN.md phase 2); the streets layer
 # arrives with the tile work.
 PAGES = (
-    ("nav", "nav", lambda m, n: m.page_nav(n, basemap=False), ()),
+    ("nav", "nav", lambda m, n: m.page_nav(n, basemap=False), EXACT_PANEL, ()),
     ("nav-off", "nav-off", lambda m, n: m.page_nav(n, basemap=False, off=85),
-     ()),
+     EXACT_PANEL, ()),
     # The NO FIX state of DESIGN.md 1.1: the same turn page with the bottom
     # row inverted. It earns a gate entry of its own because the inversion is
     # the only place on this screen where the panel's polarity flips, and a
     # renderer that got it a pixel out would still "look right".
     ("nav-nofix", "nav-nofix",
-     lambda m, n: m.page_nav(n, basemap=False, nofix=True), ()),
-    ("overview", "nav-overview", lambda m, n: m.page_overview(), ()),
-    ("arrows", "nav-arrows", lambda m, n: m.page_arrows(), ()),
+     lambda m, n: m.page_nav(n, basemap=False, nofix=True), EXACT_PANEL, ()),
+    # The MAP page of DESIGN.md 1.5, in all three of its states. It is the same
+    # cartography as the NAV map in a different frame, so the gate is what says
+    # the frame moved and the marks did not; and the two states that are not the
+    # ordinary case are exactly the ones a renderer can get wrong while looking
+    # right -- an inverted NO FIX a pixel out, and a map that should not be
+    # there at all.
+    ("map", "nav-map", lambda m, n: m.page_map(n), EXACT_MAP_STRIP, ()),
+    ("map-nofix", "nav-map-nofix", lambda m, n: m.page_map(n, nofix=True),
+     EXACT_MAP_STRIP, ()),
+    ("map-wait", "nav-map-wait", lambda m, n: m.page_map_wait(n),
+     EXACT_MAP_WAIT, ()),
+    ("overview", "nav-overview", lambda m, n: m.page_overview(), EXACT_PANEL,
+     ()),
+    ("arrows", "nav-arrows", lambda m, n: m.page_arrows(), EXACT_PANEL, ()),
     # M6. FIND is here because its 24 px query became a generated glyph table
     # (tools/gen_query.py) rather than a live TrueType render: the device has no
     # rasterizer, so the only way "24 px bold" could survive the port was to
@@ -79,8 +105,9 @@ PAGES = (
     # page can be byte-compared like every other. It is also the one gate entry
     # that checks a SEARCH: the row and its "464M NE" are computed from the
     # committed pack on both sides, not drawn from a fixture.
-    ("find", "nav-search", lambda m, n: m.page_search(), ("--roads", ROADS)),
-    ("confirm", "nav-confirm", lambda m, n: m.page_confirm(), ()),
+    ("find", "nav-search", lambda m, n: m.page_search(), EXACT_PANEL,
+     ("--roads", ROADS)),
+    ("confirm", "nav-confirm", lambda m, n: m.page_confirm(), EXACT_PANEL, ()),
 )
 
 
@@ -102,7 +129,7 @@ def references(outdir):
             return plain(cov, dither)
 
         mockup.resolve = spy
-        for page, mockup_name, render, _flags in PAGES:
+        for page, mockup_name, render, _exact, _flags in PAGES:
             render(mockup, mockup_name)
             img = grabbed[mockup_name]
             small = covs["last"].resize((W, H), Image.BOX).load()
@@ -123,7 +150,7 @@ def references(outdir):
             path = os.path.join(outdir, f"ref-{page}.fb")
             open(path, "wb").write(out)
             grabbed[page] = path
-        return {p: (grabbed[p], grabbed[p + "!tie"]) for p, _, _, _ in PAGES}
+        return {p: (grabbed[p], grabbed[p + "!tie"]) for p, _, _, _, _ in PAGES}
     finally:
         os.chdir(cwd)
 
@@ -155,21 +182,22 @@ def main(argv):
 
     refs = references(outdir)
     bad = 0
-    for page, _, _, flags in PAGES:
+    for page, _, _, exact, flags in PAGES:
         ref, tie = refs[page]
         got = os.path.join(outdir, f"c-{page}.fb")
         subprocess.run([binary, "--demo", "--page", page, "--dump", got,
                         *flags], check=True, capture_output=True)
+        masks = [a for m in exact for a in ("--mask", m)]
         total, _, tied, _, _, _ = fbdiff(got, ref, "--mask-list", tie,
                                          "--max-px", str(MAX_PX))
         _, panel, _, nonedge, ok, _ = fbdiff(
-            got, ref, "--mask", "panel", "--mask-list", tie,
+            got, ref, *masks, "--mask-list", tie,
             "--max-px", str(MAX_PX), "--edges-only",
             "--out", os.path.join(outdir, f"diff-{page}.png"))
         verdict = (total <= MAX_PX and panel <= PANEL_MAX and nonedge == 0
                    and ok)
         bad += not verdict
-        print(f"{page:9s} total {total:4d} / {MAX_PX}   panel {panel:4d} / "
+        print(f"{page:9s} total {total:4d} / {MAX_PX}   exact {panel:4d} / "
               f"{PANEL_MAX}   non-edge {nonedge:4d}   tied {tied:3d}   "
               f"{'PASS' if verdict else 'FAIL'}")
     print("design gate:", "PASS" if not bad else f"FAIL ({bad} pages)")

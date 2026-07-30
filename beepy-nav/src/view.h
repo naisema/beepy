@@ -83,6 +83,70 @@ typedef struct {
     double residual;
 } navmap_t;
 
+/* The MAP page (DESIGN.md 1.5): where you are, with no route loaded. Full
+ * width -- there is no turn panel, because with no route there is no next turn
+ * and an inverted empty third of the screen would be worse than none.
+ *
+ * The cartography is navmap_t's, mark for mark, and only the framing differs:
+ * the fix sits at the CENTRE of the map rather than at 0.72 of the height, and
+ * an inverted two-row strip along the bottom carries the position and the keys.
+ *
+ * Geometry is world metres east/north of any origin, as everywhere else. The
+ * caller decides that origin: with no route there is no first point to
+ * reference to, so it is the basemap pack's own reference (tile.h) -- which is
+ * what makes the streets line up with a position the pack never heard about.
+ */
+typedef struct {
+    /* 0 = the waiting state: no map is drawn at all, because there is nothing
+     * to centre one on. Set as soon as there has ever been a fix, and stays
+     * set through a loss -- `nofix` is what says the position is stale. */
+    int have_pos;
+    double lat, lon;     /* the strip's first row, to five decimals   */
+    double pos_e, pos_n; /* the same position, in world metres        */
+
+    /* The breadcrumb: the track travelled this session, world metres, oldest
+     * first, NOT including the position above -- the page joins the two, so a
+     * caller recording fixes never has to keep a moving point in the array. */
+    const double *track;
+    int ntrack;
+
+    int spd_kmh; /* always km/h: the badge converts, nothing upstream does */
+    int course_up;
+    int units;
+
+    /* Metres per pixel, or <= 0 for MAP_MPP_DEFAULT. There is no auto zoom on
+     * this page: auto-zoom fits the next cue (DESIGN.md 6.1) and with no route
+     * there is no cue to fit, so the ladder has a default rung instead. */
+    double mpp_manual;
+
+    /* As navmap_t's: the smoothed rotation, and the chevron's angle relative
+     * to it. `have_heading` 0 falls back to the last leg of the drawn track,
+     * which is what the static demo state and mockup.py both rely on. */
+    double heading;
+    int have_heading;
+    double residual;
+
+    struct tiles *tiles; /* the optional basemap, or NULL */
+
+    /* DESIGN.md 1.1.2, in the one row this page has for it: the last known
+     * position stays drawn and an inverted NO FIX appears beside it. */
+    int nofix;
+    /* A transient confirmation, or NULL -- it displaces the coordinates for
+     * about a second and a half, exactly as the panel's displaces arrival. */
+    const char *note;
+    /* Waiting state only: satellites seen, or < 0 when the receiver has not
+     * said anything at all yet. */
+    int sats;
+} livemap_t;
+
+/* The breadcrumb's cap, and what happens when it fills: see view_map.c. It is
+ * here rather than in nav.c because the page's own scratch buffers are sized
+ * from it, and two numbers that must agree should be one number. */
+#define MAP_TRACK_MAX 2048
+/* The MAP page's zoom when the rider has not chosen one. A rung of MAP_ZOOMS,
+ * so a basemap pack carrying that rung draws at it. */
+#define MAP_MPP_DEFAULT 6.0
+
 /* The OVERVIEW page: the whole route, north-up, fitted below the title band
  * (DESIGN.md 1.2). Geometry is world metres, exactly as navmap_t's. The
  * strip's five values arrive pre-formatted -- the page is a transcription of
@@ -150,17 +214,22 @@ typedef struct {
 void view_turn_panel(cov_t *c, const panel_t *p);
 void view_nav_map(cov_t *c, const navmap_t *m);
 void view_nav(cov_t *c, const navmap_t *m, const panel_t *p);
+void view_map(cov_t *c, const livemap_t *m);
 void view_overview(cov_t *c, const overview_t *o);
 void view_find(cov_t *c, const find_t *f);
 void view_confirm(cov_t *c, const confirm_t *cf);
 
-/* Map marks shared by the two pages; defined in view_nav.c, where they were
- * transcribed from mockup.py. The OVERVIEW page is the same cartography at a
- * different zoom, and a second copy would be a second thing to keep in step
- * with the mockup. */
+/* Map marks shared by the pages that draw a map; defined in view_nav.c, where
+ * they were transcribed from mockup.py. OVERVIEW, CONFIRM and MAP are the same
+ * cartography at different zooms and in different frames, and a second copy
+ * would be a second thing to keep in step with the mockup. */
 void mark_position(cov_t *c, double x, double y, double r, double ang);
 void mark_pin(cov_t *c, double x, double y, double r);
 void mark_compass(cov_t *c, double x, double y, double theta, double r);
+/* The round speed instrument. Private to view_nav.c until the MAP page needed
+ * it: two pages have one now, and there is still exactly one of it. */
+void mark_speed_badge(cov_t *c, double x, double y, int kmh, double r,
+                      int units);
 void mark_scale_bar(cov_t *c, double x, double y, double mpp, int units);
 void mark_dashed(cov_t *c, const double *segs, int nsegs, double on,
                  double off, double width, int ink);
@@ -179,6 +248,20 @@ void view_nav_demo(cov_t *c, int off, int nofix);
  * this is the same page with the tile layer absent -- which is the pair the
  * "a missing pack changes nothing" test compares. */
 void view_nav_tiles_demo(cov_t *c, struct tiles *t);
+
+/* The static states mockup.py's page_map() and page_map_wait() render: the MAP
+ * page with a position (`nofix` 1 for the state where it has gone stale), and
+ * the page before the first fix has ever arrived. Neither takes a basemap: they
+ * are frozen design states, and view_nav_demo()'s argument for passing NULL
+ * applies twice as hard here (see view_map.c). */
+void view_map_demo(cov_t *c, int nofix);
+void view_map_wait_demo(cov_t *c);
+
+/* The basemap state (DESIGN.md 6.5) on the MAP page: a position in the tile
+ * pack's OWN reference frame, which is the frame this page introduced. `t` may
+ * be NULL, and then this is the same page with the tile layer absent -- which is
+ * the pair T-MAP-BASEMAP compares. */
+void view_map_tiles_demo(cov_t *c, struct tiles *t);
 
 /* The static demo state page_overview() renders. `osm` adds the attribution
  * line of DESIGN.md 6.5, which is what a loaded basemap does to this page. */

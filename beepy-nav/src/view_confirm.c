@@ -106,7 +106,13 @@ view_confirm(cov_t *c, const confirm_t *cf)
 {
     double min_e, max_e, min_n, max_n, org_e, org_n, mpp, cx, cy, sy;
     double total = 0.0;
-    char buf[96], dtxt[24];
+    /* dtxt holds two unrelated things: the fitted title (CF_TITLE_CHARS of it)
+     * and a formatted distance. It was 24 bytes, which is ample for the second
+     * and ten short of the first -- so a long destination was cut at 23
+     * characters rather than at the 33 this page says it cuts at, and gcc 10's
+     * -Wformat-truncation is what said so. No frozen frame moves: the mockup's
+     * "TO SOI SUKHUMVIT 23" is 19 characters and fits either limit. */
+    char buf[96], dtxt[CF_TITLE_CHARS + 1];
     int n, i, ns, nseg, mins;
 
     n = thin(cf->pts, cf->npts, f_raw, CF_MAXPTS);

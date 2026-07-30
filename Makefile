@@ -62,7 +62,7 @@ NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
             beepy-nav/src/config.o beepy-nav/src/ridelog.o \
             beepy-nav/src/tile.o beepy-nav/src/search.o \
             beepy-nav/src/router.o beepy-nav/src/view_find.o \
-            beepy-nav/src/view_confirm.o
+            beepy-nav/src/view_confirm.o beepy-nav/src/view_map.o
 HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h beepy-nav/src/*.h)
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -96,6 +96,24 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	./beepy-nav/beepy-nav --demo --page nav-nofix --dump out-nav-nofix.fb
 	./beepy-nav/beepy-nav --demo --page arrows  --dump out-nav-arrows.fb
 	./beepy-nav/beepy-nav --demo --page overview --dump out-nav-overview.fb
+#	The MAP page of DESIGN.md 1.5, in its three states. Three and not one
+#	because the two that are not the ordinary case are the ones a renderer can
+#	get wrong while still "looking right": map-nofix is the only place on this
+#	page where the strip's polarity flips, and map-wait is the frame that must
+#	NOT contain a map -- a marker drawn about a position nobody has is exactly
+#	the lie the page exists to refuse, and only a frozen frame can prove it is
+#	absent.
+	./beepy-nav/beepy-nav --demo --page map       --dump out-nav-map.fb
+	./beepy-nav/beepy-nav --demo --page map-nofix --dump out-nav-map-nofix.fb
+	./beepy-nav/beepy-nav --demo --page map-wait  --dump out-nav-map-wait.fb
+#	And the fourth: a position in the tile pack's OWN reference frame, which is
+#	the frame the MAP page introduced -- with no route there is no first point to
+#	reference to, so the pack's own is what the world is measured from and
+#	tiles_bind_route()'s offset is exactly zero. A pair that merely said "the
+#	frames differ" would pass on streets drawn 200 m out; this is the golden that
+#	says they land where they were rendered.
+	./beepy-nav/beepy-nav --demo --page map-tiles \
+		--basemap $(TILEPACK) --dump out-nav-map-tiles.fb
 #	The basemap of DESIGN.md 6.5. The Asok pack is a committed fixture, not a
 #	generated one: tools/mktiles.py needs Pillow and osm-asok.json, and the
 #	device has neither -- 264 KB of tiles is the price of `check` meaning the
@@ -118,6 +136,10 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	cmp goldens/nav-nofix.fb    out-nav-nofix.fb
 	cmp goldens/nav-arrows.fb   out-nav-arrows.fb
 	cmp goldens/nav-overview.fb out-nav-overview.fb
+	cmp goldens/nav-map.fb       out-nav-map.fb
+	cmp goldens/nav-map-nofix.fb out-nav-map-nofix.fb
+	cmp goldens/nav-map-wait.fb  out-nav-map-wait.fb
+	cmp goldens/nav-map-tiles.fb out-nav-map-tiles.fb
 	cmp goldens/nav-tiles.fb    out-nav-tiles.fb
 	cmp goldens/nav-overview-tiles.fb out-nav-overview-tiles.fb
 	cmp goldens/nav-find.fb     out-nav-find.fb
@@ -130,18 +152,52 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 #	and with an unreadable one are the same frame, and neither is the frame
 #	with the pack, so "draws nothing" cannot be passing by drawing nothing
 #	ever.
+#	--no-basemap and not "no flag", and this had to be learned the hard way: on
+#	the DEVICE beepy-nav.conf names a basemap, so "no flag" meant the home pack,
+#	and the demo path never calls tiles_bind_route() -- so that pack was asked
+#	about the Asok state's coordinates in its OWN frame and drew the streets that
+#	happen to be at those metres. The "absent" half of this pair was not absent
+#	at all, and the assertion had quietly stopped being one. It went unseen
+#	because the pack only recently appeared in that config, and `check` stops at
+#	the first failure above this line.
 	@echo "--- T-BASEMAP-OPTIONAL: absent and unreadable are the same frame"
-	./beepy-nav/beepy-nav --demo --page nav-tiles --dump out-nav-tiles-none.fb
+	./beepy-nav/beepy-nav --demo --page nav-tiles --no-basemap \
+		--dump out-nav-tiles-none.fb
 	./beepy-nav/beepy-nav --demo --page nav-tiles \
 		--basemap no-such-pack.tiles --dump out-nav-tiles-bad.fb
 	cmp out-nav-tiles-none.fb out-nav-tiles-bad.fb
 	! cmp -s out-nav-tiles.fb out-nav-tiles-none.fb
+#	And the same argument for the MAP page. --no-basemap and not "no flag",
+#	because unlike every other target here this one is affected by the DEVICE's
+#	own beepy-nav.conf, which sets a basemap: the demo path never calls
+#	tiles_bind_route(), so a configured pack is asked about this state's
+#	coordinates in its own frame and draws whatever happens to be there. That is
+#	not hypothetical -- it is what moved the golden the first time this ran on the
+#	device, and it is why the three frozen MAP states hard-code NULL.
+	@echo "--- T-MAP-BASEMAP: absent and unreadable are the same frame here too"
+	./beepy-nav/beepy-nav --demo --page map-tiles --no-basemap \
+		--dump out-nav-map-tiles-none.fb
+	./beepy-nav/beepy-nav --demo --page map-tiles \
+		--basemap no-such-pack.tiles --dump out-nav-map-tiles-bad.fb
+	cmp out-nav-map-tiles-none.fb out-nav-map-tiles-bad.fb
+	! cmp -s out-nav-map-tiles.fb out-nav-map-tiles-none.fb
+#	...and a pack reaches the map but never the frame that has no position to
+#	draw one about. A basemap blitted behind WAITING FOR FIX would be a map of
+#	somewhere the rider has not been told they are: the same lie, quieter.
+	./beepy-nav/beepy-nav --demo --page map-wait \
+		--basemap $(TILEPACK) --dump out-nav-map-wait-tiles.fb
+	cmp out-nav-map-wait.fb out-nav-map-wait-tiles.fb
 #	The same argument for the road pack, and here it is stronger: the FIND page
 #	with no pack is a DIFFERENT frame -- it has to be, because a search with
 #	nothing to search cannot honestly show a hit -- so this pair says the row on
 #	the golden was put there by the index and not by the renderer.
+#
+#	--no-roads for the reason T-BASEMAP-OPTIONAL now says --no-basemap: the device
+#	config names a road pack too, and "no flag" would have searched Bangkok
+#	instead of nothing.
 	@echo "--- T-ROADS-OPTIONAL: no pack and an unreadable one are one frame"
-	./beepy-nav/beepy-nav --demo --page find --dump out-nav-find-nopack.fb
+	./beepy-nav/beepy-nav --demo --page find --no-roads \
+		--dump out-nav-find-nopack.fb
 	./beepy-nav/beepy-nav --demo --page find \
 		--roads no-such-pack.roads --dump out-nav-find-badpack.fb
 	cmp out-nav-find-nopack.fb out-nav-find-badpack.fb
@@ -159,6 +215,14 @@ endif
 	./beepy-nav/beepy-nav --demo --page nav-nofix --dump goldens/nav-nofix.fb
 	./beepy-nav/beepy-nav --demo --page arrows  --dump goldens/nav-arrows.fb
 	./beepy-nav/beepy-nav --demo --page overview --dump goldens/nav-overview.fb
+	./beepy-nav/beepy-nav --demo --page map \
+		--dump goldens/nav-map.fb
+	./beepy-nav/beepy-nav --demo --page map-nofix \
+		--dump goldens/nav-map-nofix.fb
+	./beepy-nav/beepy-nav --demo --page map-wait \
+		--dump goldens/nav-map-wait.fb
+	./beepy-nav/beepy-nav --demo --page map-tiles \
+		--basemap $(TILEPACK) --dump goldens/nav-map-tiles.fb
 	./beepy-nav/beepy-nav --demo --page nav-tiles \
 		--basemap $(TILEPACK) --dump goldens/nav-tiles.fb
 	./beepy-nav/beepy-nav --demo --page overview-tiles \
@@ -378,6 +442,40 @@ test-frames: $(NAV) $(REPLAYS)
 #	--max-px 0 everywhere outside a 29x39 box.
 	python3 tools/fbdiff.py $(RDIR)/nofix-post.fb $(RDIR)/plain-post.fb \
 		--mask 138,4,166,42 --max-px 0
+#	----------------------------------------------- the MAP page (DESIGN.md 1.5)
+#
+#	The same ride with NO --route at all, which is the mode this page exists for
+#	and which nothing else in this Makefile has ever run. Three claims, and each
+#	of them has a way to fail:
+#
+#	  * it renders every frame. Before 1.5 the loop assumed a route: route_snap()
+#	    on an empty route_t indexes a segment that is not there, so "it did not
+#	    crash" is a real assertion here and the frame count is the evidence.
+#	  * the breadcrumb GROWS. --monotone-up is not enough on its own -- a
+#	    breadcrumb that never recorded anything is monotone too -- so --any pins
+#	    a floor, and it is derived rather than guessed: ride.nmea is 25 km/h over
+#	    ~7.6 km, which is 300+ points at the 5 m spacing of CRUMB_MIN_M.
+#	  * nothing is NaN. Every other assertion in this file is a comparison, and
+#	    comparisons against NaN are false, so a page whose position came from an
+#	    unset frame would pass all of them. --finite is the one that cannot.
+	@echo "--- T-MAP: the same ride with no route, and a breadcrumb that grows"
+	$(NAV) --replay $(RDIR)/ride.nmea --headless $(FPS8) \
+		--dump-at 60:$(RDIR)/map-a.fb \
+		--dump-at 240:$(RDIR)/map-b.fb \
+		--trace $(RDIR)/map.tsv --trace-frames $(RDIR)/map-frames.tsv
+	$(ASSERT) $(RDIR)/map-frames.tsv --finite --monotone-up crumb \
+		--any crumb ">" 300 --zero off_latched --dr-closed-form 0.005
+	$(ASSERT) $(RDIR)/map.tsv --finite --always seg "==" -1
+#	Two frames three minutes apart, and they are different frames: the page is
+#	drawing a position that MOVED, not a still picture of one. Without this the
+#	assertions above would pass on a renderer that drew the first frame forever.
+	! python3 tools/fbdiff.py $(RDIR)/map-a.fb $(RDIR)/map-b.fb --max-px 0
+#	...and the HINT row is byte-identical in both, which is the other half of the
+#	same claim: the map moved and the line the rider navigates by did not. Not
+#	the whole strip -- its first row is the coordinates, and those had better
+#	have changed.
+	python3 tools/fbdiff.py $(RDIR)/map-a.fb $(RDIR)/map-b.fb \
+		--mask 0,0,399,216 --max-px 0
 	@echo "test-frames: PASS"
 
 # ------------------------------------------------- FIND, CONFIRM and GO (1.4)
@@ -487,7 +585,7 @@ HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
             host/view_nav.o host/view_overview.o host/fix.o host/chooser.o \
             host/led.o host/config.o host/ridelog.o host/tile.o \
             host/search.o host/router.o host/view_find.o \
-            host/view_confirm.o \
+            host/view_confirm.o host/view_map.o \
             host/nav.o
 
 # beepy-nav is portable end to end (no fbdev, no evdev), so the Mac can link
@@ -496,7 +594,7 @@ HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/arrows.o host/map.o host/gpx.o host/route.o host/fix.o \
            host/chooser.o host/led.o host/config.o host/ridelog.o \
            host/tile.o host/search.o host/router.o host/view_find.o \
-           host/view_confirm.o \
+           host/view_confirm.o host/view_map.o \
            host/nmea.o host/gps.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
 
@@ -687,7 +785,7 @@ sync:
 
 clean:
 	rm -f gps-monitor/gps-monitor beepy-nav/beepy-nav \
-		$(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx out-*.fb \
+		$(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx out-*.fb out-*.png \
 		$(RDIR)/*.nmea $(RDIR)/*.tsv $(RDIR)/*.fb $(RDIR)/*.log \
 		out-tiles-*.tiles out-roads-*.roads out-*.roads \
 		beepy-nav/tests/test_tile beepy-nav/tests/test_search \

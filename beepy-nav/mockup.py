@@ -4,6 +4,7 @@ Design mockups for beepy-nav -- a two-page GPS route navigator on the Beepy's
 400x240 1-bit Sharp memory LCD.
 
     NAV       inverted turn panel on the left, live map on the right
+    MAP       where you are, full width, with no route loaded
     OVERVIEW  the whole route fitted to the screen
 
 Layout follows the reference screenshot in this directory. Measuring that image
@@ -37,6 +38,9 @@ Outputs (each also -3x for viewing):
     nav-turn-osm    NAV page over REAL OSM roads (Asok junction, Bangkok)
     nav-turn-nomap  NAV page as phase 2 ships it: route and track only
     nav-turn-off    NAV page, off route
+    nav-map         MAP page: where you are, with no route loaded
+    nav-map-nofix   the same, with the fix lost after having had one
+    nav-map-wait    the same page before the first fix has ever arrived
     nav-overview    OVERVIEW page
     nav-arrows      the nine cue glyphs at three sizes
     nav-smooth      50% threshold vs Bayer dither, side by side
@@ -1244,6 +1248,120 @@ def page_nav(name, basemap=False, off=None, course_up=True, dither=False,
     finish(resolve(c.img, dither), name)
 
 
+# ------------------------------------------------------------- MAP (DESIGN 1.5)
+# The same cartography as page_nav()'s map half, full width, with no route: open
+# the program and see where you are. Every mark is the one page_nav() uses --
+# there is only one set of them, and a second copy would be a second thing to
+# keep in step with this file.
+#
+# Two things are deliberately different, and both follow from there being no
+# route: the fix sits at the CENTRE rather than at 0.72 of the height (the 0.72
+# bias exists to show the road ahead, and with no route there is no ahead), and
+# the strip along the bottom carries where you are and the keys that get you out
+# of here instead of five progress figures there is no route to have.
+MAP_STRIP = 42                  # with a position: coordinates + hints
+MAP_STRIP_WAIT = 24             # without one: the hints alone
+MAP_MPP = 6.0                   # the default rung; Z/X move it, A comes back
+MAP_TRACK_N = 4                 # ROUTE_M[:4] read as a breadcrumb, not a route
+MAP_LAT, MAP_LON = 13.88510, 100.37850      # the device's own desk
+MAP_SATS = 9
+MAP_HINTS = "F FIND   R ROUTES   Q QUIT"
+# 21 px from the edge is where page_nav() puts the compass, but that page's map
+# starts at x 130 with a panel to its left. Here the needle's 21.6 px reach would
+# leave the frame whenever the rotation points it at the margin, so the badge
+# sits four pixels further in and nothing else moves.
+MAP_COMPASS_X = 25
+
+
+def map_strip(c, pos_txt, nofix=False, note=None):
+    """
+    The MAP page's inverted bottom strip. Two scale-2 rows when there is a
+    position -- where you are, then the keys -- and the hint row alone when
+    there is not. The hint sits at the same y either way (H - 19): the strip
+    GROWS a row when there is something to put in it, so the one line a rider
+    navigates by never moves.
+
+    Nothing here is below scale 2, which is the panel's measured floor and the
+    reason chooser.py's own hint was enlarged.
+    """
+    strip = MAP_STRIP if pos_txt else MAP_STRIP_WAIT
+    c.rect(0, H - strip, W - 1, H - 1, INK)
+    if pos_txt:
+        # A transient confirmation displaces the coordinates for a second and a
+        # half, by exactly the argument turn_panel() makes for arrival: they
+        # change slowly, and they are not what the rider pressed a key about.
+        text(c, 6, H - strip + 5, note or pos_txt, 2, PAPER)
+        if nofix:
+            # DESIGN.md 1.1.2's treatment, in the one row this page has for it.
+            # The strip is solid ink, so a bar of paper is again the only
+            # emphasis available -- and it sits BESIDE the coordinates rather
+            # than over them, because a frozen position is still the last thing
+            # known and worth reading. That is the difference from the panel,
+            # where the row it takes had a competing value in it.
+            wd = tw("NO FIX", 2)
+            c.rect(W - 12 - wd, H - strip + 3, W - 4, H - strip + 20, PAPER)
+            text(c, W - 8 - wd, H - strip + 5, "NO FIX", 2, INK)
+    text(c, 6, H - 19, MAP_HINTS, 2, PAPER)
+
+
+def page_map(name, nofix=False, streets=None, note=None):
+    c = Canvas()
+    # ROUTE_M's first four points read as a track already travelled rather than
+    # as a route to follow. There is no route on this page, and a synthetic
+    # trace is the only honest fixture for one.
+    trk = ROUTE_M[:MAP_TRACK_N]
+    pos = ROUTE_M[MAP_TRACK_N]
+    # The direction the track ran INTO the fix. page_nav() takes its fallback
+    # rotation from the route ahead of the fix; there is no ahead here, so it
+    # comes from the leg just ridden -- which is what a receiver's smoothed
+    # course would be reporting anyway, and a mockup has no receiver.
+    heading = math.atan2(pos[0] - trk[-1][0], pos[1] - trk[-1][1])
+    theta = heading                      # course-up; O toggles it, as on NAV
+    mpp = MAP_MPP
+    cx = W / 2
+    cy = (H - MAP_STRIP) / 2             # the CENTRE of the map, not 0.72 of it
+    box = (0, 0, W - 1, H - MAP_STRIP - 1)
+
+    if streets:
+        draw_streets(c, pos, mpp, cx, cy, theta, box, streets)
+    # The breadcrumb, dashed exactly as page_nav() dashes its ridden track --
+    # and NOT corner-rounded, which that one is: a GPX is a chain of survey
+    # chords and reads as a polygon drawn raw, while a GPS trace is already a
+    # dense wander and rounding it would invent bends the rider did not take.
+    dashed(c, clip_poly(project(trk + [pos], pos, mpp, cx, cy, theta), box),
+           width=1)
+    c.flush_hairlines()
+
+    position_marker(c, cx, cy)
+    compass(c, MAP_COMPASS_X, 27, theta)
+    speed_badge(c, W - 33, 33, NAV["spd"])
+    scale_bar(c, 7, H - MAP_STRIP - 6, mpp)
+    map_strip(c, f"{MAP_LAT:.5f} {MAP_LON:.5f}", nofix, note)
+    finish(resolve(c.img), name)
+
+
+def page_map_wait(name, sats=MAP_SATS):
+    """
+    Before the first fix. There is nothing to centre a map on, so none of it is
+    drawn: no marker, no compass, no scale bar, no streets. A map drawn about a
+    guessed position is the one thing a navigator must never put on a screen,
+    and an empty frame that says what it is waiting for is not a lesser page --
+    it is the only honest one.
+    """
+    c = Canvas()
+    cy = (H - MAP_STRIP_WAIT) / 2
+    s = "WAITING FOR FIX"
+    text(c, (W - tw(s, 3)) // 2, cy - 24, s, 3)
+    # The satellite count only when the receiver is talking at all. The line
+    # above does not move when it appears: a message that jumps as the receiver
+    # warms up reads as a glitch rather than as progress.
+    if sats >= 0:
+        t = "1 SATELLITE" if sats == 1 else f"{sats} SATELLITES"
+        text(c, (W - tw(t, 2)) // 2, cy + 10, t, 2)
+    map_strip(c, None)
+    finish(resolve(c.img), name)
+
+
 def page_overview():
     c = Canvas()
     strip = 42
@@ -1358,6 +1476,9 @@ if __name__ == "__main__":
         page_confirm()
     page_nav("nav-turn-nomap")
     page_nav("nav-turn-off", basemap=True, off=85)
+    page_map("nav-map")
+    page_map("nav-map-nofix", nofix=True)
+    page_map_wait("nav-map-wait")
     page_overview()
     page_arrows()
     page_smooth()
