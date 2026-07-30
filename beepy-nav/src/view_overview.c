@@ -12,12 +12,14 @@
  */
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "arrows.h"
 #include "draw.h"
 #include "map.h"
 #include "route.h"
 #include "seg.h"
+#include "tile.h"
 #include "view.h"
 
 #define W SCR_W
@@ -183,13 +185,59 @@ view_overview(cov_t *c, const overview_t *o)
     py = xy[1];
     mark_position(c, px, py, 9, 0.0);
 
-    mark_compass(c, W - 21, 27, 0.0, 11);
+    /* The badge normally sits at y 27, where its needle's paper halo reaches
+     * up to y 5 and into the title band -- harmless while the band is one
+     * line of text starting at x 6. The attribution of 6.5 lands in rows 1..7
+     * at the other end of that band, so when it is there the badge drops
+     * seven pixels and the needle clears it. Moving the badge is the cheap
+     * side of this collision: the alternative was thirty pixels off the
+     * title, and on a north-up page the needle is the one mark on the screen
+     * that says nothing a rider does not already know. */
+    mark_compass(c, W - 21, o->osm ? 34 : 27, 0.0, 11);
     mark_scale_bar(c, 7, OV_MY1 - 5, mpp, o->units);
 
     /* Name and total length share the title line. That is what frees the
      * strip's second line, which is what lets everything in the strip run at
-     * scale 2 -- the panel's readable floor. */
-    snprintf(buf, sizeof buf, "%s  %s%s", o->name, o->total, unit);
+     * scale 2 -- the panel's readable floor.
+     *
+     * And when a basemap is loaded they share it with the attribution, which
+     * DESIGN.md 6.5 puts here and nowhere else on the screen: the NAV page has
+     * no square inch to give and this line is the one piece of chrome a rider
+     * reads at a standstill. It goes at scale 1 and right-aligned -- 30
+     * characters of legal text is not a headline.
+     *
+     * y = 1, not 4: the compass badge is centred at (W-21, 27) with a paper
+     * halo of radius 12.6, so it reaches up to y = 14 and left to x = 366.
+     * Sitting the attribution's 7 px of ink in rows 1..7 clears it entirely
+     * and lets the line run to x = 394 -- the alternative, keeping y = 4 and
+     * stopping short of the badge, costs thirty pixels of title to buy two
+     * pixels of vertical alignment nobody can see.
+     *
+     * That leaves 394 - 180 - 8 - 6 = 200 px for the title, which the demo's
+     * own name overruns, so the rule is written out rather than assumed: the
+     * LENGTH is kept whole and the NAME loses characters. The number is the
+     * part that changes; the name is the part you already know. With no
+     * basemap not a pixel of this happens and the frozen overview golden is
+     * untouched. */
+    if (o->osm) {
+        int aw = cov_text_w(TILES_ATTRIB, 1);
+        int budget = (W - 6 - aw - 8) - 6;
+        int keep = strlen(o->name);
+        rtext(c, W - 6, 1, TILES_ATTRIB, 1, COV_INK);
+        for (;;) {
+            snprintf(buf, sizeof buf, "%.*s  %s%s", keep, o->name, o->total,
+                     unit);
+            if (keep <= 1 || cov_text_w(buf, 2) <= budget)
+                break;
+            keep--;
+        }
+        /* Trailing spaces left by a cut mid-word read as a gap, not a cut. */
+        while (keep > 1 && o->name[keep - 1] == ' ')
+            keep--;
+        snprintf(buf, sizeof buf, "%.*s  %s%s", keep, o->name, o->total, unit);
+    } else {
+        snprintf(buf, sizeof buf, "%s  %s%s", o->name, o->total, unit);
+    }
     cov_text(c, 6, 4, buf, 2, COV_INK);
 
     cov_fill_rect(c, 0, H - OV_STRIP, W - 1, H - 1, COV_INK);
@@ -215,7 +263,7 @@ static const double DEMO_ROUTE[] = {
 static const int DEMO_CUES[] = {3, 4, 6, 8, 10, 12};
 
 void
-view_overview_demo(cov_t *c)
+view_overview_demo(cov_t *c, int osm)
 {
     overview_t o;
     o.pts = DEMO_ROUTE;
@@ -232,5 +280,6 @@ view_overview_demo(cov_t *c)
     o.cue_i = 3;
     o.ncues = 11;
     o.units = UNITS_METRIC; /* the frozen design state; see view_nav_demo() */
+    o.osm = osm;
     view_overview(c, &o);
 }

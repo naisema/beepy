@@ -19,6 +19,15 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=c11
 LDLIBS  ?= -lm
 INC      = -I.
 
+# The committed basemap fixture (DESIGN.md 6.5) and what rebuilds it. The
+# pack is in git because `check` runs on the DEVICE, where there is no Pillow
+# and no osm-asok.json; `make test-tiles` is the Mac-side check that it is
+# still what mktiles.py produces, bit for bit.
+TILEPACK   ?= beepy-nav/tests/tiles/asok.tiles
+TILEROUTE  ?= beepy-nav/tests/gpx/asok.gpx
+TILEOSM    ?= beepy-nav/osm-asok.json
+TILEOPTS   ?= --corridor 1000 --zooms 2.5,4,6
+
 DEVICE  ?= beepy@beepy.local
 SSHKEY  ?= $(HOME)/.ssh/id_rsa
 REMOTE_DIR ?= beepy-src
@@ -37,7 +46,8 @@ NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
             beepy-nav/src/arrows.o beepy-nav/src/map.o beepy-nav/src/gpx.o \
             beepy-nav/src/route.o beepy-nav/src/view_overview.o \
             beepy-nav/src/fix.o beepy-nav/src/chooser.o beepy-nav/src/led.o \
-            beepy-nav/src/config.o beepy-nav/src/ridelog.o
+            beepy-nav/src/config.o beepy-nav/src/ridelog.o \
+            beepy-nav/src/tile.o
 HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h beepy-nav/src/*.h)
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -71,11 +81,34 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	./beepy-nav/beepy-nav --demo --page nav-nofix --dump out-nav-nofix.fb
 	./beepy-nav/beepy-nav --demo --page arrows  --dump out-nav-arrows.fb
 	./beepy-nav/beepy-nav --demo --page overview --dump out-nav-overview.fb
+#	The basemap of DESIGN.md 6.5. The Asok pack is a committed fixture, not a
+#	generated one: tools/mktiles.py needs Pillow and osm-asok.json, and the
+#	device has neither -- 264 KB of tiles is the price of `check` meaning the
+#	same thing in both lanes.
+	./beepy-nav/beepy-nav --demo --page nav-tiles \
+		--basemap $(TILEPACK) --dump out-nav-tiles.fb
+	./beepy-nav/beepy-nav --demo --page overview-tiles \
+		--dump out-nav-overview-tiles.fb
 	cmp goldens/nav-turn.fb     out-nav-turn.fb
 	cmp goldens/nav-off.fb      out-nav-off.fb
 	cmp goldens/nav-nofix.fb    out-nav-nofix.fb
 	cmp goldens/nav-arrows.fb   out-nav-arrows.fb
 	cmp goldens/nav-overview.fb out-nav-overview.fb
+	cmp goldens/nav-tiles.fb    out-nav-tiles.fb
+	cmp goldens/nav-overview-tiles.fb out-nav-overview-tiles.fb
+#	The five goldens above nav-tiles are rendered with NO pack, and that is
+#	the standing proof that the tile layer is optional: a basemap that is
+#	absent must render exactly what rendered before basemaps existed. The two
+#	comparisons below are the other half of it -- the same page with no pack
+#	and with an unreadable one are the same frame, and neither is the frame
+#	with the pack, so "draws nothing" cannot be passing by drawing nothing
+#	ever.
+	@echo "--- T-BASEMAP-OPTIONAL: absent and unreadable are the same frame"
+	./beepy-nav/beepy-nav --demo --page nav-tiles --dump out-nav-tiles-none.fb
+	./beepy-nav/beepy-nav --demo --page nav-tiles \
+		--basemap no-such-pack.tiles --dump out-nav-tiles-bad.fb
+	cmp out-nav-tiles-none.fb out-nav-tiles-bad.fb
+	! cmp -s out-nav-tiles.fb out-nav-tiles-none.fb
 	@echo "check: PASS - demo dumps byte-identical to goldens"
 
 goldens: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -89,6 +122,10 @@ endif
 	./beepy-nav/beepy-nav --demo --page nav-nofix --dump goldens/nav-nofix.fb
 	./beepy-nav/beepy-nav --demo --page arrows  --dump goldens/nav-arrows.fb
 	./beepy-nav/beepy-nav --demo --page overview --dump goldens/nav-overview.fb
+	./beepy-nav/beepy-nav --demo --page nav-tiles \
+		--basemap $(TILEPACK) --dump goldens/nav-tiles.fb
+	./beepy-nav/beepy-nav --demo --page overview-tiles \
+		--dump goldens/nav-overview-tiles.fb
 	@echo "goldens regenerated - review the diff before committing"
 
 # ----------------------------------------------------------- replay tests
@@ -310,13 +347,15 @@ HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
             host/nmea.o host/gps.o \
             host/seg.o host/arrows.o host/map.o host/gpx.o host/route.o \
             host/view_nav.o host/view_overview.o host/fix.o host/chooser.o \
-            host/led.o host/config.o host/ridelog.o host/nav.o
+            host/led.o host/config.o host/ridelog.o host/tile.o \
+            host/nav.o
 
 # beepy-nav is portable end to end (no fbdev, no evdev), so the Mac can link
 # and run it -- which is what makes the M2 design gate a fast loop.
 HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/arrows.o host/map.o host/gpx.o host/route.o host/fix.o \
            host/chooser.o host/led.o host/config.o host/ridelog.o \
+           host/tile.o \
            host/nmea.o host/gps.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
 
@@ -330,12 +369,13 @@ host/beepy-nav: $(HOST_NAV)
 # so they are the ones that can be checked by assertion instead of by frame
 # comparison. Runs in either lane; `check` runs it on the device.
 UNIT_TESTS = beepy-nav/tests/test_map beepy-nav/tests/test_gpx \
-             beepy-nav/tests/test_route
+             beepy-nav/tests/test_route beepy-nav/tests/test_tile
 
 test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
 	./beepy-nav/tests/test_map
 	./beepy-nav/tests/test_gpx
 	./beepy-nav/tests/test_route
+	./beepy-nav/tests/test_tile
 
 beepy-nav/tests/test_map: beepy-nav/tests/test_map.c beepy-nav/src/map.c $(HDRS)
 	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
@@ -352,6 +392,17 @@ beepy-nav/tests/test_route: beepy-nav/tests/test_route.c beepy-nav/src/gpx.c \
 	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
 		beepy-nav/tests/test_route.c beepy-nav/src/gpx.c \
 		beepy-nav/src/route.c $(LDLIBS)
+
+# tile.c does draw, so this one needs the coverage renderer -- but not the
+# navigator: the pack reader is deliberately linkable on its own, which is
+# what lets the test build its fixtures byte by byte instead of shelling out
+# to mktiles.py (Pillow, and therefore Mac-only, and therefore useless to a
+# test that has to run inside `make check` on the device).
+beepy-nav/tests/test_tile: beepy-nav/tests/test_tile.c beepy-nav/src/tile.c \
+                           $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
+		beepy-nav/tests/test_tile.c beepy-nav/src/tile.c \
+		libbeepyfb/cover.c libbeepyfb/canvas.c libbeepyfb/font.c $(LDLIBS)
 
 # 25 000 points is 1.2 MB -- bigger than the rest of the repo, and it would
 # be rsynced to the device on every sync. Generated, not committed.
@@ -378,6 +429,40 @@ tables:
 design-gate: host/beepy-nav
 	python3 tools/design_gate.py --bin host/beepy-nav
 
+# ------------------------------------------------------- the basemap fixture
+#
+# Mac lane only: mktiles.py wants Pillow and the 450 KB Overpass extract, and
+# neither is on the device (osm-asok.json is excluded from `sync` by name).
+#
+# DETERMINISM is the point of the first half. The pack is a committed binary
+# and the golden below it is a frozen frame, so "the same extract and the same
+# route produce the same bytes" is not a nicety -- without it a rebuilt pack
+# would silently move a golden. It is asserted the only way it can be: build
+# twice into different files and compare, then compare against the committed
+# fixture, which is the same claim across machines and across months.
+test-tiles: host/beepy-nav $(TILEPACK)
+	@echo "--- T-TILES-DETERMINISM: same inputs, same bytes, twice"
+	python3 tools/mktiles.py --osm $(TILEOSM) --route $(TILEROUTE) \
+		$(TILEOPTS) -o out-tiles-1.tiles --quiet
+	python3 tools/mktiles.py --osm $(TILEOSM) --route $(TILEROUTE) \
+		$(TILEOPTS) -o out-tiles-2.tiles --quiet
+	cmp out-tiles-1.tiles out-tiles-2.tiles
+	cmp out-tiles-1.tiles $(TILEPACK)
+	@echo "--- T-TILES-FRAME: the committed golden comes back from the pack"
+	./host/beepy-nav --demo --page nav-tiles \
+		--basemap out-tiles-1.tiles --dump out-nav-tiles-rebuilt.fb
+	cmp goldens/nav-tiles.fb out-nav-tiles-rebuilt.fb
+	rm -f out-tiles-1.tiles out-tiles-2.tiles
+	@echo "test-tiles: PASS"
+
+# Rebuilding the fixture is deliberate, like regenerating a golden.
+tiles: 
+ifndef TILES_OK
+	$(error refusing to rebuild the committed pack without TILES_OK=1)
+endif
+	python3 tools/mktiles.py --osm $(TILEOSM) --route $(TILEROUTE) \
+		$(TILEOPTS) -o $(TILEPACK)
+
 # -------------------------------------------------------- Mac -> device
 #
 # --exclude-from=.gitignore is what keeps Mac build products out of the
@@ -398,8 +483,9 @@ clean:
 	rm -f gps-monitor/gps-monitor beepy-nav/beepy-nav \
 		$(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx out-*.fb \
 		$(RDIR)/*.nmea $(RDIR)/*.tsv $(RDIR)/*.fb \
+		out-tiles-*.tiles beepy-nav/tests/test_tile \
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
 .PHONY: all check goldens host test-unit test-replay test-frames \
-	host-replay tables design-gate bench sync clean
+	host-replay tables design-gate test-tiles tiles bench sync clean

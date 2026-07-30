@@ -35,6 +35,12 @@ typedef struct {
      * by ridelog_default_dir() for the same reason routes_dir is: a default
      * named twice is a default that drifts. */
     char rides_dir[CFG_PATH_MAX];
+    /* The OSM raster basemap pack (DESIGN.md 6.5), built on the Mac by
+     * tools/mktiles.py. Empty means no basemap, which is the default and the
+     * only setting here whose absence is a whole feature not happening --
+     * so unlike the two directories above there is no default path to guess:
+     * a pack is cut for a particular corridor and nothing can invent one. */
+    char basemap[CFG_PATH_MAX];
 } navcfg_t;
 
 void cfg_defaults(navcfg_t *c);

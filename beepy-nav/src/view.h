@@ -67,6 +67,13 @@ typedef struct {
     double heading;
     int have_heading;
 
+    /* The optional OSM raster basemap (DESIGN.md 6.5), or NULL for none --
+     * which is what every frozen design state passes, and what makes the
+     * five original nav goldens the proof that the layer is optional. It is
+     * an opaque handle rather than a flag so the page stays a pure function
+     * of its arguments: nothing in view_nav.c reaches for global state. */
+    struct tiles *tiles;
+
     /* The chevron's angle RELATIVE to that rotation: raw course over ground
      * minus the map rotation (DESIGN.md 1.1). Mid-turn the smoothed map lags
      * the bike by up to a second, and a chevron drawn straight up would point
@@ -94,6 +101,10 @@ typedef struct {
     int units;         /* which of the two, for the labels and the bar */
     int done;          /* per cent          */
     int cue_i, ncues;  /* "3/11 CUES"       */
+    /* DESIGN.md 6.5: the attribution rides the title line whenever a basemap
+     * is loaded, and nowhere at all when one is not -- which is why this is a
+     * flag on the page rather than a permanent part of the chrome. */
+    int osm;
 } overview_t;
 
 void view_turn_panel(cov_t *c, const panel_t *p);
@@ -121,8 +132,15 @@ void view_arrows(cov_t *c);
  * metres off-route for the OFF ROUTE variant, nofix for the NO FIX one. */
 void view_nav_demo(cov_t *c, int off, int nofix);
 
-/* The static demo state page_overview() renders. */
-void view_overview_demo(cov_t *c);
+/* The basemap state (DESIGN.md 6.5): the real Asok / Sukhumvit route from
+ * osm-asok.json, over a tile pack cut around it. `t` may be NULL, and then
+ * this is the same page with the tile layer absent -- which is the pair the
+ * "a missing pack changes nothing" test compares. */
+void view_nav_tiles_demo(cov_t *c, struct tiles *t);
+
+/* The static demo state page_overview() renders. `osm` adds the attribution
+ * line of DESIGN.md 6.5, which is what a loaded basemap does to this page. */
+void view_overview_demo(cov_t *c, int osm);
 
 /* The clipping test of DESIGN.md 10: the NAV map at a zoom where the route
  * leaves the view on all four sides. Nothing but the panel may put ink in

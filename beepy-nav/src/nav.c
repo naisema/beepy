@@ -48,6 +48,7 @@
 #include "map.h"
 #include "ridelog.h"
 #include "route.h"
+#include "tile.h"
 #include "view.h"
 
 #ifndef M_PI /* glibc hides it under -std=c11 (strict ISO) */
@@ -98,12 +99,15 @@ static const char USAGE[] =
     "                setting in it is overridden by the flag for it\n"
     "  --rate-5hz    ask the receiver for 200 ms fixes at startup;\n"
     "                --no-rate-5hz is the default (see DESIGN.md 6.3)\n"
+    "  --basemap F   an OSM tile pack under the map (DESIGN.md 6.5), built\n"
+    "                by tools/mktiles.py; --no-basemap defeats the config\n"
     "  --no-log      do not record the ride. On a real port the raw NMEA and\n"
     "                the per-fix trace go to ~/rides/YYYYMMDD-HHMMSS.{nmea,tsv}\n"
     "                unless this says otherwise (rides_dir in the config)\n"
     "  --demo        render a static design state instead of navigating\n"
-    "  --page P      nav, nav-off, nav-nofix, overview, arrows, chooser,\n"
-    "                cliptest, cliptest-panel -- and with\n"
+    "  --page P      nav, nav-off, nav-nofix, nav-tiles, overview,\n"
+    "                overview-tiles, arrows, chooser, cliptest,\n"
+    "                cliptest-panel -- and with\n"
     "                --route it picks the page the ride opens on\n"
     "  --dump FILE   write the frame as 384000 raw XRGB bytes\n"
     "  --bench N     time N draw+resolve cycles and print ms/frame\n"
@@ -116,7 +120,9 @@ enum {
     PAGE_NAV,
     PAGE_NAV_OFF,
     PAGE_NAV_NOFIX,
+    PAGE_NAV_TILES,
     PAGE_OVERVIEW,
+    PAGE_OVERVIEW_TILES,
     PAGE_ARROWS,
     PAGE_CLIPTEST,
     PAGE_CLIPTEST_PANEL,
@@ -132,10 +138,18 @@ enum { LIVE_NAV, LIVE_OVERVIEW };
 /* The coverage buffer is 96 KB; keep it out of the stack. */
 static cov_t COV;
 
+/* The basemap pack (DESIGN.md 6.5), or NULL -- which is every case in which
+ * there is no basemap: none configured, the file missing, the file not a
+ * pack. It lives at file scope rather than in app_t because R zeroes app_t
+ * to start the next route, and a pack outlives a route: only the frame it is
+ * bound to changes, which tiles_bind_route() does after each route_load(). */
+static tiles_t *g_tiles;
+
 /* ------------------------------------------------------------------ demo */
 
 static void
-render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes)
+render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
+            tiles_t *tiles)
 {
     cov_begin(cov);
     switch (page) {
@@ -145,8 +159,17 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes)
     case PAGE_NAV_NOFIX:
         view_nav_demo(cov, 0, 1);
         break;
+    /* The basemap state. With no --basemap this is the SAME page with the
+     * tile layer absent, which is exactly the comparison that says the layer
+     * is optional -- see the Makefile's `check`. */
+    case PAGE_NAV_TILES:
+        view_nav_tiles_demo(cov, tiles);
+        break;
     case PAGE_OVERVIEW:
-        view_overview_demo(cov);
+        view_overview_demo(cov, 0);
+        break;
+    case PAGE_OVERVIEW_TILES:
+        view_overview_demo(cov, 1);
         break;
     case PAGE_ARROWS:
         view_arrows(cov);
@@ -702,6 +725,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         o.cue_i = a->rnv.cue_i < 0 ? 0 : a->rnv.cue_i;
         o.ncues = r->ncue;
         o.units = a->ctx.units;
+        o.osm = g_tiles != NULL;
         view_overview(cov, &o);
     } else {
         navmap_t m;
@@ -720,6 +744,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         m.course_up = a->course_up;
         m.units = a->ctx.units;
         m.mpp_manual = a->mpp_manual;
+        m.tiles = g_tiles;
         /* DESIGN.md 6.1: the map turns with the SMOOTHED heading, and 1.1:
          * the chevron gets what is left over, so it keeps pointing along the
          * road while the rotation catches up. North-up (theta 0) leaves the
@@ -1542,6 +1567,8 @@ static void
 cleanup(void)
 {
     led_off();
+    tiles_close(g_tiles);
+    g_tiles = NULL;
     if (g_tty_raw)
         tcsetattr(STDIN_FILENO, TCSANOW, &g_tty_saved);
     evdev_close();
@@ -2053,8 +2080,12 @@ main(int argc, char **argv)
                 page = PAGE_NAV_OFF;
             else if (!strcmp(p, "nav-nofix"))
                 page = PAGE_NAV_NOFIX;
+            else if (!strcmp(p, "nav-tiles"))
+                page = PAGE_NAV_TILES;
             else if (!strcmp(p, "overview"))
                 page = PAGE_OVERVIEW;
+            else if (!strcmp(p, "overview-tiles"))
+                page = PAGE_OVERVIEW_TILES;
             else if (!strcmp(p, "arrows"))
                 page = PAGE_ARROWS;
             else if (!strcmp(p, "cliptest"))
@@ -2130,6 +2161,10 @@ main(int argc, char **argv)
             cfg.rate_5hz = 0;
         else if (!strcmp(a, "--no-log"))
             no_log = 1;
+        else if (!strcmp(a, "--basemap") && i + 1 < argc)
+            snprintf(cfg.basemap, sizeof cfg.basemap, "%s", argv[++i]);
+        else if (!strcmp(a, "--no-basemap"))
+            cfg.basemap[0] = '\0';
         else if (!strcmp(a, "--config") && i + 1 < argc)
             i++; /* already read, above */
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
@@ -2158,6 +2193,25 @@ main(int argc, char **argv)
     else
         ridelog_default_dir(rides, sizeof rides);
 
+    /* The basemap (DESIGN.md 6.5). ONE line on stderr if it cannot be had,
+     * and then the map draws exactly as it did before packs existed -- a
+     * navigator must not refuse to navigate because a decoration is missing,
+     * and the rider finding out at the roadside that the streets are gone is
+     * better served by a line they can read afterwards than by an exit. */
+    if (cfg.basemap[0]) {
+        char why[96];
+        g_tiles = tiles_open(cfg.basemap, why, (int)sizeof why);
+        if (!g_tiles)
+            fprintf(stderr, "beepy-nav: %s: %s; no basemap\n", cfg.basemap,
+                    why);
+        else
+            fprintf(stderr,
+                    "beepy-nav: basemap %s -- %d tiles, %d zooms, "
+                    "reference %.5f,%.5f\n",
+                    cfg.basemap, tiles_count(g_tiles), tiles_nzoom(g_tiles),
+                    tiles_ref_lat(g_tiles), tiles_ref_lon(g_tiles));
+    }
+
     /* ---------------------------------------------------- static pages */
     if (demo) {
         if (!dumppath && bench <= 0) {
@@ -2173,17 +2227,17 @@ main(int argc, char **argv)
         if (bench > 0) {
             struct timespec t0, t1;
             double ms;
-            render_demo(&COV, cv, page, routes); /* warm the caches */
+            render_demo(&COV, cv, page, routes, g_tiles); /* warm the caches */
             clock_gettime(CLOCK_MONOTONIC, &t0);
             for (i = 0; i < bench; i++)
-                render_demo(&COV, cv, page, routes);
+                render_demo(&COV, cv, page, routes, g_tiles);
             clock_gettime(CLOCK_MONOTONIC, &t1);
             ms = ((double)(t1.tv_sec - t0.tv_sec) * 1e3 +
                   (double)(t1.tv_nsec - t0.tv_nsec) / 1e6) /
                  bench;
             printf("bench: %d frames, %.3f ms/frame\n", bench, ms);
         } else {
-            render_demo(&COV, cv, page, routes);
+            render_demo(&COV, cv, page, routes, g_tiles);
         }
         if (dumppath) {
             if (canvas_dump(cv, dumppath) < 0) {
@@ -2258,6 +2312,10 @@ main(int argc, char **argv)
         }
         fprintf(stderr, "beepy-nav: %s -- %d points, %.2f km, %d cues\n",
                 APP.rt.name, APP.rt.npt, APP.rt.total_m / 1000.0, APP.rt.ncue);
+        /* The route decides the world frame (its first point), so the pack
+         * has to be told which frame it is being asked about -- again after
+         * every R, because the next route has a different origin. */
+        tiles_bind_route(g_tiles, APP.rt.lat0, APP.rt.lon0);
 
         if (tracepath)
             trace_open(tracepath);

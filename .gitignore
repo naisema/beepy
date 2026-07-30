@@ -18,6 +18,7 @@ out-*.fb
 /beepy-nav/tests/test_map
 /beepy-nav/tests/test_gpx
 /beepy-nav/tests/test_route
+/beepy-nav/tests/test_tile
 out-*.tiles
 
 # Generated animation (9+ MB, regenerable via sim.py)

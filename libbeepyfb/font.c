@@ -16,6 +16,13 @@
 static const unsigned char FONT[59][GLYPH_H] = {
     [0]  = {0, 0, 0, 0, 0, 0, 0},                          /* space */
     [5]  = {0x19,0x1A,0x02,0x04,0x08,0x0B,0x13},           /* % */
+    /* The parentheses exist for one string: "(C) OPENSTREETMAP CONTRIBUTORS"
+     * (beepy-nav DESIGN.md 6.5). This font is uppercase ASCII with no glyph
+     * for U+00A9, so the attribution spells the circle-C out, and " C "
+     * with two blanks either side is not a copyright mark. Nothing else on
+     * either screen uses them, so no frozen frame changes. */
+    [8]  = {0x02,0x04,0x08,0x08,0x08,0x04,0x02},           /* ( */
+    [9]  = {0x08,0x04,0x02,0x02,0x02,0x04,0x08},           /* ) */
     [10] = {0x00,0x0A,0x04,0x1F,0x04,0x0A,0x00},           /* * */
     [11] = {0x00,0x04,0x04,0x1F,0x04,0x04,0x00},           /* + */
     [12] = {0,0,0,0,0x06,0x06,0x04},                       /* , */

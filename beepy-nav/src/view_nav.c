@@ -14,6 +14,7 @@
 #include "draw.h"
 #include "map.h"
 #include "seg.h"
+#include "tile.h"
 #include "view.h"
 
 #define W SCR_W
@@ -454,6 +455,26 @@ view_nav_map(cov_t *c, const navmap_t *m)
                     map_cue_distance(pts, n, on_e, on_n, pos_i, m->turn_i),
                     cy);
 
+    /* The basemap goes UNDER everything, which is the whole reason the route
+     * is cased (DESIGN.md 1.1): streets run beneath it and the white outer
+     * stroke is what keeps the black core readable crossing them. With no
+     * pack this is a single NULL test and the frame is unchanged -- the five
+     * original nav goldens are the standing proof of that. */
+    if (m->tiles) {
+        tileview_t tv;
+        tv.mpp = mpp;
+        tv.cx = cx;
+        tv.cy = cy;
+        tv.theta = theta;
+        tv.org_e = pos_e;
+        tv.org_n = pos_n;
+        tv.x0 = MAP_X;
+        tv.y0 = 0;
+        tv.x1 = W - 1;
+        tv.y1 = H - 1;
+        tiles_blit(c, m->tiles, &tv);
+    }
+
     /* Ridden track: everything behind the fix, plus the fix itself. */
     k = 0;
     for (i = 0; i <= pos_i && k < MAXPTS; i++, k++) {
@@ -577,6 +598,7 @@ view_nav_demo(cov_t *c, int off, int nofix)
      * units toggle and no keys. */
     m.units = UNITS_METRIC;
     m.mpp_manual = 0.0;
+    m.tiles = NULL; /* the frozen design states have no basemap */
 
     p.off = off;
     p.units = UNITS_METRIC;
@@ -594,6 +616,71 @@ view_nav_demo(cov_t *c, int off, int nofix)
     p.remain = "44 MIN";  /* 12.6 km at the design's 17 km/h city average */
     p.eta = "10:42 ETA";
     p.togo_m = 12600; /* the design's sample state: 1.2's strip says 12.6 KM */
+    p.batt = 86;
+    p.clock = "09:40";
+
+    view_nav(c, &m, &p);
+}
+
+/* ------------------------------------------------- the basemap demo (6.5)
+ *
+ * Real geometry, not the synthetic staircase: this is the Asok / Sukhumvit
+ * route mockup.py's load_osm() builds out of osm-asok.json's own carriageways
+ * -- north up Ratchadaphisek, right at the junction, left into Soi Sukhumvit
+ * 23 -- which is the composition nav-turn-osm.png shows and the route
+ * beepy-nav/tests/tiles/asok.tiles is cut around. It is in the ROUTE frame,
+ * referenced to its own first point exactly as route.c would project it, so
+ * the pack's (lat0, lon0) lands on the origin and the two frames coincide
+ * with no offset at all.
+ *
+ * Written by `python3 tests/gpx/gen_asok.py --c`; the GPX beside it is the
+ * same 18 points and is what tools/mktiles.py cuts the corridor along.
+ */
+static const double ASOK_ROUTE[] = {
+    0.0000,   0.0000,   1.7194,   35.7818,  8.6727,   76.5821,
+    19.9623,  114.0441, 38.6377,  151.4619, 67.7809,  197.2697,
+    86.2184,  253.8109, 125.6239, 289.9685, 142.8935, 337.3570,
+    151.5121, 372.1329, 156.6811, 402.5425, 163.0072, 457.2819,
+    208.5008, 421.3011, 266.2897, 378.5111, 299.4448, 354.3470,
+    308.1608, 414.2486, 316.6171, 475.8858, 320.8778, 511.3470};
+#define ASOK_NPTS ((int)(sizeof ASOK_ROUTE / sizeof ASOK_ROUTE[0] / 2))
+
+void
+view_nav_tiles_demo(cov_t *c, struct tiles *t)
+{
+    navmap_t m;
+    panel_t p;
+
+    m.pts = ASOK_ROUTE;
+    m.npts = ASOK_NPTS;
+    /* Two vertices in, so there is a ridden track for the streets to run
+     * under and the layer order is actually visible. The cue is then 420 m
+     * away, which puts auto-zoom on the 4 m/px rung -- a rung the fixture
+     * pack carries, chosen rather than forced so the pack and the zoom ladder
+     * have to agree the way they will on a ride. */
+    m.pos_i = 2;
+    m.pos_f = 0.0;
+    m.turn_i = 11; /* the Sukhumvit junction */
+    m.pin_i = 14;  /* the mouth of the soi, which is the cue after it */
+    m.off = 0;
+    m.spd_kmh = 24;
+    m.course_up = 1;
+    m.heading = 0.0;
+    m.have_heading = 0;
+    m.residual = 0.0;
+    m.units = UNITS_METRIC;
+    m.mpp_manual = 0.0;
+    m.tiles = t;
+
+    p.off = 0;
+    p.units = UNITS_METRIC;
+    p.note = NULL;
+    p.nofix = 0;
+    p.turn_m = cue_quantise(420);
+    p.kind = ARROW_RIGHT;
+    p.remain = "3 MIN";
+    p.eta = "10:42 ETA";
+    p.togo_m = 827;
     p.batt = 86;
     p.clock = "09:40";
 
@@ -659,6 +746,7 @@ view_cliptest(cov_t *c)
     m.residual = 0.0;
     m.units = UNITS_METRIC;
     m.mpp_manual = 0.0;
+    m.tiles = NULL;
     clip_panel(&p);
     view_nav(c, &m, &p);
 }
@@ -687,6 +775,7 @@ view_cliptest_panel(cov_t *c)
     m.residual = 0.0;
     m.units = UNITS_METRIC;
     m.mpp_manual = 0.0;
+    m.tiles = NULL;
     clip_panel(&p);
     view_nav(c, &m, &p);
 }

@@ -15,7 +15,8 @@ cfg_defaults(navcfg_t *c)
     c->rate_5hz = 0;   /* 6.3 calls it "a refinement rather than a dependency" */
     c->led_alerts = 1; /* 7.5; led.c already copes with an unwritable LED */
     c->routes_dir[0] = '\0';
-    c->rides_dir[0] = '\0'; /* 7.6; ridelog_default_dir() decides */
+    c->rides_dir[0] = '\0';  /* 7.6; ridelog_default_dir() decides */
+    c->basemap[0] = '\0';    /* 6.5; no pack, and no path to guess  */
 }
 
 void
@@ -126,10 +127,12 @@ cfg_load(navcfg_t *c, const char *path, int loud)
             else
                 complain(path, lineno, "units must be metric or imperial, not",
                          val);
-        } else if (!strcmp(key, "routes_dir") || !strcmp(key, "rides_dir")) {
-            /* Two paths, one rule. Not lowercased: on the device's f2fs and
+        } else if (!strcmp(key, "routes_dir") || !strcmp(key, "rides_dir") ||
+                   !strcmp(key, "basemap")) {
+            /* Three paths, one rule. Not lowercased: on the device's f2fs and
              * on a Mac's APFS a path's case is its own business. */
-            char *dst = !strcmp(key, "rides_dir") ? c->rides_dir
+            char *dst = !strcmp(key, "rides_dir")  ? c->rides_dir
+                        : !strcmp(key, "basemap") ? c->basemap
                                                   : c->routes_dir;
             if (!*val)
                 complain(path, lineno, "is empty", key);

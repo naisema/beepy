@@ -866,6 +866,76 @@ where there is least to look at anyway, and a rung the pack does not carry
 draws nothing — the same code path, and the same frame, as no pack at all.
 `--zooms` overrides this for anyone who wants the coarse end.
 
+#### Reading it on the device
+
+`beepy-nav/src/tile.c`, wired to `basemap = PATH` in `~/.config/beepy-nav.conf`
+or `--basemap FILE`, with `--no-basemap` to defeat it. Off by default, and
+**optional in the strongest available sense: the five frozen `nav-*` goldens are
+rendered with no pack and must still compare byte-identical.** A basemap that is
+absent is therefore not merely unobtrusive, it provably changes nothing — and
+the same is true of a pack that is missing, corrupt, at a zoom it does not
+carry, or nowhere near the view. Every one of those is one line on stderr, at
+most, and the frame the navigator drew before packs existed.
+
+#### Rotation: inverse nearest-neighbour, and why it does not fringe
+
+The map is course-up (§6.1) and a pre-rendered tile is not, so the blit walks
+the **destination** and samples one source bit per screen pixel through the
+inverse projection. Two things make that the right answer rather than a
+compromise:
+
+- **A straight line stays connected.** For a 1 px source line the sampled band
+  is at least one pixel high in every destination column, so the rotated line
+  is stair-stepped exactly as Bresenham's would be — never dotted. That is the
+  property the whole approach rests on and it is asserted, not assumed
+  (`tests/test_tile.c`, `t_rotated_line_is_connected`).
+- **It lands through the aliased block path.** The bits go into the frame with
+  one `cov_blit_bits()`, the same primitive the pre-rendered numerals use and
+  the end of `cov_hairline()`'s road. Streets must not go near the coverage
+  path: `mockup.py`'s `Canvas` comment records what a 1–2 px street looks like
+  anti-aliased, which is "hairy rather than thin".
+
+The arithmetic is **integer** — 16 fractional bits of a pack pixel — where
+everything else in the program is doubles. The goldens are byte-compared
+between clang on the Mac and gcc 10.2.1 on the device, and one ulp of
+difference in `cos()` could move a sample across a pixel boundary; at 1/65536
+of a pixel it would take a difference eleven orders of magnitude larger.
+Confirmed empirically: `goldens/nav-tiles.fb` is byte-identical in both lanes.
+
+The tile cache is an LRU of **twelve** 8 KB slots, not the four to eight a
+"small cache" suggests, and the number is derived: a rotated 270×240 rectangle
+has a bounding box of up to √(270²+240²) = 362 px a side, a 362 px span can
+straddle three 256 px tiles, so one frame can touch 3×3 = 9 tiles. Eight slots
+would evict a tile it is about to need again on every single frame.
+
+#### Cost
+
+Measured on the device, 200 renders of the NAV page with the Asok pack against
+the same page without one: **9.5 ms → 16.7 ms** draw+resolve. Over a whole
+replayed ride at 8 Hz (`--stats`, 5 505 frames): **10.2 ms mean / 11.5 ms p95
+without tiles, 16.7 ms mean / 19.1 ms p95 with**, worst frame 31.0 ms. So the
+layer costs about **7 ms a frame** and the p95 sits at two thirds of §6.4's
+30 ms budget, against a 125 ms frame period. The one number that grazes the
+budget is the max, and it is a single frame in five thousand.
+
+One second-order effect worth recording: frame *skipping* nearly stops. Without
+tiles 40 frames of that ride were dropped as unchanged; with tiles 15 were. A
+basemap makes the display change on smaller movements, so §6.4's `memcmp` skip
+buys less — which is the honest cost of the feature and not a bug in it.
+
+#### Attribution
+
+"© OpenStreetMap contributors" goes in the README and on the OVERVIEW **title
+line** whenever a pack is loaded, and nowhere at all when one is not. The 5×7
+font is uppercase ASCII with no U+00A9, so the screen spells it `(C)` — and the
+two parentheses were added to `font.c` for this one string, because ` C ` with
+blanks either side is not a copyright mark. Thirty characters at scale 1,
+right-aligned, in rows 1–7 where they clear the compass badge (which drops
+seven pixels on this page to make room). That leaves 200 px of title, which the
+demo's own name overruns, so the rule is written down: the **length** is kept
+whole and the **name** loses characters. The number is the part that changes;
+the name is the part you already know.
+
 
 ---
 
@@ -1096,9 +1166,14 @@ originally specified and then collapsed:
 libbeepyfb/    font.c canvas.c fbdev.c input.c     panel, glyphs, keys
 libnmea/       nmea.c serial.c gps.c               sentences -> fix_t
 gps-monitor/   view_bars.c view_sky.c main.c       unchanged behaviour
-beepy-nav/     seg.c arrows.c gpx.c route.c map.c
+beepy-nav/     seg.c arrows.c gpx.c route.c map.c tile.c
                view_nav.c view_overview.c nav.c
 ```
+
+`tile.c` (the §6.5 basemap reader) is deliberately linkable on its own: it needs
+libbeepyfb for the blit and nothing at all from the navigator, which is what
+lets `tests/test_tile.c` build pack fixtures byte by byte instead of shelling
+out to a Pillow-dependent tool the device does not have.
 
 **The split is verifiable, which is the reason to trust it:** `gps-monitor
 --demo --page bars --dump` before and after must produce byte-identical
@@ -1127,6 +1202,9 @@ view_nav 200, view_overview 160, nav main 180 ≈ **1450 lines**.
 | Ride log survives a kill | `kill -9` the navigator mid-ride against a live port, then `--replay` the partial `.nmea` it left. The file must load, the fixes must be the ones that were on the wire, and the loss must be at most the sentence in flight — the flush cadence of §7.6, measured rather than argued |
 | A field failure becomes a test | `tools/ride2fixture.sh LOG ROUTE NAME` turns a log into a `tests/rides/` case, and cross-checks the replayed per-fix trace against the `.tsv` the device itself wrote from the same bytes. They must agree exactly on every route-maths column |
 | **T-LIVE** | 200 s of the real u-blox 7, recorded on the device (§3.1). It carries what no generated fixture does: an empty course field on every epoch, `GLL` and `TXT` sentences, and 15 m of indoor multipath the off-route latch must sit through. Asserted: the latch never fires, `off_m` stays under 40 m and exceeds 10 m somewhere, the heading never moves, the ETA stays unknown, and the drawn position still matches §6.3's closed form to 0.005 m |
+| **T-BASEMAP-OPTIONAL** | the five `nav-*` goldens are rendered with **no** pack and must stay byte-identical, which is the whole claim §6.5 makes for the tile layer. Beside them, the same `nav-tiles` page with no pack and with an unreadable one must be the same frame, and neither may equal the frame with the pack — otherwise "draws nothing" would pass by drawing nothing ever |
+| **T-TILES-DETERMINISM** | `tools/mktiles.py` run twice on the same extract, route and options is byte-identical, and equal to the committed `tests/tiles/asok.tiles`. A pack is a binary fixture with a frozen golden hanging off it; without this, rebuilding one would silently move a frame |
+| Tile reader, the paths that draw nothing | `tests/test_tile.c` builds packs byte by byte in C — no Pillow, so it runs inside `make check` on the device — and asserts the cases a golden cannot see: a zoom the pack lacks, a near-miss on the rung, a view 10 km outside the corridor, an absurd view, a missing file, bad magic, a truncated pack, an empty file. Also the two positive claims: a lit pack pixel lands on exactly the screen pixel §6.5's projection names, and a rotated straight line has **no gap in any column** |
 | Console restore | every exit path leaves `fbterm` in `S+`, never `T` — verified on the device for `Q` and `SIGINT`. `SIGKILL` is not an exit path a program can hook, so it leaves `fbterm` in `T+`; the next clean run recovers it on its own (measured), and `kill -CONT $(pgrep -x fbterm)` is the manual answer |
 
 The clipping test earns its place: the turn panel is the only part of this
@@ -1175,7 +1253,7 @@ purpose.
 | 1 | Coverage canvas + threshold, generated numeral tables, cue glyphs, panel layout, static NAV page | dumps vs `nav-arrows.png`, `nav-smooth.png` |
 | 2 | GPX load, snap, cues, corner rounding, live NAV + OVERVIEW, no basemap | replay against a real GPX |
 | 3 | Off route, alerts, units, zoom and orientation keys, 8 Hz dead reckoning | detour replay; frame timing under `--replay` |
-| 4 | Optional raster basemap and its build tooling | visual, on the panel |
+| 4 | Optional raster basemap and its build tooling | `fbshow --verify` on the panel at three rungs, and T-BASEMAP-OPTIONAL: the pre-basemap goldens are unchanged |
 | 5 | FIND + on-device router (Dijkstra, oneway-aware) + CONFIRM | routed path vs a reference route; oneway violations = 0 |
 
 Phase 2 is the first genuinely useful build: it navigates.
