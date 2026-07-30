@@ -439,8 +439,14 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK)
 #	Twenty seconds later they are the same frame, so the page borrowed the
 #	screen and gave it back -- the property that lets FIND be a page inside the
 #	ride loop instead of a modal detour.
+#
+#	The typed key is Z on purpose. Z is the zoom-out key on the NAV page, so a
+#	FIND page that failed to swallow it would leave the map one rung coarser --
+#	1 486 pixels different at t=40, measured. Typing a letter with no ride
+#	meaning would have made this pass whether the page owned the keyboard or
+#	not, which is the difference between a test and a formality.
 	$(NAV) --route $(TILEROUTE) --replay $(RDIR)/asok.nmea --headless $(FPS8) \
-		--roads $(ROADPACK) --key 10:f --key 11:a --key 12:esc \
+		--roads $(ROADPACK) --key 10:f --key 11:z --key 12:esc \
 		--dump-at 40:$(RDIR)/cancel-post.fb
 	$(NAV) --route $(TILEROUTE) --replay $(RDIR)/asok.nmea --headless $(FPS8) \
 		--roads $(ROADPACK) --dump-at 40:$(RDIR)/cancel-plain.fb
