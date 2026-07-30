@@ -331,11 +331,15 @@ def build_zoom(ways_en, mpp, region, verbose):
     # ever looks at ways that can reach it.
     #
     # The obvious loop -- every tile against every way -- is fine for a route
-    # corridor and hopeless for a country: a nationwide 15 m/px rung is about
-    # 100k tiles against 100k ways, ten billion bbox tests, hours of Python.
-    # This is the same rejection test, done once per way instead of once per
-    # (way, tile) pair. A long motorway registers in many buckets, which is the
-    # cost, and it is bounded by the road's own length.
+    # corridor and painful for a country: Thailand's four coarse rungs are about
+    # 28k tiles against 100k ways, and that version took 24 min 57 s. This is
+    # the same rejection test done once per way instead of once per (way, tile)
+    # pair, and the same build then takes under 90 s. A long motorway registers
+    # in many buckets, which is the cost, and it is bounded by its own length.
+    #
+    # Both versions were run over the same extract and produced the SAME pack,
+    # sha256 903ad884...: the speed-up moves no pixel, which is the only thing
+    # that makes it safe to keep.
     buckets = {}
     for item in chains:
         wgt, chain, bx0, by0, bx1, by1 = item
