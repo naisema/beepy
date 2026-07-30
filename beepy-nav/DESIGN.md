@@ -827,7 +827,7 @@ view_nav 200, view_overview 160, nav main 180 ≈ **1450 lines**.
 | Off route | replay the same ride with a synthetic 100 m detour spliced in; assert the latch fires once and clears once |
 | Cue classifier | hand-label the junctions of one real GPX, assert the derived set matches |
 | Clipping | render at a zoom where the route leaves the map on all four sides; assert no ink lands in x < 130 |
-| Console restore | every exit path leaves `fbterm` in `S+`, never `T` |
+| Console restore | every exit path leaves `fbterm` in `S+`, never `T` — verified on the device for `Q` and `SIGINT`. `SIGKILL` is not an exit path a program can hook, so it leaves `fbterm` in `T+`; the next clean run recovers it on its own (measured), and `kill -CONT $(pgrep -x fbterm)` is the manual answer |
 
 The clipping test earns its place: the turn panel is the only part of this
 screen that is never allowed to be painted over, and it is the one thing a map
