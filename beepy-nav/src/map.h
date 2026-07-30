@@ -21,6 +21,13 @@
 #define MAP_NZOOM 12
 extern const double MAP_ZOOMS[MAP_NZOOM];
 
+/* Feet per metre. map.c cannot include route.h -- tests/test_map.c links
+ * map.c on its own, which is the property that makes the map maths testable
+ * at all -- so the conversion is repeated here. tests/test_map.c includes
+ * both headers for the sole purpose of asserting that the two agree. */
+#define MAP_FT_PER_M 3.280839895013123
+#define MAP_FT_PER_MILE 5280.0
+
 /* Defaults for map_round_corners(): 25 m radius, ignore bends under 12 deg. */
 #define MAP_CORNER_RADIUS 25.0
 #define MAP_CORNER_MIN_DEG 12.0
@@ -50,8 +57,26 @@ int map_clip_segs(const double *xy, int npts, double x0, double y0, double x1,
  * ahead of the fix. */
 double map_auto_zoom(double cue_dist_m, double ahead_px);
 
+/* One rung along the ladder from `mpp`: dir > 0 coarser (zoom out), dir < 0
+ * finer (zoom in), clamped at both ends. `mpp` need not be a rung -- the
+ * nearest one is the starting point -- so a map coming off auto zoom steps
+ * from whatever it was showing. This is what the Z and X keys drive. */
+double map_zoom_step(double mpp, int dir);
+
 /* 1-2-5 scale bar: the round distance whose bar lands in 50..100 px. */
 void map_scale_pick(double mpp, int *out_m, int *out_px);
+
+/* The same, in feet: 100/250/500/1000 ft, then half a mile and 1/2/5/10/20
+ * miles. `mpp` is still METRES per pixel -- everything inside the program is
+ * metric, and units reach no further than the label (DESIGN.md 1.1.1) -- but
+ * *out_ft is feet, which is what the caller formats.
+ *
+ * Not a conversion of the metric ladder: 100 m would read "328 FT". The rungs
+ * are the round imperial numbers, chosen so that every rung of MAP_ZOOMS still
+ * lands a bar in the 50..100 px window, exactly as the metric ladder does.
+ * 250 ft is in the list for the 1.5 m/px rung alone, where 500 ft would be
+ * 101 px and 200 ft only 41. */
+void map_scale_pick_ft(double mpp, int *out_ft, int *out_px);
 
 /* Along-route distance from a position on segment pos_i to vertex turn_i. */
 double map_cue_distance(const double *en, int npts, double pe, double pn,

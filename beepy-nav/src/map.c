@@ -158,23 +158,64 @@ map_auto_zoom(double cue_dist_m, double ahead_px)
     return MAP_ZOOMS[MAP_NZOOM - 1];
 }
 
+double
+map_zoom_step(double mpp, int dir)
+{
+    int i, best = 0;
+    double bd = fabs(mpp - MAP_ZOOMS[0]);
+    for (i = 1; i < MAP_NZOOM; i++) {
+        double d = fabs(mpp - MAP_ZOOMS[i]);
+        if (d < bd) {
+            bd = d;
+            best = i;
+        }
+    }
+    if (dir > 0)
+        best++;
+    else if (dir < 0)
+        best--;
+    if (best < 0)
+        best = 0;
+    if (best >= MAP_NZOOM)
+        best = MAP_NZOOM - 1;
+    return MAP_ZOOMS[best];
+}
+
+/* Shared by the two scale ladders: first rung whose bar lands in 50..100 px,
+ * falling back to the last one. (Python's for/else, which is what mockup.py
+ * wrote and what the metric ladder has always done.) */
+static void
+scale_pick(const int *ladder, int n, double unit_per_px, int *out_v,
+           int *out_px)
+{
+    int i, v = ladder[0];
+    double px = v / unit_per_px;
+    for (i = 0; i < n; i++) {
+        v = ladder[i];
+        px = v / unit_per_px;
+        if (px >= 50.0 && px <= 100.0)
+            break;
+    }
+    *out_v = v;
+    *out_px = (int)px;
+}
+
 void
 map_scale_pick(double mpp, int *out_m, int *out_px)
 {
     static const int LADDER[] = {25,   50,   100,  200,   500,
                                  1000, 2000, 5000, 10000, 20000};
-    int i, m = LADDER[0];
-    double px = m / mpp;
-    /* Python's for/else: if nothing lands in the window the loop leaves the
-     * last rung's values in place. */
-    for (i = 0; i < (int)(sizeof LADDER / sizeof LADDER[0]); i++) {
-        m = LADDER[i];
-        px = m / mpp;
-        if (px >= 50.0 && px <= 100.0)
-            break;
-    }
-    *out_m = m;
-    *out_px = (int)px;
+    scale_pick(LADDER, (int)(sizeof LADDER / sizeof LADDER[0]), mpp, out_m,
+               out_px);
+}
+
+void
+map_scale_pick_ft(double mpp, int *out_ft, int *out_px)
+{
+    static const int LADDER[] = {100,  250,   500,   1000,  2640,
+                                 5280, 10560, 26400, 52800, 105600};
+    scale_pick(LADDER, (int)(sizeof LADDER / sizeof LADDER[0]),
+               mpp * MAP_FT_PER_M, out_ft, out_px);
 }
 
 double

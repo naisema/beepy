@@ -11,6 +11,10 @@
 #include <stdio.h>
 
 #include "map.h"
+/* Declarations only, and deliberately: test_map links map.c alone. route.h is
+ * here so the duplicated feet-per-metre constant can be checked against its
+ * original. */
+#include "route.h"
 
 #ifndef M_PI /* glibc hides it under -std=c11 (strict ISO) */
 #define M_PI 3.14159265358979323846
@@ -249,6 +253,71 @@ test_scale_pick(void)
     }
 }
 
+/* The imperial ladder has no mockup to be transcribed from -- there is no
+ * imperial reference frame -- so what it is held to is the property the metric
+ * one has: every rung of MAP_ZOOMS lands a bar in the 50..100 px window, and
+ * the rungs are round imperial numbers rather than converted metric ones. */
+static void
+test_scale_pick_ft(void)
+{
+    int ft, px, i;
+
+    /* The conversion is written out in two headers because map.c may not
+     * include route.h; this is the assertion that keeps them equal. */
+    close_to(MAP_FT_PER_M, GEO_FT_PER_M, 0.0,
+             "map.h and route.h agree on feet per metre");
+    close_to(MAP_FT_PER_MILE, (double)GEO_FT_PER_MILE, 0.0,
+             "map.h and route.h agree on feet per mile");
+
+    map_scale_pick_ft(4.0, &ft, &px); /* the NAV page's usual rung */
+    check(ft == 1000 && px == 76, "scale bar at 4 m/px is 1000 FT / 76 px");
+    map_scale_pick_ft(1.5, &ft, &px);
+    check(ft == 250 && px == 50, "scale bar at 1.5 m/px is 250 FT / 50 px");
+    map_scale_pick_ft(250.0, &ft, &px);
+    check(ft == 52800 && px == 64, "scale bar at 250 m/px is 10 MI / 64 px");
+    for (i = 0; i < MAP_NZOOM; i++) {
+        map_scale_pick_ft(MAP_ZOOMS[i], &ft, &px);
+        check(px >= 50 && px <= 100,
+              "imperial scale bar length stays in 50..100");
+    }
+    /* Round numbers only: feet below a mile, whole tenths of a mile above. */
+    for (i = 0; i < MAP_NZOOM; i++) {
+        map_scale_pick_ft(MAP_ZOOMS[i], &ft, &px);
+        check(ft % 10 == 0, "imperial rungs are round");
+        if (ft >= (int)MAP_FT_PER_MILE)
+            check(ft % (int)(MAP_FT_PER_MILE / 10) == 0,
+                  "above a mile the rung is a whole tenth of one");
+    }
+}
+
+/* Z steps out, X steps in, and neither can walk off the end. */
+static void
+test_zoom_step(void)
+{
+    close_to(map_zoom_step(MAP_ZOOMS[0], +1), MAP_ZOOMS[1], 1e-12,
+             "out from the finest rung");
+    close_to(map_zoom_step(MAP_ZOOMS[1], -1), MAP_ZOOMS[0], 1e-12,
+             "in from the second rung");
+    close_to(map_zoom_step(MAP_ZOOMS[0], -1), MAP_ZOOMS[0], 1e-12,
+             "in from the finest rung is clamped");
+    close_to(map_zoom_step(MAP_ZOOMS[MAP_NZOOM - 1], +1),
+             MAP_ZOOMS[MAP_NZOOM - 1], 1e-12,
+             "out from the coarsest rung is clamped");
+    close_to(map_zoom_step(MAP_ZOOMS[4], 0), MAP_ZOOMS[4], 1e-12,
+             "a zero step stays put");
+    /* Off-ladder input snaps to the nearest rung first: 5.5 is nearer 6 than
+     * 4, so stepping in from it gives 4 and not 2.5. */
+    close_to(map_zoom_step(5.5, -1), MAP_ZOOMS[2], 1e-12,
+             "off-ladder input snaps to the nearest rung");
+    /* Out then in returns where it started, everywhere in the middle. */
+    {
+        int i;
+        for (i = 1; i < MAP_NZOOM - 1; i++)
+            close_to(map_zoom_step(map_zoom_step(MAP_ZOOMS[i], +1), -1),
+                     MAP_ZOOMS[i], 1e-12, "out then in is the identity");
+    }
+}
+
 static void
 test_cue_distance(void)
 {
@@ -268,6 +337,8 @@ main(void)
     test_clip();
     test_auto_zoom();
     test_scale_pick();
+    test_scale_pick_ft();
+    test_zoom_step();
     test_cue_distance();
     if (failures) {
         printf("test_map: %d FAILURES\n", failures);
