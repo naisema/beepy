@@ -604,8 +604,31 @@ rotates continuously rather than in 1 Hz steps.
 
 Optionally raise the receiver to 5 Hz with `UBX-CFG-RATE` (`measRate = 200 ms`),
 which shortens the extrapolation from 1 s to 200 ms. That is a menu-free
-one-shot message at startup, gated behind a config flag, and it is a refinement
-rather than a dependency — dead reckoning is what actually buys the smoothness.
+one-shot message at startup, gated behind a config flag (`rate_5hz`), and it is
+a refinement rather than a dependency — dead reckoning is what actually buys
+the smoothness.
+
+**And it will not fit down the wire as the receiver is currently configured.**
+§3's measured environment is a u-blox 7 at **9600 baud** emitting RMC, VTG,
+GGA, GSA and GSV — about 450 bytes an epoch. 9600 8N1 carries 960 bytes a
+second: one epoch fits with room to spare, five need ~2 250 B/s, more than
+twice the line rate. The receiver will `ACK` the message and then be unable to
+deliver whole epochs.
+
+Making 5 Hz genuinely useful therefore needs one of two things first, and
+neither is free:
+
+- **`UBX-CFG-PRT` to 38400** — then everything fits, but the port speed is now
+  receiver state that `gps-monitor` and any other reader must agree with, and
+  it survives until the receiver loses power.
+- **`UBX-CFG-MSG` to silence GSV and GSA** — 5 Hz of RMC+VTG+GGA is ~1 000 B/s,
+  still marginal, and it would silently break `gps-monitor`'s sky page, whose
+  entire subject is GSV.
+
+So the flag ships off, the ACK is reported out loud rather than assumed, and
+`--trace`'s fix cadence is what says whether the receiver actually complied. A
+silent "5 Hz requested" that the receiver ignored would be worse than 1 Hz,
+because the smoothness budget would then have been spent on an assumption.
 
 ### 6.4 Cost, and why 8 Hz fits
 

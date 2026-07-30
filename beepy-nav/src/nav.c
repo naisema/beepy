@@ -93,6 +93,8 @@ static const char USAGE[] =
     "  --imperial    feet and miles; --metric is the default\n"
     "  --config F    read F instead of ~/.config/beepy-nav.conf; every\n"
     "                setting in it is overridden by the flag for it\n"
+    "  --rate-5hz    ask the receiver for 200 ms fixes at startup;\n"
+    "                --no-rate-5hz is the default (see DESIGN.md 6.3)\n"
     "  --demo        render a static design state instead of navigating\n"
     "  --page P      nav, nav-off, overview, arrows, chooser, cliptest,\n"
     "                cliptest-panel -- and with\n"
@@ -238,6 +240,8 @@ typedef struct {
     int alert_cue, alert_done, alert_fired;
 
     int page, hold, quit, course_up;
+
+    int rate_5hz; /* ask the receiver for 5 Hz at startup (DESIGN.md 6.3) */
 
     /* Metres per pixel while the rider has taken the NAV map off auto zoom;
      * 0 is auto. Not in navctx_t: it is a view decision, and nothing in the
@@ -1012,7 +1016,119 @@ frames_before(app_t *a, double until)
         frame_at(a, a->render_t + dt);
 }
 
+/* ------------------------------------------------- the receiver's own rate
+ *
+ * DESIGN.md 6.3: "Optionally raise the receiver to 5 Hz with UBX-CFG-RATE
+ * (measRate = 200 ms), which shortens the extrapolation from 1 s to 200 ms.
+ * That is a menu-free one-shot message at startup, gated behind a config
+ * flag, and it is a refinement rather than a dependency -- dead reckoning is
+ * what actually buys the smoothness."
+ *
+ * Off by default, and the default is the honest one. The measured environment
+ * of section 3 is a u-blox 7 at 9600 baud emitting RMC, VTG, GGA, GSA and GSV
+ * -- call it 450 bytes an epoch. 9600 8N1 carries 960 bytes a second. One
+ * epoch per second fits with room to spare; FIVE need about 2 250 B/s, which
+ * is more than twice what the line can carry, so the receiver will simply not
+ * deliver whole epochs. Making 5 Hz genuinely useful needs the port taken to
+ * 38400 with UBX-CFG-PRT, or GSV and GSA turned off with UBX-CFG-MSG -- and
+ * the second of those would silently break gps-monitor's sky page, which
+ * shares the receiver and whose whole subject is GSV. Neither belongs in this
+ * commit. What is here is the message the design named, an honest ACK check,
+ * and a --trace whose fix cadence shows exactly what the receiver did with it.
+ *
+ * Device-only: there is no port in the host lane to configure.
+ */
 #ifdef NAV_DEVICE
+
+#define UBX_5HZ_MS 200
+
+/* Fletcher-8 over class, id, length and payload -- everything between the
+ * 0xB5 0x62 sync and the checksum itself. */
+static void
+ubx_cksum(const unsigned char *b, size_t n, unsigned char *out)
+{
+    unsigned char a = 0, c = 0;
+    size_t i;
+    for (i = 0; i < n; i++) {
+        a = (unsigned char)(a + b[i]);
+        c = (unsigned char)(c + a);
+    }
+    out[0] = a;
+    out[1] = c;
+}
+
+/* Wait for UBX-ACK-ACK or UBX-ACK-NAK naming (cls, id), up to `ms`.
+ *
+ * The bytes eaten here are NMEA that never reaches the parser, which is why
+ * this runs once, before the loop: two seconds of sentences at startup is
+ * nothing, and the alternative -- threading a UBX matcher through the main
+ * read path -- is a permanent complication for a one-shot message.
+ *
+ * Returns 1 for ACK, 0 for NAK, -1 for silence. */
+static int
+ubx_await_ack(int fd, unsigned char cls, unsigned char id, int ms)
+{
+    /* B5 62 05 ack 02 00 cls id: eight bytes, matched as a sliding window. */
+    unsigned char w[8];
+    double deadline = mono_now() + ms / 1000.0;
+    int have = 0;
+
+    for (;;) {
+        struct pollfd pfd;
+        unsigned char b;
+        double left = deadline - mono_now();
+        if (left <= 0.0)
+            return -1;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        if (poll(&pfd, 1, (int)(left * 1000.0) + 1) <= 0)
+            return -1;
+        if (read(fd, &b, 1) != 1)
+            return -1;
+        if (have == (int)sizeof w) {
+            memmove(w, w + 1, sizeof w - 1);
+            have--;
+        }
+        w[have++] = b;
+        if (have == (int)sizeof w && w[0] == 0xB5 && w[1] == 0x62 &&
+            w[2] == 0x05 && (w[3] == 0x01 || w[3] == 0x00) && w[4] == 0x02 &&
+            w[5] == 0x00 && w[6] == cls && w[7] == id)
+            return w[3] == 0x01;
+    }
+}
+
+/* UBX-CFG-RATE: measRate ms, navRate 1 (a solution every measurement),
+ * timeRef 1 (GPS time). Returns what ubx_await_ack() did. */
+static int
+ubx_set_rate(int fd, int meas_ms)
+{
+    unsigned char body[10], msg[14];
+    ssize_t n;
+
+    body[0] = 0x06; /* class CFG */
+    body[1] = 0x08; /* id    RATE */
+    body[2] = 0x06; /* payload length, little endian */
+    body[3] = 0x00;
+    body[4] = (unsigned char)(meas_ms & 0xFF);
+    body[5] = (unsigned char)((meas_ms >> 8) & 0xFF);
+    body[6] = 0x01; /* navRate */
+    body[7] = 0x00;
+    body[8] = 0x01; /* timeRef: GPS time */
+    body[9] = 0x00;
+
+    msg[0] = 0xB5;
+    msg[1] = 0x62;
+    memcpy(msg + 2, body, sizeof body);
+    ubx_cksum(body, sizeof body, msg + 12);
+
+    n = write(fd, msg, sizeof msg);
+    if (n != (ssize_t)sizeof msg) {
+        perror("beepy-nav: UBX-CFG-RATE");
+        return -1;
+    }
+    return ubx_await_ack(fd, 0x06, 0x08, 2000);
+}
+
 /* On the wire there is no ride clock to read ahead of, so it is the last
  * fix's second plus however long the monotonic clock says has passed. */
 static double
@@ -1437,6 +1553,16 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
             return 1;
         }
         have_port = 1;
+        if (a->rate_5hz) {
+            int ack = ubx_set_rate(port.fd, UBX_5HZ_MS);
+            /* Said out loud either way. A silent "5 Hz requested" that the
+             * receiver ignored is worse than 1 Hz, because the smoothness
+             * budget would then have been spent on an assumption. */
+            fprintf(stderr, "beepy-nav: UBX-CFG-RATE %d ms: %s\n", UBX_5HZ_MS,
+                    ack == 1   ? "ACK"
+                    : ack == 0 ? "NAK -- the receiver refused it"
+                               : "no answer in 2 s -- assume 1 Hz");
+        }
     }
 #else
     (void)devpath;
@@ -1704,6 +1830,10 @@ main(int argc, char **argv)
             cfg.units = UNITS_IMPERIAL;
         else if (!strcmp(a, "--metric"))
             cfg.units = UNITS_METRIC;
+        else if (!strcmp(a, "--rate-5hz"))
+            cfg.rate_5hz = 1;
+        else if (!strcmp(a, "--no-rate-5hz"))
+            cfg.rate_5hz = 0;
         else if (!strcmp(a, "--config") && i + 1 < argc)
             i++; /* already read, above */
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
@@ -1770,6 +1900,7 @@ main(int argc, char **argv)
     APP.page = page == PAGE_OVERVIEW ? LIVE_OVERVIEW : LIVE_NAV;
     APP.course_up = !cfg.north_up;
     APP.fps = fps;
+    APP.rate_5hz = cfg.rate_5hz;
     APP.alert_cue = -1;
     nav_init(&APP.rctx);
     nav_set_units(&APP.ctx, cfg.units);
