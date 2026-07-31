@@ -1,0 +1,53 @@
+{
+ "elements": [
+  {
+   "type": "way",
+   "id": 1,
+   "tags": {
+    "highway": "residential",
+    "name": "Main Road"
+   },
+   "geometry": [
+    {
+     "lat": 13.74,
+     "lon": 100.56
+    },
+    {
+     "lat": 13.742,
+     "lon": 100.56
+    }
+   ]
+  },
+  {
+   "type": "node",
+   "id": 2,
+   "lat": 13.7405,
+   "lon": 100.5605,
+   "tags": {
+    "amenity": "cafe",
+    "name": "Café Amazon"
+   }
+  },
+  {
+   "type": "node",
+   "id": 3,
+   "lat": 13.7408,
+   "lon": 100.5608,
+   "tags": {
+    "amenity": "cafe",
+    "name": "Bāng Yai Coffee"
+   }
+  },
+  {
+   "type": "node",
+   "id": 4,
+   "lat": 13.741,
+   "lon": 100.561,
+   "tags": {
+    "amenity": "place_of_worship",
+    "name": "วัดบางพูดนอก"
+   }
+  }
+ ],
+ "_comment": "DESIGN.md 1.4.2's ASCII rule, and the accent it used to get wrong. Four features: a plain road name, a name with an ACUTE ACCENT (Cafe Amazon, which is how OSM spells nearly every PTT branch), one with a MACRON (transliterated Thai), and a Thai name. The first three must be searchable after the NFKD fold; the fourth must still drop, because stripping combining marks from Thai leaves Thai. Before the fold, two of the four were invisible."
+}

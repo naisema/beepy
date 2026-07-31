@@ -137,6 +137,7 @@ import json
 import math
 import os
 import struct
+import unicodedata
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -220,12 +221,45 @@ def read_osm(path):
         if len(geom) < 2:
             continue
         raw = tags.get("name:en") or tags.get("name") or ""
-        name = raw.upper() if raw.isascii() else None
+        folded = ascii_form(raw)
+        name = folded.upper() if folded else None
         if raw and name is None:
             dropped.add(raw)
         out.append((name or None, tags.get("oneway", ""), geom,
                     ROAD_CLASS.get(hw, 0)))
     return out, dropped
+
+
+def ascii_form(raw):
+    """The searchable form of a name, or None.
+
+    NFKD-FOLD BEFORE THE ASCII TEST, and that is a correction rather than a
+    refinement. DESIGN.md 1.4.2 drops a name with no ASCII form because the 5x7
+    font is A-Z/0-9 and there is no glyph for U+0E0B -- a shaping problem, not a
+    spelling one. An ACCENTED LATIN letter is nothing like that case: it folds to
+    the letter it is, losing nothing a rider reads, and the font uppercases
+    everything anyway.
+
+    A plain isascii() got that wrong in the field. Cafe Amazon is spelled with an
+    acute accent in OSM at most PTT stations, so the branch 3.4 km from the
+    rider's house was invisible while the ones somebody had typed without the
+    accent were searchable nineteen kilometres away. Transliterated Thai has the
+    same problem with macrons.
+
+    Thai still drops, correctly: stripping combining marks from Thai leaves Thai.
+    So do the letters NFKD will not decompose at all -- OE and the German sharp s
+    among them -- and those want a transliteration table rather than a fold,
+    which is a bigger claim than this function makes.
+
+    The same rule lives in pbf2osm.py's _poi_name(). The two tools run separately
+    and MUST agree: that one decides what reaches the extract, this one decides
+    what reaches the pack.
+    """
+    if not raw:
+        return None
+    folded = "".join(c for c in unicodedata.normalize("NFKD", raw)
+                     if not unicodedata.combining(c))
+    return folded if folded.isascii() else None
 
 
 def read_pois(path):
@@ -249,10 +283,11 @@ def read_pois(path):
         raw = tags.get("name:en") or tags.get("name") or ""
         if not raw:
             continue
-        if not raw.isascii():
+        folded = ascii_form(raw)
+        if not folded:
             dropped.add(raw)
             continue
-        out.append((raw.upper(), float(el["lat"]), float(el["lon"])))
+        out.append((folded.upper(), float(el["lat"]), float(el["lon"])))
     return out, dropped
 
 

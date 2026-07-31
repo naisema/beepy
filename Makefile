@@ -1407,6 +1407,25 @@ test-roads: $(ROADPACK) $(ROADOPEN) $(ROADNAMES)
 #	And the claim that costs nothing to make and everything to get wrong: an
 #	extract with no `node` elements at all builds the SAME pack it always did.
 #	osm-asok.json is that extract, and $(ROADPACK) is the committed answer.
+	@echo "--- T-ROADS-FOLD: an accent is not a shaping problem"
+#	DESIGN.md 1.4.2 drops a name with no ASCII form because the 5x7 font cannot
+#	shape Thai. An ACCENTED LATIN letter is a different thing entirely -- it folds
+#	to the letter it is -- and a plain isascii() treated the two alike. Found in
+#	the field: OSM spells nearly every PTT branch `Cafe' Amazon` with an acute, so
+#	the one 3.4 km from the rider was invisible while the ones typed without the
+#	accent were searchable 19 km away.
+	python3 tools/mkpack.py --osm beepy-nav/tests/roads/fold.json \
+		--ref $(ROADREF) -o out-roads-fold.roads --quiet
+	python3 tools/mkpack.py --info out-roads-fold.roads | grep -q "'CAFE AMAZON'"
+	python3 tools/mkpack.py --info out-roads-fold.roads | \
+		grep -q "'BANG YAI COFFEE'"
+#	And the Thai one still drops. Without this the fold could be "strip every
+#	mark and hope", which would put unrenderable bytes on the panel -- the exact
+#	failure 1.4.2 exists to prevent.
+	python3 tools/mkpack.py --info out-roads-fold.roads | \
+		grep -q "1 ways indexed, 1 names dropped"
+	! python3 tools/mkpack.py --info out-roads-fold.roads | grep -q "WAT"
+	rm -f out-roads-fold.roads
 	@echo "--- T-ROADS-POIS-INERT: a highway-only extract is untouched"
 	python3 tools/mkpack.py --osm $(ROADOSM) --route $(TILEROUTE) \
 		-o out-roads-inert.roads --quiet

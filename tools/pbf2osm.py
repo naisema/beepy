@@ -26,6 +26,8 @@ import argparse
 import json
 import sys
 
+import unicodedata
+
 import osmium
 
 # mktiles.py's OSM_WEIGHT keys, plus the link roads: a slip road that is
@@ -54,12 +56,40 @@ POI_KEYS = ("amenity", "shop", "leisure", "tourism", "office", "healthcare",
             "emergency", "place")
 
 
+# The searchable form of a name, or None.
+#
+# NFKD-FOLD BEFORE THE ASCII TEST, and that is a correction rather than a
+# refinement. DESIGN.md 1.4.2 drops a name with no ASCII form because the 5x7
+# font is A-Z/0-9 and there is no glyph for U+0E0B -- a shaping problem, not a
+# spelling one. An ACCENTED LATIN letter is nothing like that case: it folds to
+# the letter it is, losing nothing a rider reads, and the font uppercases
+# everything anyway.
+#
+# A plain isascii() got that wrong in the field. `Cafe Amazon` is spelled
+# `Cafe\u0301 Amazon` in OSM at most PTT stations, so the branch 3.4 km from the
+# rider's house was invisible while the ones somebody had typed without the
+# accent were searchable nineteen kilometres away. Transliterated Thai has the
+# same problem with macrons -- `Bang Yai`.
+#
+# Thai still drops, correctly: stripping combining marks from Thai leaves Thai.
+# So do the letters NFKD will not decompose at all -- OE and the German sharp s
+# among them -- and those would need a transliteration table rather than a fold,
+# which is a bigger claim than this function makes.
+def ascii_form(raw):
+    if not raw:
+        return None
+    folded = "".join(c for c in unicodedata.normalize("NFKD", raw)
+                     if not unicodedata.combining(c))
+    return folded if folded.isascii() else None
+
+
 def _poi_name(tags):
-    """The searchable form, or None. Same rule as mkpack.py: name:en first,
-    then name, and nothing at all if neither is ASCII -- the device has no
-    Thai glyphs and an unrenderable hit is worse than a miss."""
-    raw = tags.get("name:en") or tags.get("name") or ""
-    return raw if raw and raw.isascii() else None
+    """The searchable form, or None. Same rule as mkpack.py's ascii_form():
+    name:en first, then name, folded, and nothing at all if what is left is not
+    ASCII. Duplicated in the two tools deliberately -- they run separately -- and
+    the two MUST agree, because pbf2osm decides what reaches the extract and
+    mkpack decides what reaches the pack."""
+    return ascii_form(tags.get("name:en") or tags.get("name") or "")
 
 
 class Collect(osmium.SimpleHandler):
