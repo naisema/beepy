@@ -380,6 +380,13 @@ void view_overview_demo(cov_t *c, int osm);
  * DESIGN.md 1.4 asks for and which the mockup has no reference for. */
 void view_find_demo(cov_t *c, roads_t *g, int zero);
 void view_find_saved_demo(cov_t *c, roads_t *g);
+/* What the FIND title bar reads when a TOO FAR is waiting for ENTER to retry it
+ * as a car (DESIGN.md 7.10). Here rather than in nav.c because BOTH nav.c (which
+ * arms it) and view_find.c (which freezes it into a golden) must show the rider
+ * the same twenty characters, and a golden that agrees with a second copy of the
+ * sentence proves nothing about the first. */
+#define FIND_NET_TOOFAR_CAR "TOO FAR  ENTER = CAR"
+void view_find_toofar_demo(cov_t *c, roads_t *g);
 
 /* mockup.py's page_confirm(): the same Asok route the basemap demo rides,
  * proposed rather than under way. */

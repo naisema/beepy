@@ -244,6 +244,39 @@ view_find_demo(cov_t *c, roads_t *g, int zero)
     view_find(c, &f);
 }
 
+/* 7.10's offer, frozen: the page after a TOO FAR, with the armed ENTER on it.
+ *
+ * A state of its own for view_find_saved_demo()'s reason, one floor up. The whole
+ * change is a string in the title bar, and a string is exactly the thing that
+ * rots silently -- reworded, truncated by the right-aligned draw, or overrunning
+ * the FIND label to its left. None of those three would fail any behavioural
+ * test in this repo, because every one of them asserts on stderr and on g_mode.
+ * The frame is the only assertion that can see the bar the RIDER reads.
+ *
+ * Deliberately the SAME query and pack as view_find_demo(), so the diff between
+ * this golden and nav-find.fb is the title bar and nothing else. */
+void
+view_find_toofar_demo(cov_t *c, roads_t *g)
+{
+    place_t hit[FIND_ROWS];
+    find_t f;
+
+    memset(hit, 0, sizeof hit);
+    f.query = DEMO_QUERY;
+    f.hit = hit;
+    f.sel = 0;
+    f.units = UNITS_METRIC;
+    f.ndropped = roads_ndropped(g);
+    f.nsaved = 0;
+    f.savedkind = NULL;
+    /* The one field this state is about. It must be the SAME literal nav.c arms
+     * the offer with; two copies of a sentence are two things to reword. */
+    f.net = FIND_NET_TOOFAR_CAR;
+    f.nhits = search_places(g, DEMO_QUERY, 0.0, 0.0, hit, FIND_ROWS);
+    f.nshown = f.nhits < FIND_ROWS ? f.nhits : FIND_ROWS;
+    view_find(c, &f);
+}
+
 /* The saved-place state (DESIGN.md 1.4.6): the page as it opens, BEFORE a key
  * is pressed. A state of its own and not a flag on the one above, because the
  * one above types a query -- and a golden of the typed page with places

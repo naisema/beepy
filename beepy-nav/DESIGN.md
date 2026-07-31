@@ -2279,6 +2279,83 @@ a malformed body are both `BAD REPLY`, and §7.9's ten distinct reasons are all 
 stderr for whoever is reading a log over SSH. `NO ROUTER` and `NO FIX` are said in both places, because the person who can
 fix those two is the person reading the log.
 
+#### `TOO FAR` is the one failure with a way out, so the page offers it
+
+Splitting `TOO FAR` off from `NO ROUTE` told the rider a true thing and then left
+them holding it. The rider hit this on the device: `CENTRAL NAKHON SAWAN`, 203 km,
+refused. FOSSGIS caps a **bicycle at 200 km** and an **`auto` at 5 000**. The same
+request, asked as a car, is answered — measured, against the live server:
+**235.97 km, 13 cues, 23 628 bytes**. So the recourse existed, the program knew
+what it was, and the rider's only way to it was to edit a config file and restart.
+At a roadside that is not a recourse.
+
+So the bar asks. `TOO FAR  ENTER = CAR`, and `ENTER` asks for the same destination
+with `auto` costing.
+
+**Not automatic, and that is the design.** A car route is a *different route*, not
+a longer-range version of the same one — 13 cues over 236 km is the motorway, a
+road a bicycle must not be sent up. This is §7.7's argument for the `CONFIRM`
+toggle at the one other place a mode change is the answer to something: the
+program knows the option and the rider owns the choice.
+
+**It is an armed `ENTER`, not a letter key — and `M` was the obvious wrong
+answer.** §7.7's toggle is `M` on `CONFIRM`, so `M` on `FIND` looks like
+consistency. It cannot be: **the FIND page owns all twenty-six letters** because
+its whole surface is a text field, and an `M` with a global meaning is a letter out
+of MAHIDOL, RAMA, SUKHUMVIT. `ENTER` already means "act on this destination", and
+after a `TOO FAR` the only act left for it is to ask again as a car — re-sending
+the bicycle would fetch the identical refusal. So the flag disambiguates a key the
+page already had instead of taking one it needed, which is also the
+alert-then-`ENTER` idiom §1.5.1 uses for a pan while moving.
+
+Four guards, each removing a nonsense:
+
+- **Already a car** offers nothing — its own cap is 5 000 km, so a `TOO FAR` there
+  is a genuinely absurd distance. The bar stays a plain `TOO FAR`.
+- **A reroute** has no FIND page for the offer to appear on (§7.11 turns it into a
+  transient instead), so it is never armed from one.
+- **The page must *be* FIND**, which is not the same statement. §7.7's `M` on
+  `CONFIRM` re-routes the same destination; if that goes online and comes back
+  `TOO FAR`, the reply lands while `CONFIRM` is up. Arming there would leave an
+  invisible offer on a page whose `ENTER` means **GO** — one key, two meanings, and
+  only one of them on the screen. An offer the rider cannot read is not an offer.
+- **Typing disarms it.** A rider who has started typing is looking for something
+  else, and an armed `ENTER` would send them by car to the destination they just
+  moved on from.
+
+`car_retry()` takes the destination from `g_req` and **not** from `hit[sel]`: those
+are the coordinates that were actually sent, so it asks about the place that was
+refused even though the cursor cannot have moved. And `net_clear()` exists because
+`car_offer` means "the string in `net` is a question" — two fields that are one
+fact, cleared in seven places, and clearing one without the other is either a dead
+offer the rider cannot see or a live one they cannot answer.
+
+`net_start()` now logs the **mode**, because this made it the thing that changes
+between two requests for one destination, and the reply's line only prints a mode
+when the reply was a route. Without it a retried `TOO FAR` logs two identical
+sentences and one refusal, saying nothing about what was asked the second time.
+
+**T-CAR-RETRY** (`test-find`) is one run and three claims. The fetcher answers with
+the device's own 129-byte body **both times**, which is what makes the test about
+the *request*: a build that ignored the offer and re-sent the bicycle would produce
+a byte-identical second refusal and pass everything else. So the assertion is the
+pair of costings — `(bike)` then `(car)`, exactly two requests.
+
+The third claim is the one that made the first two worth having. The whole state is
+twenty characters in a title bar, and a string is what rots silently — reworded,
+truncated, or overrunning the `FIND` label to its left. None of those would fail a
+`stderr` assertion. So `goldens/nav-find-toofar.fb` freezes the bar, and the live
+run's frame is compared to it **byte for byte with everything below row 26 masked**
+— the two are different searches, but the title bar is the same twenty characters
+in the same place, so it is the one region that is comparable and the only one that
+matters. `FIND_NET_TOOFAR_CAR` lives in `view.h` for this reason: a golden that
+agreed with a second copy of the sentence would prove nothing about the first.
+
+The golden also renders the *same query and pack* as `nav-find.fb`, with a
+`! cmp` against it — §1.4.6's lesson applied before it could repeat. If the bar
+ever stopped being drawn, the frame would come back byte-identical to `nav-find`
+and freeze nothing at all.
+
 #### One promise 7.8 made that nothing kept
 
 7.8 said temp files are unlinked on every exit path *including the signal

@@ -151,6 +151,13 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 		--roads $(ROADPACK) --dump out-nav-find.fb
 	./beepy-nav/beepy-nav --demo --page find-none \
 		--roads $(ROADPACK) --dump out-nav-find-none.fb
+#	DESIGN.md 7.10's armed ENTER. The whole state is twenty characters in the
+#	title bar, and a string is the thing no other assertion in this repo can
+#	see: T-CAR-RETRY watches stderr and g_mode, so a reworded, truncated or
+#	FIND-overrunning bar would pass it. This frame is the only test that reads
+#	what the rider reads.
+	./beepy-nav/beepy-nav --demo --page find-toofar \
+		--roads $(ROADPACK) --dump out-nav-find-toofar.fb
 	./beepy-nav/beepy-nav --demo --page confirm --dump out-nav-confirm.fb
 #	The QUIT page of DESIGN.md 1.6, in BOTH its states. Two frames and not one
 #	because the question and the way out both change with whether a route is
@@ -195,6 +202,12 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	cmp goldens/nav-overview-tiles.fb out-nav-overview-tiles.fb
 	cmp goldens/nav-find.fb     out-nav-find.fb
 	cmp goldens/nav-find-none.fb out-nav-find-none.fb
+	cmp goldens/nav-find-toofar.fb out-nav-find-toofar.fb
+#	nav-find-saved's lesson applied before it could be repeated: the TOO FAR
+#	demo renders the SAME query and pack as nav-find deliberately, so if the
+#	title bar ever stopped being drawn the frame would come back byte-identical
+#	to nav-find and freeze nothing at all.
+	! cmp -s goldens/nav-find-toofar.fb goldens/nav-find.fb
 	cmp goldens/nav-confirm.fb  out-nav-confirm.fb
 	cmp goldens/nav-find-saved.fb out-nav-find-saved.fb
 	cmp goldens/nav-map-saved.fb out-nav-map-saved.fb
@@ -298,6 +311,8 @@ endif
 		--roads $(ROADPACK) --dump goldens/nav-find.fb
 	./beepy-nav/beepy-nav --demo --page find-none \
 		--roads $(ROADPACK) --dump goldens/nav-find-none.fb
+	./beepy-nav/beepy-nav --demo --page find-toofar \
+		--roads $(ROADPACK) --dump goldens/nav-find-toofar.fb
 	./beepy-nav/beepy-nav --demo --page confirm --dump goldens/nav-confirm.fb
 	./beepy-nav/beepy-nav --demo --page find-saved \
 		--roads $(ROADPACK) --dump goldens/nav-find-saved.fb
@@ -1039,6 +1054,49 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
 		--mask 0,0,399,25 --max-px 0
 	! python3 tools/fbdiff.py $(RDIR)/norouter-before.fb $(RDIR)/norouter.fb \
 		--max-px 0
+	@echo "--- T-CAR-RETRY: TOO FAR offers a car, and ENTER asks for one"
+#	DESIGN.md 7.10. One run, three claims, and the third is the one that made the
+#	first two worth having.
+#
+#	Paced and stationary for still-net.nmea's reasons, unchanged: the fetcher is a
+#	`cat` and lands inside a ride second, so ENTER at 12 has arrived by 14 and
+#	ENTER at 16 by 18 -- both by arithmetic, because under pacing ride time can
+#	only lag the wall clock. Every unpaced version of a fetch test in this file
+#	has raced, four times in one day.
+#
+#	HOME is 26 km outside the Asok pack, so ENTER goes online; online-toofar.conf's
+#	`cat` refuses it with the device's own 129-byte body, both times.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still-net.nmea --headless $(FPS8) \
+		--pace --roads $(ROADPACK) \
+		--config beepy-nav/tests/net/online-toofar.conf \
+		--key 10:f --key 12:enter --dump-at 14:$(RDIR)/toofar-offer.fb \
+		--key 16:enter --dump-at 18:$(RDIR)/toofar-car.fb \
+		2> $(RDIR)/toofar.log
+#	The refusal was recognised as a DISTANCE one, which is netroute.c's error_code
+#	154 and not the sentence beside it.
+	grep -q "max distance limit" $(RDIR)/toofar.log
+#	TWO requests for one destination, and the MODE is the whole assertion: the
+#	fetcher answers identically both times, so a build that ignored the offer and
+#	re-sent the bicycle would produce a byte-identical second refusal and pass
+#	every other check here. This pair is the only thing that can see the costing.
+	grep -q "asking valhalla for a route to HOME (bike)" $(RDIR)/toofar.log
+	grep -q "asking valhalla for a route to HOME (car)" $(RDIR)/toofar.log
+	test `grep -c "asking valhalla" $(RDIR)/toofar.log` -eq 2
+#	And the bar the RIDER reads is the bar in the golden -- byte for byte, from a
+#	live armed request rather than from view_find_toofar_demo(). Everything below
+#	the title bar is masked because the two frames are different searches; the
+#	title bar is the same twenty characters in the same place, so it is comparable
+#	and nothing else is. Without this, FIND_NET_TOOFAR_CAR could be drawn off the
+#	right edge and both the golden and the greps above would still pass.
+	python3 tools/fbdiff.py $(RDIR)/toofar-offer.fb \
+		goldens/nav-find-toofar.fb --mask 0,26,399,239 --max-px 0
+#	The offer is NOT re-armed once the car has been refused, because a car's own
+#	cap is 5000 km and there is nothing left to offer. So the bar after the second
+#	refusal reads a plain TOO FAR and must NOT match the golden's -- which is also
+#	the assertion that the frame above was not simply the bar this build always
+#	draws for a TOO FAR.
+	! python3 tools/fbdiff.py $(RDIR)/toofar-car.fb \
+		goldens/nav-find-toofar.fb --mask 0,26,399,239 --max-px 0
 	@echo "--- T-NOTE-FITS: a note stays inside the panel, over a drawn map"
 #	The pair above asserts "changes nothing outside the panel" -- but only as
 #	strongly as the map under the note is interesting, and for a long time it

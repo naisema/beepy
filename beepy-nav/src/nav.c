@@ -116,7 +116,8 @@ static const char USAGE[] =
     "                map-nofix,\n"
     "                map-wait, map-pan, map-pan-ask, map-tiles, overview,\n"
     "                overview-tiles, arrows,\n"
-    "                chooser, find, find-none, confirm, cliptest,\n"
+    "                chooser, find, find-none, find-toofar, confirm,\n"
+    "                cliptest,\n"
     "                cliptest-panel -- and with --route it picks the page\n"
     "                the ride opens on\n"
     "  --dump FILE   write the frame as 384000 raw XRGB bytes\n"
@@ -149,6 +150,7 @@ enum {
     PAGE_ARROWS,
     PAGE_FIND,
     PAGE_FIND_NONE,
+    PAGE_FIND_TOOFAR,
     PAGE_CONFIRM,
     PAGE_QUIT,
     PAGE_QUIT_MAP,
@@ -451,6 +453,9 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
     case PAGE_FIND_NONE:
         view_find_demo(cov, roads, 1);
         break;
+    case PAGE_FIND_TOOFAR:
+        view_find_toofar_demo(cov, roads);
+        break;
     case PAGE_CONFIRM:
         view_confirm_demo(cov);
         break;
@@ -644,6 +649,17 @@ typedef struct {
      * the thing happens, and a `char[]` would invite a caller to compose a
      * sentence too long for the bar. NULL is the ordinary count. */
     const char *net;
+    /* A TOO FAR is waiting for ENTER to retry it as a CAR (DESIGN.md 7.10).
+     * Armed only by net_arrived(), only from a BIKE request, and only for a
+     * rider-initiated one -- a reroute has no FIND page to offer it on.
+     *
+     * This is an ARMED ENTER and not a letter key, which is not a detail: the
+     * FIND page owns all twenty-six of them because its whole surface is a text
+     * field, so the M that toggles the mode on CONFIRM would here be a letter out
+     * of MAHIDOL. ENTER already means "act on this destination"; after a TOO FAR
+     * the only act left for it is to ask for it as a car, so the flag disambiguates
+     * a key the page already had rather than taking one it needed. */
+    int car_offer;
 
     /* --- the MAP pan (DESIGN.md 1.5.1) ---------------------------------- */
 
@@ -2128,6 +2144,20 @@ find_update(app_t *a)
         a->sel = a->nshown > 0 ? a->nshown - 1 : 0;
 }
 
+/* The title bar back to its hit count, and 7.10's offer down with it.
+ *
+ * ONE function because `car_offer` means "the string in `net` is a question", so
+ * the two fields are a single fact and clearing one without the other is either a
+ * dead offer the rider cannot see or a live one they cannot answer. There are
+ * seven places that put the bar back; this exists so that none of them has to
+ * remember the second line. */
+static void
+net_clear(app_t *a)
+{
+    a->net = NULL;
+    a->car_offer = 0;
+}
+
 static void
 find_open(app_t *a)
 {
@@ -2136,7 +2166,7 @@ find_open(app_t *a)
     a->qn = 0;
     a->query[0] = '\0';
     a->sel = 0;
-    a->net = NULL;
+    net_clear(a);
     find_update(a);
 }
 
@@ -2161,7 +2191,7 @@ net_abandon(app_t *a)
         netfetch_cancel(&g_fetch);
     g_req.live = 0;
     if (a)
-        a->net = NULL;
+        net_clear(a);
 }
 
 /* atexit(), so it also covers the SIGINT/SIGTERM path -- on_signal() only sets
@@ -2265,8 +2295,13 @@ net_start(app_t *a, const place_t *h, int reroute)
     g_req.lon = h->lon;
     snprintf(g_req.name, sizeof g_req.name, "%s", h->name ? h->name : "");
     a->net = "FETCHING";
-    fprintf(stderr, "beepy-nav: asking %s for a route to %s\n", g_router_type,
-            g_req.name);
+    /* The MODE is in this line because 7.10 made it a thing that CHANGES between
+     * two requests for the same destination, and the reply's own line only prints
+     * one if the reply was a route. A TOO FAR retried as a car otherwise logs two
+     * identical sentences and one refusal, which says nothing about what was
+     * actually asked the second time. */
+    fprintf(stderr, "beepy-nav: asking %s for a route to %s (%s)\n",
+            g_router_type, g_req.name, mode_name());
 }
 
 /* The bytes landed. Parse them into a proposal and show CONFIRM -- the same two
@@ -2299,9 +2334,38 @@ net_arrived(app_t *a)
         a->net = code == NR_TOOFAR    ? "TOO FAR"
                  : code == NR_REFUSED ? "NO ROUTE"
                                       : "BAD REPLY";
+        /* TOO FAR is the one failure with a WAY OUT, and 7.10 is about saying so
+         * on the page rather than in a config file. FOSSGIS caps a bicycle at
+         * 200 km and an `auto` at 5000; the rider who has just been refused a
+         * 203 km destination is three kilometres past a limit that does not apply
+         * to the same request asked differently. Telling them TOO FAR and nothing
+         * else leaves them editing a config file at a roadside.
+         *
+         * NOT DONE AUTOMATICALLY, and that is the whole design. A car route is a
+         * DIFFERENT ROUTE, not a longer-range version of the same one: Valhalla
+         * sent 236 km with 13 cues for this destination, i.e. up the motorway,
+         * which is a road a bicycle must not be sent up. So the program offers and
+         * the rider decides -- 7.7's argument for the CONFIRM toggle, at the one
+         * other place a mode change is the answer to something.
+         *
+         * Three guards, each removing a nonsense. Already-car has nothing to offer
+         * (its own cap is 5000 km, so a TOO FAR there is a genuinely absurd
+         * distance). A reroute has no FIND page for the offer to appear on.
+         *
+         * And the page must BE the FIND page, which is not the same statement as
+         * the last one: 7.7's M on CONFIRM re-routes the same destination, and if
+         * that goes online and comes back TOO FAR the reply lands while CONFIRM is
+         * up. Arming there would leave an invisible offer on a page whose ENTER
+         * means GO -- a key with two meanings and only one of them on the screen.
+         * An offer the rider cannot read is not an offer. */
+        if (code == NR_TOOFAR && g_mode != NAV_MODE_CAR && !g_req.reroute &&
+            a->page == LIVE_FIND) {
+            a->car_offer = 1;
+            a->net = FIND_NET_TOOFAR_CAR;
+        }
         return;
     }
-    a->net = NULL;
+    net_clear(a);
     fprintf(stderr, "beepy-nav: routed to %s -- %d points, %.2f km, %d cues"
                     ", %s (online)\n",
             a->proposed.name, a->proposed.npt, a->proposed.total_m / 1000.0,
@@ -2316,6 +2380,51 @@ net_arrived(app_t *a)
     }
     a->have_proposed = 1;
     a->page = LIVE_CONFIRM;
+}
+
+/* 7.10's ENTER: the same destination, asked for as a car.
+ *
+ * The destination comes from g_req and NOT from a->hit[a->sel], which matters --
+ * g_req.name is a buffer and its lat/lon are the numbers that were actually sent,
+ * so this asks about the place that was refused even if the list under it has
+ * moved on. (It cannot have, because typing disarms the offer; taking the
+ * coordinates from the request rather than the cursor means it does not have to
+ * stay that way to stay correct.)
+ *
+ * The mode is put back on a failed START for find_route_selected()'s reason: a
+ * refusal must leave the rider where they were, not in car mode with nothing to
+ * show for it. A failed REPLY is different and keeps it -- by then the rider has
+ * agreed to a car and the answer is about the destination. */
+static void
+car_retry(app_t *a)
+{
+    int was = g_mode;
+    /* A COPY, and this is not defensive habit -- it is the bug the device found.
+     * net_start() ends with snprintf(g_req.name, ..., "%s", h->name), so handing
+     * it g_req.name makes that a self-copy through an overlapping buffer, which is
+     * undefined. macOS libc printed HOME and glibc printed nothing at all: on the
+     * Pi the log read "asking valhalla for a route to  (car)" and the retry went
+     * out unnamed. Every layer worked; the destination lost its name in transit.
+     *
+     * The Mac cannot see this and neither can any reasoning about the call -- it
+     * is the fifth bug in this program of the form "the Mac is not the device",
+     * and the reason the standing rule is to build and RUN on the Pi before
+     * spending a gate on it. T-CAR-RETRY greps for the NAME beside the mode, so
+     * the gate would have caught it too; running it by hand first cost minutes
+     * instead of half an hour. */
+    char name[sizeof g_req.name];
+    place_t h;
+
+    a->car_offer = 0;
+    snprintf(name, sizeof name, "%s", g_req.name);
+    memset(&h, 0, sizeof h);
+    h.name = name;
+    h.lat = g_req.lat;
+    h.lon = g_req.lon;
+    g_mode = NAV_MODE_CAR;
+    net_start(a, &h, 0);
+    if (!g_req.live)
+        g_mode = was;
 }
 
 /* Route to the selected hit and show CONFIRM. An unreachable destination is a
@@ -2342,7 +2451,7 @@ find_route_selected(app_t *a)
         return; /* one request at a time; ENTER during a fetch is not a queue */
     h = &a->hit[a->sel];
     find_origin(a, &e, &n);
-    a->net = NULL;
+    net_clear(a);
     /* Into a LOCAL, and the old proposal is not dropped until this one exists.
      * A failed attempt must leave the rider looking at the route they already
      * had -- which is netroute_parse()'s rule from 7.9 applied one level up, and
@@ -2540,7 +2649,7 @@ reroute_go(app_t *a)
          * and 1.5 s of the bottom row is the smallest honest way to say so. */
         if (a->net && strcmp(a->net, "FETCHING") != 0)
             note_show(a, a->net);
-        a->net = NULL;
+        net_clear(a);
     }
 }
 
@@ -2604,7 +2713,15 @@ find_key(app_t *a, int ch)
     switch (ch) {
     case '\n':
     case '\r':
-        find_route_selected(a);
+        /* 7.10 first: while the offer stands, ENTER answers the question the
+         * title bar is asking rather than re-asking the one that just failed.
+         * Routing the same selection again by bicycle would fetch the same
+         * refusal, so this is not a key changing meaning under the rider -- it is
+         * the only reading of ENTER that does anything. */
+        if (a->car_offer)
+            car_retry(a);
+        else
+            find_route_selected(a);
         break;
     case 27: /* Esc */
         /* Leaving the page abandons the request. A rider who backed out of FIND
@@ -2625,9 +2742,14 @@ find_key(app_t *a, int ch)
         /* Typing clears the STATUS but not the request: the count is about to
          * be true again, and the fetch is still the rider's own. FETCHING is
          * left alone for the same reason -- net_abandon() is the only thing that
-         * stops a fetch, and a keystroke is not it. */
+         * stops a fetch, and a keystroke is not it.
+         *
+         * 7.10's offer goes with the status, and it MUST: a rider who has started
+         * typing is looking for something else, and an armed ENTER would send them
+         * by car to the destination they just moved on from. This is also what
+         * keeps car_retry() honest about the cursor. */
         if (!g_req.live)
-            a->net = NULL;
+            net_clear(a);
         find_update(a);
         break;
     case NAVKEY_DOWN:
@@ -2658,7 +2780,7 @@ find_key(app_t *a, int ch)
         a->query[a->qn++] = (char)ch;
         a->query[a->qn] = '\0';
         if (!g_req.live)
-            a->net = NULL;
+            net_clear(a);
         find_update(a);
         break;
     }
@@ -3764,6 +3886,8 @@ main(int argc, char **argv)
                 page = PAGE_FIND;
             else if (!strcmp(p, "find-none"))
                 page = PAGE_FIND_NONE;
+            else if (!strcmp(p, "find-toofar"))
+                page = PAGE_FIND_TOOFAR;
             else if (!strcmp(p, "confirm"))
                 page = PAGE_CONFIRM;
             else if (!strcmp(p, "quit"))

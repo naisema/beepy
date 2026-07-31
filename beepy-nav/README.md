@@ -310,11 +310,18 @@ again:
 | `FETCHING` | a request is out; about 1.4 s on a decent connection |
 | `NO SIGNAL` | it could not be sent, or nothing useful came back |
 | `TIMED OUT` | ten seconds, and the server never answered |
-| `TOO FAR` | the router refuses distances that long. FOSSGIS caps a bicycle at 200 km — the road exists, that server just will not compute it |
+| `TOO FAR  ENTER = CAR` | the router refuses distances that long *for a bicycle*. FOSSGIS caps a bike at 200 km and a car at 5 000 — the road exists, that server just will not compute it on two wheels. `ENTER` asks again for the same place as a **car** |
+| `TOO FAR` | the same refusal with no offer beside it: you are already in car mode, so there is nothing further to try |
 | `NO ROUTE` | the router answered and said it cannot get you there |
 | `BAD REPLY` | something answered, and it was not a route — a captive portal is the usual culprit |
 | `NO ROUTER` | no `router_url` — nothing to ask |
 | `NO FIX` | no position yet, so there is no start to ask about |
+
+A car route is a **different route, not a longer one** — Valhalla sent 236 km and
+13 cues for a destination 203 km away, which means the motorway. Fine for
+planning or if someone else is driving; not a line to ride. That is why the
+program offers and does not switch by itself, and why the mode it switches to
+stays switched until you change it back with `M` on the `CONFIRM` page.
 
 The full reason is always on stderr, which is where to look if `NO ROUTE` is not
 self-explanatory: a captive portal, a truncated reply and a router saying *no
