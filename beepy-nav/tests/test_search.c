@@ -363,7 +363,7 @@ t_router_small(void)
      * longitude twice and 0.003 of latitude once. */
     around = 2.0 * 2.0 * DLON_M + 3.0 * DLAT_M;
     n = router_path(g, 0.0, 3.0 * DLAT_M, 0.0, 0.0, NAV_MODE_CAR, nodes, ROUTER_MAXPT, &total,
-                    why, (int)sizeof why);
+                    why, (int)sizeof why, NULL);
     check(n == 7, "southbound is seven nodes the long way round");
     /* 5 mm, because edge lengths are stored as integer millimetres (mkpack.py)
      * and six of them are summed here. */
@@ -373,7 +373,7 @@ t_router_small(void)
 
     /* Northbound is the street itself: four nodes, three segments. */
     n = router_path(g, 0.0, 0.0, 0.0, 3.0 * DLAT_M, NAV_MODE_CAR, nodes, ROUTER_MAXPT, &total,
-                    why, (int)sizeof why);
+                    why, (int)sizeof why, NULL);
     check(n == 4, "northbound is the street itself");
     checkf(fabs(total - 3.0 * DLAT_M) < 5e-3,
            "which is %.3f m, not the %.3f the long way costs", 3.0 * DLAT_M,
@@ -384,29 +384,29 @@ t_router_small(void)
      * what the edge of a real pack looks like. */
     why[0] = '\0';
     n = router_path(g, 0.0, 0.0, -1.0 * DLON_M, 3.0 * DLAT_M, NAV_MODE_CAR, nodes,
-                    ROUTER_MAXPT, &total, why, (int)sizeof why);
+                    ROUTER_MAXPT, &total, why, (int)sizeof why, NULL);
     check(n < 0 && why[0] != '\0', "an unreachable destination says so");
     check(router_to(g, 0.0, 0.0, -1.0 * DLON_M, 3.0 * DLAT_M, NAV_MODE_CAR,
                     "NOWHERE", &rt,
-                    why, (int)sizeof why) != 0,
-          "and router_to() fails the same way");
+                    why, (int)sizeof why, NULL) != 0,
+          "and router_to(, NULL) fails the same way");
     check(rt.npt == 0 && rt.pt == NULL,
           "leaving no half-built route behind it");
     /* A pack that is not there at all: the same failure, not a crash. */
     check(router_path(NULL, 0, 0, 1, 1, NAV_MODE_CAR, nodes, ROUTER_MAXPT, &total, why,
-                      (int)sizeof why) < 0,
+                      (int)sizeof why, NULL) < 0,
           "routing with no pack says so");
     check(router_to(NULL, 0, 0, 1, 1, NAV_MODE_CAR, NULL, &rt, why,
-                    (int)sizeof why) != 0,
-          "and so does router_to()");
+                    (int)sizeof why, NULL) != 0,
+          "and so does router_to(, NULL)");
 
     /* The route_t a ride will be given: the rider's own position first, the
      * destination last, prepared and cued exactly as route_load() leaves a GPX.
      * Started 40 m east of the origin so the access leg is real. */
     check(router_to(g, 40.0, 3.0 * DLAT_M, 0.0, 0.0, NAV_MODE_CAR,
                     "SECOND STREET", &rt, why,
-                    (int)sizeof why) == 0,
-          "router_to() builds a route");
+                    (int)sizeof why, NULL) == 0,
+          "router_to(, NULL) builds a route");
     check(rt.prepared, "prepared");
     /* Seven path nodes, plus the rider's position 40 m off the first of them --
      * and NOT plus the destination, which is node 0 itself and was collapsed
@@ -522,7 +522,7 @@ t_oneway(void)
         n = router_path(A, GA.en[2 * s], GA.en[2 * s + 1], GA.en[2 * d],
                         GA.en[2 * d + 1], NAV_MODE_CAR, nodes,
                         ROUTER_MAXPT, &total, why,
-                        (int)sizeof why);
+                        (int)sizeof why, NULL);
         if (n < 2)
             continue; /* unreachable under oneway: a legal answer, not a hop */
         routed++;
@@ -557,14 +557,14 @@ t_oneway(void)
          * path IS illegal. If this stops being true the pair has stopped being
          * adversarial and the assertion below has stopped meaning anything. */
         n = router_path(B, se, sn, de, dn, NAV_MODE_CAR, nodes, ROUTER_MAXPT, &total, why,
-                        (int)sizeof why);
+                        (int)sizeof why, NULL);
         if (n >= 2 && count_violations(&GA, nodes, n) > 0)
             adv_caught++;
         else
             printf("FAIL %s: not adversarial any more\n", p->what);
         /* And with oneway honoured it is legal. */
         n = router_path(A, se, sn, de, dn, NAV_MODE_CAR, nodes, ROUTER_MAXPT, &total, why,
-                        (int)sizeof why);
+                        (int)sizeof why, NULL);
         if (n >= 2 && count_violations(&GA, nodes, n) == 0)
             adv_ok++;
         else
@@ -607,7 +607,7 @@ t_reference_path(void)
         return;
     }
     n = router_path(B, 0.0, 0.0, 320.8778, 511.3470, NAV_MODE_CAR, nodes, ROUTER_MAXPT,
-                    &open_m, why, (int)sizeof why);
+                    &open_m, why, (int)sizeof why, NULL);
     check(n > 2, "the reference pair routes on the oneway-ignoring pack");
     checkf(fabs(open_m - 824.0) <= 3.0,
            "1.4's 824 m comes back as %.1f m (delta %.1f)", open_m,
@@ -617,7 +617,7 @@ t_reference_path(void)
            HAND_BUILT_M, open_m - HAND_BUILT_M);
 
     n = router_path(A, 0.0, 0.0, 320.8778, 511.3470, NAV_MODE_CAR, nodes, ROUTER_MAXPT,
-                    &legal_m, why, (int)sizeof why);
+                    &legal_m, why, (int)sizeof why, NULL);
     check(n > 2, "and it routes legally too, thanks to the 25 m snap");
     checkf(legal_m > open_m,
            "the legal route is longer: %.1f m against %.1f", legal_m, open_m);
@@ -651,10 +651,10 @@ t_modes(void)
     roads_project(g, 13.744, 100.560, &de, &dn);
 
     check(router_to(g, se, sn, de, dn, NAV_MODE_CAR, "X", &car, why,
-                    (int)sizeof why) == 0,
+                    (int)sizeof why, NULL) == 0,
           "a car routes across");
     check(router_to(g, se, sn, de, dn, NAV_MODE_BIKE, "X", &bike, why,
-                    (int)sizeof why) == 0,
+                    (int)sizeof why, NULL) == 0,
           "and so does a bicycle -- by another road");
     /* The whole point: not merely both routable, but DIFFERENT. The car takes
      * the motorway because it is shorter; the bicycle may not, so it is
@@ -671,11 +671,11 @@ t_modes(void)
      * online router with a real cycling profile worth 1.4 seconds. */
     roads_project(g, 13.748, 100.560, &spe, &spn);
     check(router_to(g, se, sn, spe, spn, NAV_MODE_CAR, "X", &car, why,
-                    (int)sizeof why) == 0,
+                    (int)sizeof why, NULL) == 0,
           "a car reaches a motorway-only spur");
     route_free(&car);
     check(router_to(g, se, sn, spe, spn, NAV_MODE_BIKE, "X", &bike, why,
-                    (int)sizeof why) != 0,
+                    (int)sizeof why, NULL) != 0,
           "a bicycle is refused it, rather than sent up a motorway");
 
     /* And the lie that pack v2 also fixes: snap() falls back to the nearest
@@ -683,7 +683,7 @@ t_modes(void)
      * come back as a confident route to the pack's edge. 40 km out must now
      * refuse and say how far. */
     check(router_to(g, se, sn, de + 40000.0, dn, NAV_MODE_CAR, "X", &car, why,
-                    (int)sizeof why) != 0,
+                    (int)sizeof why, NULL) != 0,
           "a destination 40 km outside the pack is refused");
     check(strstr(why, "outside this map") != NULL,
           "and the reason says so rather than blaming the roads");

@@ -230,6 +230,17 @@ typedef struct {
      * shows for the same place. NULL falls back to the plain star, which is
      * what the pages that do not care pass. */
     const int *savedkind;
+    /* What the title bar says INSTEAD of the hit count while an online request
+     * is in flight or after one failed: FETCHING, NO SIGNAL, TIMED OUT,
+     * NO ROUTE, NO ROUTER, NO FIX (DESIGN.md 7.10). NULL is the count.
+     *
+     * The TITLE BAR and not a transient, and that was a decision rather than a
+     * convenience: 7.5's transient is cheaper and consistent, and it is gone in
+     * 1.5 s -- before a rider who glanced down has read it. A failure a rider
+     * misses is a failure they will attribute to the program being broken. It
+     * sits where the count sat because the count is the thing it is the answer
+     * to: the rider pressed ENTER on a row and this is what came of it. */
+    const char *net;
 } find_t;
 
 /* The CONFIRM page (DESIGN.md 1.4): the OVERVIEW page's cartography fitted to

@@ -62,6 +62,12 @@ typedef struct {
     char *buf;    /* NF_READY only; NUL-terminated for the parser's sake */
     long len;
     char why[NETFETCH_WHY];
+    /* NF_FAILED only: the deadline, and not any of the other ways a fetch ends.
+     * The one distinction a caller has to make without reading `why`, because
+     * it is the one the RIDER acts on differently -- TIMED OUT says wait
+     * somewhere with signal, NO SIGNAL says the server is having a bad day
+     * (7.10). Everything else about the failure is a sentence for the log. */
+    int timedout;
 } netfetch_t;
 
 /* Start a fetch. `body`, when non-NULL, is written to a temp file whose path

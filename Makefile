@@ -76,7 +76,8 @@ NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
             beepy-nav/src/tile.o beepy-nav/src/search.o \
             beepy-nav/src/router.o beepy-nav/src/view_find.o \
             beepy-nav/src/view_confirm.o beepy-nav/src/view_map.o \
-            beepy-nav/src/view_quit.o beepy-nav/src/netfetch.o
+            beepy-nav/src/view_quit.o beepy-nav/src/netfetch.o \
+            beepy-nav/src/netroute.o
 HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h beepy-nav/src/*.h)
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -365,6 +366,24 @@ $(RDIR)/rough.nmea: tools/mknmea.py $(RROUTE)
 $(RDIR)/still.nmea: tools/mknmea.py $(RROUTE)
 	$(MKNMEA) --stationary 11@0 --hold-jitter 0 --duration 600 --seed 2 -o $@
 
+# The same standstill, twenty-six seconds of it, for T-FIND-ONLINE's FETCHING and
+# TIMED OUT frames (DESIGN.md 7.10). Three things about it are load-bearing.
+#
+# PACED, because netfetch measures its deadline on the WALL clock and a fetcher
+# is only slow in real time. STATIONARY, because the claim is that nothing on the
+# FIND page changes except the title bar -- a byte comparison, which a moving
+# rider would break legitimately by changing every distance in the list.
+#
+# And TWENTY-SIX SECONDS, which is the deadline plus the fetch's start plus
+# margin. Under pacing the ride clock can only LAG the wall clock, never lead it,
+# so "the deadline has passed by ride second 23" follows from 23 > 11 + 10 with
+# no timing assumption at all. The first version of this test used a 1.5 s
+# fetcher and a dump at a fixed ride second, and passed or failed depending on
+# how much disk I/O the run had done -- ride time lags further behind under load,
+# so the arrival moved. A fetcher that NEVER answers has no such race.
+$(RDIR)/still-net.nmea: tools/mknmea.py $(RROUTE)
+	$(MKNMEA) --stationary 11@0 --hold-jitter 0 --duration 26 --seed 2 -o $@
+
 # DESIGN.md 7.8's fixture, and the only one ridden in REAL TIME: T-NET-FETCH is
 # paced, so twelve seconds of fixture costs twelve seconds of gate. Short for
 # that reason, and MOVING because 6.3 drops a stopped ride to 1 Hz and there
@@ -569,7 +588,8 @@ test-frames: $(NAV) $(REPLAYS)
 # but "typing changed the screen", "ENTER produced a CONFIRM that is a different
 # screen again" and "the second ENTER started a ride on a route named after the
 # place" are exactly the claims of 1.4 and each of them has a way to fail.
-test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK)
+test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
+           $(RDIR)/still-net.nmea
 	@echo "--- T-FIND: F, a typed query, ENTER, CONFIRM, ENTER, riding"
 	$(NAV) --route $(TILEROUTE) --replay $(RDIR)/asok.nmea --headless $(FPS8) \
 		--roads $(ROADPACK) \
@@ -721,6 +741,98 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK)
 #	And installed as the live route by the same line a GPX takes, which is what
 #	makes it a destination rather than a map label.
 	grep -q "beepy-nav: THE ACADEMY -- " $(RDIR)/find-poi.log
+	@echo "--- T-FIND-ONLINE: the pack first, and the network only where it cannot"
+#	DESIGN.md 7.10. Three runs, because the three claims fail independently.
+#
+#	The fixture is the rider in Asok with saved.conf's own two places: WORK is
+#	inside the Asok pack and HOME is 24 km outside it. That is the whole
+#	experiment and it needs no new geography -- ENTER on WORK must be answered by
+#	the pack and never reach a fetcher, ENTER on HOME cannot be answered by the
+#	pack at all. `fetch_cmd = cat` is the router, so nothing here touches the
+#	network (7.8), and the answer it gives is N2's committed capture: 177 points,
+#	4.95 km, 9 cues.
+#
+#	Run one: both, in that order, through one FIND page.
+#
+#	PACED, and that is not decoration. Unpaced, ride time races ahead of the wall
+#	clock, so the ride second at which a fork+exec+cat lands depends on how fast
+#	the machine renders -- 25 ride-seconds is 60 ms of wall on the Mac and four
+#	seconds of it on a Pi Zero. The first version pressed the install ENTER at
+#	ride 17 and the fetch had not arrived; at ride 40 it had, on this machine,
+#	today. Paced, one ride second is one second and a `cat` has a whole one.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still-net.nmea --headless $(FPS8) \
+		--pace --roads $(ROADPACK) \
+		--config beepy-nav/tests/net/online.conf \
+		--key 10:f --key 11:down --key 12:enter --key 14:esc \
+		--key 15:up --key 16:enter --key 20:enter \
+		2> $(RDIR)/find-online.log
+#	OFFLINE FIRST: WORK is in the pack, so it is routed by the pack. The absence
+#	of "(online)" on that line is the assertion -- a build that went online for
+#	everything would produce the route and pass every other check here.
+	grep -q "routed to WORK -- 30 points, 0.80 km, 4 cues$$" \
+		$(RDIR)/find-online.log
+#	HOME is not, and the reason is the one router.c refuses on rather than a
+#	sentence this test matched: RC_OFFMAP is what sends it online.
+	grep -q "24 km outside this map" $(RDIR)/find-online.log
+	grep -q "asking valhalla for a route to HOME" $(RDIR)/find-online.log
+#	And what came back is N2's fixture, parsed to the point, so the request, the
+#	fetch, both adapters' worth of parsing and the install are one live path.
+	grep -q "routed to HOME -- 177 points, 4.95 km, 9 cues (online)" \
+		$(RDIR)/find-online.log
+#	Installed by the line a GPX takes, printed by the route-loading loop and by
+#	nothing else -- which is the gate's own wording and the claim of 1.4 that
+#	nothing downstream can tell where a route came from.
+	grep -q "beepy-nav: HOME -- 177 points" $(RDIR)/find-online.log
+#	Exactly one request for the two destinations. Without this, "offline first"
+#	would pass on a build that asked the network for WORK as well and simply
+#	preferred the pack's answer.
+	test `grep -c "asking valhalla" $(RDIR)/find-online.log` -eq 1
+#	Run two: a fetcher that never answers, so FETCHING and then TIMED OUT are
+#	both on the panel -- paced and stationary for the reasons still-net.nmea
+#	gives. The dumps are 1 s apart because 6.3 renders a STOPPED ride at 1 Hz:
+#	the first version put the baseline 0.5 s before the keypress and got the same
+#	frame back, so "the bar changed" was being asserted against itself.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still-net.nmea --headless $(FPS8) \
+		--pace --roads $(ROADPACK) \
+		--config beepy-nav/tests/net/online-hang.conf \
+		--key 10:f --dump-at 11:$(RDIR)/net-before.fb \
+		--key 12:enter --dump-at 13:$(RDIR)/net-fetching.fb \
+		--dump-at 23:$(RDIR)/net-timeout.fb 2> $(RDIR)/find-hang.log
+	grep -q "fetch failed -- timed out" $(RDIR)/find-hang.log
+#	The title bar and NOTHING ELSE, both times. This is the whole of 7.10's
+#	interface claim as a byte comparison: the rows stay, the query stays, the
+#	hint stays, and the rider can go on typing while a child process works. A
+#	page that had switched to a modal "please wait" would fail it; so would one
+#	that had quietly dropped back to NAV.
+	python3 tools/fbdiff.py $(RDIR)/net-before.fb $(RDIR)/net-fetching.fb \
+		--mask 0,0,399,25 --max-px 0
+	python3 tools/fbdiff.py $(RDIR)/net-before.fb $(RDIR)/net-timeout.fb \
+		--mask 0,0,399,25 --max-px 0
+#	And the bar DID change, twice and differently. Without these three the pair
+#	above would pass on a build where pressing ENTER did nothing at all.
+	! python3 tools/fbdiff.py $(RDIR)/net-before.fb $(RDIR)/net-fetching.fb \
+		--max-px 0
+	! python3 tools/fbdiff.py $(RDIR)/net-before.fb $(RDIR)/net-timeout.fb \
+		--max-px 0
+	! python3 tools/fbdiff.py $(RDIR)/net-fetching.fb $(RDIR)/net-timeout.fb \
+		--max-px 0
+#	Run three: no router_url, which is this program's DEFAULT and therefore the
+#	state a rider meets first. It must fail on the page and say why, not fall
+#	back to running fetch_cmd against an empty URL -- offline.conf carries a
+#	working fetch_cmd precisely so that a build which did would produce a route
+#	to a place 24 km outside its only map and pass.
+	$(NAV) --route $(TILEROUTE) --replay $(RDIR)/asok.nmea --headless $(FPS8) \
+		--roads $(ROADPACK) --config beepy-nav/tests/net/offline.conf \
+		--key 10:f --dump-at 11:$(RDIR)/norouter-before.fb \
+		--key 12:enter --dump-at 14:$(RDIR)/norouter.fb \
+		2> $(RDIR)/find-norouter.log
+	grep -q "24 km outside this map" $(RDIR)/find-norouter.log
+	grep -q "no router_url configured" $(RDIR)/find-norouter.log
+	! grep -q "routed to HOME" $(RDIR)/find-norouter.log
+	python3 tools/fbdiff.py $(RDIR)/norouter-before.fb $(RDIR)/norouter.fb \
+		--mask 0,0,399,25 --max-px 0
+	! python3 tools/fbdiff.py $(RDIR)/norouter-before.fb $(RDIR)/norouter.fb \
+		--max-px 0
 	@echo "--- T-NOTE-FITS: a note stays inside the panel, over a drawn map"
 #	The pair above asserts "changes nothing outside the panel" -- but only as
 #	strongly as the map under the note is interesting, and for a long time it
@@ -804,7 +916,7 @@ HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/chooser.o host/led.o host/config.o host/ridelog.o \
            host/tile.o host/search.o host/router.o host/view_find.o \
            host/view_confirm.o host/view_map.o host/view_quit.o \
-           host/netfetch.o \
+           host/netfetch.o host/netroute.o \
            host/nmea.o host/gps.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
 

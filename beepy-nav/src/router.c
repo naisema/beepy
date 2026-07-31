@@ -8,6 +8,7 @@
  * early exit, and both are commented where they happen.
  */
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -147,10 +148,26 @@ mode_allows(int mode, unsigned flags)
     return cls != ROADCLASS_MOTORWAY && cls != ROADCLASS_TRUNK;
 }
 
+/* One place, so no refusal below can set a reason and forget the code. */
+static int
+refuse(char *why, int nwhy, int *code, int rc, const char *fmt, ...)
+{
+    va_list ap;
+
+    if (code)
+        *code = rc;
+    if (why && nwhy > 0) {
+        va_start(ap, fmt);
+        vsnprintf(why, (size_t)nwhy, fmt, ap);
+        va_end(ap);
+    }
+    return -1;
+}
+
 int
 router_path(const roads_t *g, double se, double sn, double de, double dn,
             int mode, int *nodes, int maxn, double *total_m, char *why,
-            int nwhy)
+            int nwhy, int *code)
 {
     roadgraph_t G;
     int src[ROUTER_SNAP_MAX], tgt[ROUTER_SNAP_MAX];
@@ -168,25 +185,20 @@ router_path(const roads_t *g, double se, double sn, double de, double dn,
         *total_m = 0.0;
     if (why && nwhy > 0)
         *why = '\0';
-    if (!g || !nodes || maxn < 2) {
-        if (why)
-            snprintf(why, (size_t)nwhy, "no road pack loaded");
-        return -1;
-    }
+    if (code)
+        *code = RC_OK;
+    if (!g || !nodes || maxn < 2)
+        return refuse(why, nwhy, code, RC_NOPACK, "no road pack loaded");
     roads_graph(g, &G);
-    if (G.nnode < 2 || G.nedge < 1) {
-        if (why)
-            snprintf(why, (size_t)nwhy, "the pack has no road graph");
-        return -1;
-    }
+    if (G.nnode < 2 || G.nedge < 1)
+        return refuse(why, nwhy, code, RC_NOPACK,
+                      "the pack has no road graph");
 
     nsrc = snap(&G, se, sn, src, srcc);
     ntgt = snap(&G, de, dn, tgt, tgtc);
-    if (nsrc <= 0 || ntgt <= 0) {
-        if (why)
-            snprintf(why, (size_t)nwhy, "no road near the start or the finish");
-        return -1;
-    }
+    if (nsrc <= 0 || ntgt <= 0)
+        return refuse(why, nwhy, code, RC_NOSNAP,
+                      "no road near the start or the finish");
     /* snap() falls back to the single NEAREST node when nothing is within its
      * radius, which is what carries a POI centroid the 150 m to its gate. Past
      * a point that stops being a bridge and becomes a lie: a destination
@@ -196,13 +208,9 @@ router_path(const roads_t *g, double se, double sn, double de, double dn,
      * So: refuse. The caller can then ask a router that HAS the ground -- and
      * "too far" is exactly the condition that makes going online worth the
      * 1.4 seconds. */
-    if (tgtc[0] > ROUTER_MAX_SNAP_M || srcc[0] > ROUTER_MAX_SNAP_M) {
-        if (why)
-            snprintf(why, (size_t)nwhy,
-                     "%.0f km outside this map", (tgtc[0] > srcc[0] ?
-                     tgtc[0] : srcc[0]) / 1000.0);
-        return -1;
-    }
+    if (tgtc[0] > ROUTER_MAX_SNAP_M || srcc[0] > ROUTER_MAX_SNAP_M)
+        return refuse(why, nwhy, code, RC_OFFMAP, "%.0f km outside this map",
+                      (tgtc[0] > srcc[0] ? tgtc[0] : srcc[0]) / 1000.0);
 
     dist = (double *)malloc((size_t)G.nnode * sizeof *dist);
     prev = (int *)malloc((size_t)G.nnode * sizeof *prev);
@@ -212,8 +220,7 @@ router_path(const roads_t *g, double se, double sn, double de, double dn,
     h.max = G.nedge + nsrc + 1;
     h.e = (heapent_t *)malloc((size_t)h.max * sizeof *h.e);
     if (!dist || !prev || !mark || !h.e) {
-        if (why)
-            snprintf(why, (size_t)nwhy, "out of memory routing");
+        refuse(why, nwhy, code, RC_NOMEM, "out of memory routing");
         goto done;
     }
     for (i = 0; i < G.nnode; i++) {
@@ -264,16 +271,15 @@ router_path(const roads_t *g, double se, double sn, double de, double dn,
     }
 
     if (best_node < 0) {
-        if (why)
-            snprintf(why, (size_t)nwhy, "no road route to there");
+        refuse(why, nwhy, code, RC_UNREACHABLE, "no road route to there");
         goto done;
     }
     /* Walk back, then reverse in place: the predecessor chain is the only
      * record of the path and it runs the wrong way. */
     for (u = best_node; u >= 0; u = prev[u]) {
         if (count >= maxn) {
-            if (why)
-                snprintf(why, (size_t)nwhy, "the route is too long to follow");
+            refuse(why, nwhy, code, RC_TOOLONG,
+                   "the route is too long to follow");
             goto done;
         }
         nodes[count++] = u;
@@ -297,7 +303,8 @@ done:
 
 int
 router_to(const roads_t *g, double se, double sn, double de, double dn,
-          int mode, const char *name, route_t *out, char *why, int nwhy)
+          int mode, const char *name, route_t *out, char *why, int nwhy,
+          int *code)
 {
     static int nodes[ROUTER_MAXPT];
     roadgraph_t G;
@@ -309,7 +316,7 @@ router_to(const roads_t *g, double se, double sn, double de, double dn,
         return -1;
     route_init(out);
     n = router_path(g, se, sn, de, dn, mode, nodes, ROUTER_MAXPT, &total,
-                    why, nwhy);
+                    why, nwhy, code);
     if (n < 1)
         return -1;
     roads_graph(g, &G);
@@ -318,11 +325,9 @@ router_to(const roads_t *g, double se, double sn, double de, double dn,
      * that begins at a graph node twenty metres away would start by telling
      * them to ride to somewhere they can already see. */
     pt = (pt_t *)calloc((size_t)n + 2, sizeof *pt);
-    if (!pt) {
-        if (why && nwhy > 0)
-            snprintf(why, (size_t)nwhy, "out of memory building the route");
-        return -1;
-    }
+    if (!pt)
+        return refuse(why, nwhy, code, RC_NOMEM,
+                      "out of memory building the route");
     roads_unproject(g, se, sn, &lat, &lon);
     pt[np].lat = lat;
     pt[np].lon = lon;
@@ -350,9 +355,7 @@ router_to(const roads_t *g, double se, double sn, double de, double dn,
     }
     if (np < 2) {
         free(pt);
-        if (why && nwhy > 0)
-            snprintf(why, (size_t)nwhy, "you are already there");
-        return -1;
+        return refuse(why, nwhy, code, RC_HERE, "you are already there");
     }
 
     out->pt = pt;
@@ -361,9 +364,8 @@ router_to(const roads_t *g, double se, double sn, double de, double dn,
              name && *name ? name : "DESTINATION");
     if (route_prepare(out)) {
         route_free(out);
-        if (why && nwhy > 0)
-            snprintf(why, (size_t)nwhy, "the route is too short to follow");
-        return -1;
+        return refuse(why, nwhy, code, RC_TOOSHORT,
+                      "the route is too short to follow");
     }
     /* Exactly what route_load() does to a GPX with no cues of its own
      * (DESIGN.md 7.4): derive them from the geometry, then finish. A routed

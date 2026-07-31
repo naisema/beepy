@@ -261,6 +261,58 @@ it is not done behind your back (`DESIGN.md` §6.3).
 
 ---
 
+## Online routing
+
+Off by default, and it stays off until you name a router. **`router_url` has no
+default and will not get one** — the public OSRM demo server is car-only, ignores
+the profile in its own URL, and returned the identical 53 km/h route for bike,
+cycling, driving and foot. A default that put a bicycle on a Bangkok expressway
+would be worse than no default.
+
+```
+router_url  = https://valhalla1.openstreetmap.de/route
+router_type = valhalla          # or osrm
+```
+
+**Your pack is asked first, always.** Inside it, a route costs 0.1 ms and no
+connection. The network is only asked where the pack cannot honestly answer —
+your destination is outside the map it was cut from, or there is no legal path
+across it — so an ordinary ride never touches it.
+
+When it is asked, the `FIND` page stays where it is and the hit count is replaced
+by what is happening. **You can keep typing while it works**, and `ENTER` tries
+again:
+
+| | |
+|---|---|
+| `FETCHING` | a request is out; about 1.4 s on a decent connection |
+| `NO SIGNAL` | it could not be sent, or nothing useful came back |
+| `TIMED OUT` | ten seconds, and the server never answered |
+| `NO ROUTE` | the reply arrived and there is no route in it |
+| `NO ROUTER` | no `router_url` — nothing to ask |
+| `NO FIX` | no position yet, so there is no start to ask about |
+
+The full reason is always on stderr, which is where to look if `NO ROUTE` is not
+self-explanatory: a captive portal, a truncated reply and a router saying *no
+path could be found* all read the same on a 400×240 panel and are four very
+different problems in a log.
+
+**For OSRM, the profile is part of your URL** (`/route/v1/bike/`), because no two
+OSRM deployments agree on what to call it. That means `mode = car` reaches a
+Valhalla server and not an OSRM one, and it says so on stderr rather than
+silently meaning nothing.
+
+**`fetch_cmd`** is how bytes are fetched, and it is a config string rather than a
+compiled-in `curl` so that the test suite can substitute `cat some-file.json` and
+mean it. You will not normally set it; the default uses `curl` with a 10 s
+timeout and a 1 MB cap.
+
+Nothing about a route is remembered from the network: what arrives becomes an
+ordinary route, identical to a GPX you loaded, and the ride log records it the
+same way.
+
+---
+
 ## Streets under the map
 
 Optional, off by default, and it needs one command on a Mac. The device carries

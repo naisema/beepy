@@ -217,6 +217,7 @@ netfetch_poll(netfetch_t *f)
             waitpid(f->pid, &status, 0); /* it is dead; this returns at once */
             scrub(f);
             fail(f, "timed out");
+            f->timedout = 1; /* after fail(), which does not clear it */
         }
         return f->state;
     }
@@ -254,4 +255,5 @@ netfetch_cancel(netfetch_t *f)
     f->len = 0;
     f->state = NF_IDLE;
     f->why[0] = '\0';
+    f->timedout = 0;
 }

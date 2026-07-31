@@ -14,8 +14,9 @@
  * is the longest -- 30 characters at scale 2 is 360 px of the 400, which fits,
  * so there was never a reason.
  *
- * Two states have no mockup reference and are argued where they are drawn: a
- * query that matches nothing, and imperial units.
+ * Three states have no mockup reference and are argued where they are drawn: a
+ * query that matches nothing, imperial units, and the online request of 7.10 in
+ * the title bar.
  */
 #include <math.h>
 #include <stdio.h>
@@ -114,8 +115,17 @@ view_find(cov_t *c, const find_t *f)
     cov_text(c, 6, 5, "FIND", 2, COV_PAPER);
     /* What the page is showing, which before a key is pressed is the saved
      * list and not a search. "0 HITS" over two visible rows would be the page
-     * calling itself a failure. */
-    if (f->query && !*f->query && f->nsaved > 0)
+     * calling itself a failure.
+     *
+     * An online request outranks both (DESIGN.md 7.10). The count answers "what
+     * did typing find"; FETCHING and its four failures answer "what came of
+     * pressing ENTER on one of them", which is the more recent question and the
+     * one the rider is waiting on. Nothing else about the page changes -- the
+     * rows stay, the query stays, and the rider can go on typing while the
+     * child process works. */
+    if (f->net && *f->net)
+        snprintf(buf, sizeof buf, "%s", f->net);
+    else if (f->query && !*f->query && f->nsaved > 0)
         snprintf(buf, sizeof buf, "%d SAVED", f->nsaved);
     else
         snprintf(buf, sizeof buf, "%d HIT%s", f->nhits,
@@ -224,6 +234,11 @@ view_find_demo(cov_t *c, roads_t *g, int zero)
      * kind of bug that renders correctly until the day it does not. */
     f.nsaved = 0;
     f.savedkind = NULL;
+    /* No online request, explicitly: `net` replaces the title bar's count when
+     * it is set, so a stack-garbage pointer here would corrupt a golden -- and
+     * the one above it is the state that taught this file to initialise every
+     * field of a local find_t rather than the ones it happens to care about. */
+    f.net = NULL;
     f.nhits = search_places(g, q, 0.0, 0.0, hit, FIND_ROWS);
     f.nshown = f.nhits < FIND_ROWS ? f.nhits : FIND_ROWS;
     view_find(c, &f);
@@ -271,6 +286,7 @@ view_find_saved_demo(cov_t *c, roads_t *g)
     f.ndropped = roads_ndropped(g);
     f.nsaved = n;
     f.savedkind = kind;
+    f.net = NULL;
     f.nhits = 0;
     f.nshown = n;
     view_find(c, &f);

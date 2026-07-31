@@ -1988,6 +1988,151 @@ The fixtures are **committed**, unlike every other generated fixture here, and
 bad-input cases exist only if python3 and a script are both on the Pi is a gate
 with a second thing to go wrong.
 
+### 7.10 Asking, and what the rider sees while it happens
+
+§7.8 fetches bytes and §7.9 turns them into a route. This is where FIND uses
+them, and the shape of it is one sentence: **offline first, always.**
+
+Inside the pack an answer costs 0.1 ms and no connection; online costs 1.4 s and
+needs one. So the pack is asked first and the network only where the pack cannot
+*honestly* answer — which is **two** of the eight ways routing can fail:
+
+| `RC_*` | | online? |
+|---|---|---|
+| `RC_OFFMAP` | the ground is not in this pack (§1.4's "24 km outside this map") | **yes** |
+| `RC_UNREACHABLE` | the ground is here and there is no legal path over it | **yes** |
+| `RC_HERE` | you are already there | no — that is an honest answer |
+| `RC_NOPACK` `RC_NOSNAP` `RC_TOOSHORT` `RC_TOOLONG` `RC_NOMEM` | | no |
+
+`router_to()` gained that code for this, and the reason it is a code rather than
+a `strstr` of the sentence it writes is that the sentence is for the rider: it
+gets reworded, and a decision to open a socket must not be downstream of an
+adjective. A router that answers `RC_NOMEM` by opening a socket is a router
+making things worse.
+
+**The request is composed here**, and it is the one part of online routing N2
+deliberately left out. Valhalla takes a JSON POST body, which goes in the file
+netfetch puts at `$BEEPY_BODY`; OSRM takes its coordinates in the path, so the
+whole URL is composed and reaches the fetcher as `$BEEPY_URL`. Neither is ever
+interpolated into the shell line — that is what §7.8 takes them separately for.
+
+`directions_options.units` is asked for explicitly because §7.9 believes whatever
+`trip.units` says, and a server defaulting to miles would otherwise be checked
+against a distance in kilometres.
+
+**`mode` steers Valhalla and cannot steer OSRM**, and that asymmetry is stated
+rather than hidden. An OSRM profile is part of its URL (`/route/v1/<profile>/`)
+and no two deployments agree on the name — the public demo answers to `bike`,
+`cycling`, `driving` and `foot` with the identical car route, which is the
+measurement that stopped this program shipping a default URL at all. So the
+profile stays in the rider's own `router_url` where they can see it, and a
+`mode = car` that an OSRM URL will not honour **says so on stderr** instead of
+quietly meaning nothing.
+
+#### The FIND page stays, and the title bar carries the answer
+
+```
+┌─────────────────────────────────────┐
+│ FIND                     FETCHING   │   ← the count's place
+│ ▌                                   │
+│ ⌂ HOME                    24.1KM NW │   ← the rows do not move
+│ ▪ WORK                     802M SE  │
+│                                     │
+│ TYPE TO FILTER   ENTER = ROUTE      │   ← and ENTER retries
+└─────────────────────────────────────┘
+```
+
+`FETCHING`, then one of `NO SIGNAL`, `TIMED OUT`, `NO ROUTE`, `NO ROUTER`,
+`NO FIX`. Nothing else about the page changes: the rows stay, the query stays,
+and **the rider can go on typing while the child process works**, which is the
+entire point of §7.8 being a fork rather than a call. `ENTER` retries, because
+the hint already says `ENTER = ROUTE` and a retry is what that means now.
+
+**Rejected: a §7.5 transient.** Cheaper, consistent with every other message in
+this program — and gone in 1.5 s, before a rider who glanced down has read it. A
+failure a rider misses is a failure they will attribute to the program being
+broken. It sits where the hit count sat because the count is the question it
+answers: *you pressed ENTER on one of these rows, and here is what came of it.*
+
+An **offline** refusal keeps its transient, and that is the same argument rather
+than an exception to it. The pack answers in 0.1 ms, so the rider is still looking
+at the row their thumb is on; the online answer can be ten seconds late, by which
+time they are looking at the road. What decides between a transient and the title
+bar is *how long ago the rider asked* — not which module said no.
+
+**Rejected: cancelling the fetch on a keystroke.** A rider fidgeting with the
+keyboard is not withdrawing the question. Only leaving the page is, and leaving
+does cancel — a CONFIRM page arriving over NAV 1.4 s after the rider backed out
+would be the program answering something they had taken back.
+
+The five failures are chosen where the failure happens, not by reading anybody's
+sentence. `TIMED OUT` and `NO SIGNAL` are different things to a rider — wait
+somewhere with signal, versus the server is having a bad day — so `netfetch_t`
+grew one flag, `timedout`, for the one distinction that changes what a rider
+does. Everything past that is a sentence for the log.
+
+`NO ROUTE` covers **every** way bytes can arrive and not be a route, and that is
+deliberate: a rider cannot act differently on a captive portal than on a 442, and
+§7.9's nine distinct reasons are all on stderr for whoever is reading a log over
+SSH. `NO ROUTER` and `NO FIX` are said in both places, because the person who can
+fix those two is the person reading the log.
+
+#### One promise 7.8 made that nothing kept
+
+7.8 said temp files are unlinked on every exit path *including the signal
+handler*. Until FIND could start a fetch that outlives a page, **nothing in
+`nav.c` had ever called `netfetch_cancel()`** — the promise was true only because
+every fetch happened to finish inside the run that started it. A rider pressing
+`Q` mid-fetch would have left an orphaned `curl` holding a socket and a file in
+`/tmp`, which on this device is RAM. There is an `atexit()` for it now, in **both
+lanes**, because nothing about it is device-specific.
+
+#### What the gate measures
+
+**T-FIND-ONLINE** (`test-find`): three runs, because the three claims fail
+independently. The fixture needs no new geography — it is `saved.conf`'s own two
+places, where `WORK` is inside the Asok pack and `HOME` is 24 km outside it.
+
+1. **Both, in order, through one FIND page.** `WORK` routes offline (30 points,
+   0.80 km, 4 cues — and the *absence* of `(online)` on that line is the
+   assertion); `HOME` refuses with `24 km outside this map`, goes online, comes
+   back as §7.9's committed capture — **177 points, 4.95 km, 9 cues** — and is
+   installed by the line a GPX takes. Then: **exactly one** request for the two
+   destinations, or "offline first" would pass on a build that asked the network
+   for both and merely preferred the pack's answer.
+2. **A fetcher that never answers**, so `FETCHING` and then `TIMED OUT` are both
+   photographed. Each is compared to the page one second earlier with the title
+   bar **masked out**: 404 px and 568 px changed inside it, **0 px anywhere
+   else**. That is §7.10's whole interface claim as a byte comparison — a modal
+   "please wait" would fail it, and so would a page that had dropped back to NAV.
+3. **No `router_url`**, which is this program's default and therefore the state a
+   rider meets first. `NO ROUTER` on the panel, the reason on stderr, and no
+   route. `offline.conf` carries a *working* `fetch_cmd` on purpose: a build that
+   checked only that would produce a confident route to a place 24 km outside its
+   only map and pass.
+
+Two things about the timing are load-bearing and were both wrong first.
+
+**Paced.** Unpaced, ride time races the wall clock, so the ride second at which a
+`fork`+`exec`+`cat` lands depends on how fast the machine renders — 25
+ride-seconds is 60 ms of wall on the Mac and four seconds of it on a Pi Zero. The
+first version pressed the install `ENTER` two ride-seconds after the request and
+the bytes had not arrived.
+
+**A fetcher that never answers, rather than a slow one.** Under pacing the ride
+clock can only *lag* the wall clock, never lead it, so `sleep 60` is still running
+at every ride second before the deadline and has failed at every ride second
+after it — both by arithmetic. A 1.5 s fetcher gave a test that passed or failed
+according to how much disk I/O the run had done, because ride time lags further
+under load and the arrival moved with it.
+
+The frame-gap claim is **not** re-asserted here. §7.8's T-NET-FETCH owns it on a
+*moving* fixture, and this one is stationary on purpose — §6.3 renders a stopped
+ride at 1 Hz, so a maximum-gap assertion here would be solemnly measuring the
+stop rate. (That same 1 Hz is why the dumps are a second apart: the first version
+put the baseline 0.5 s before the keypress, got the very same frame back, and was
+asserting "the bar changed" against itself.)
+
 ---
 
 ## 8. Data model

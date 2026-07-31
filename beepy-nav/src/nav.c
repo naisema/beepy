@@ -43,6 +43,7 @@
 #include "arrows.h"
 #include "chooser.h"
 #include "netfetch.h"
+#include "netroute.h"
 #include "config.h"
 #include "fix.h"
 #include "led.h"
@@ -293,6 +294,24 @@ static char g_fetch_cmd[CFG_PATH_MAX];
  * can be measured before anything is wired to FIND. < 0 is off. */
 static double g_fetch_at = -1.0;
 static int g_fetch_fired;
+
+/* What the fetch in flight is FOR (DESIGN.md 7.10).
+ *
+ * `live` is what separates a route request from --fetch-at's probe, and it is
+ * not bookkeeping: the probe's fetcher answers `SLOWBYTES`, and a poll loop that
+ * fed every arriving fetch to the parser would turn N1's frame-timing
+ * measurement into a parse failure on the panel. The probe measures the loop;
+ * this measures nothing and asks for a route.
+ *
+ * The destination is remembered here rather than read back off the FIND page,
+ * because the two can differ by the time the bytes land: 1.4 s is long enough
+ * for a rider to go on typing, and the route that arrives is the one they
+ * ASKED for, not the one their thumb has since selected. */
+static struct {
+    int live;
+    char name[ROUTE_NAME];
+    double lat, lon; /* the destination, degrees */
+} g_req;
 
 static ridelog_t RIDELOG;
 
@@ -573,6 +592,12 @@ typedef struct {
     int have_proposed;
     int cf_idx[ROUTE_MAXCUE];
     int find_go; /* CONFIRM's ENTER: leave this route for the new one */
+    /* What the FIND title bar says INSTEAD of the hit count, while an online
+     * request is in flight or after one failed (DESIGN.md 7.10). A pointer to a
+     * literal and not a buffer: there are five of them, they are chosen where
+     * the thing happens, and a `char[]` would invite a caller to compose a
+     * sentence too long for the bar. NULL is the ordinary count. */
+    const char *net;
 
     /* R: leave this route and go back to the picker, without leaving the
      * program. Distinct from quit, because the panel, the evdev grab and the
@@ -1067,6 +1092,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         f.ndropped = roads_ndropped(g_roads);
         f.nsaved = a->nsaved;
         f.savedkind = a->savedkind;
+        f.net = a->net;
         view_find(cov, &f);
         cov_resolve(cov, cv);
         return;
@@ -1544,6 +1570,13 @@ stats_flush(const app_t *a, int final)
     }
 }
 
+/* The one forward declaration in this file, and it earns itself: an arriving
+ * route is reaped by the FRAME loop and built by the FIND page's code, which
+ * sits three hundred lines further down with the rest of 1.4. Moving either to
+ * meet the other would put the parser next to the frame clock or the frame
+ * clock next to the search. */
+static void net_arrived(app_t *a);
+
 /* Draw one frame at ride-second `t`, present it only if it differs from the
  * last one presented, and account for it. Returns 1 when it was presented. */
 static int
@@ -1561,10 +1594,23 @@ frame_at(app_t *a, double t)
      * costs a read of a file nothing is writing to any more. */
     if (g_fetch.state == NF_RUNNING) {
         int st = netfetch_poll(&g_fetch);
-        if (st == NF_READY)
+        if (st == NF_READY) {
             fprintf(stderr, "beepy-nav: fetched %ld bytes\n", g_fetch.len);
-        else if (st == NF_FAILED)
+            /* A route request, or --fetch-at's probe? The probe's answer is
+             * nine bytes of SLOWBYTES and has nothing to do with routing. */
+            if (g_req.live)
+                net_arrived(a);
+        } else if (st == NF_FAILED) {
             fprintf(stderr, "beepy-nav: fetch failed -- %s\n", g_fetch.why);
+            if (g_req.live) {
+                g_req.live = 0;
+                /* The deadline and the network are different things to a rider:
+                 * one says wait somewhere with signal, the other says the
+                 * server is having a bad day. netfetch tells them apart so this
+                 * does not have to read its sentence. */
+                a->net = g_fetch.timedout ? "TIMED OUT" : "NO SIGNAL";
+            }
+        }
     }
     if (g_fetch_at >= 0.0 && !g_fetch_fired && t >= g_fetch_at) {
         g_fetch_fired = 1;
@@ -1975,6 +2021,7 @@ find_open(app_t *a)
     a->qn = 0;
     a->query[0] = '\0';
     a->sel = 0;
+    a->net = NULL;
     find_update(a);
 }
 
@@ -1986,24 +2033,185 @@ find_drop_proposed(app_t *a)
     a->have_proposed = 0;
 }
 
+/* ------------------------------------------------------- online (7.10) */
+
+/* Abandon whatever is in flight. Called when the rider leaves FIND, when a
+ * second request starts, and from the exit path -- an orphaned curl holding a
+ * socket open outlives the program, and so does the temp file it was writing
+ * to. */
+static void
+net_abandon(app_t *a)
+{
+    if (g_req.live || g_fetch.state == NF_RUNNING)
+        netfetch_cancel(&g_fetch);
+    g_req.live = 0;
+    if (a)
+        a->net = NULL;
+}
+
+/* atexit(), so it also covers the SIGINT/SIGTERM path -- on_signal() only sets
+ * a flag and the loop returns through main(). */
+static void
+fetch_atexit(void)
+{
+    net_abandon(NULL);
+}
+
+/* The request, which is the one thing N2 deliberately did not build.
+ *
+ * Valhalla takes a JSON POST body, so it goes in the file netfetch puts at
+ * $BEEPY_BODY. OSRM takes its coordinates in the PATH, so the whole URL is
+ * composed here and reaches the fetcher as $BEEPY_URL. Neither is interpolated
+ * into the shell line -- the environment is the whole reason netfetch takes
+ * them separately (7.8).
+ *
+ * `mode` steers Valhalla's costing and CANNOT steer OSRM's, and that asymmetry
+ * is deliberate rather than an omission. An OSRM profile is part of its URL
+ * (`/route/v1/<profile>/`) and no two deployments agree on what it is called --
+ * the public demo answers to `bike`, `cycling`, `driving` and `foot` with the
+ * identical car route, which is the measurement that stopped this program
+ * shipping a default URL at all. So the profile stays in the rider's
+ * `router_url`, where they can see it, and a `mode = car` that an OSRM URL will
+ * not honour says so on stderr rather than silently meaning nothing. */
+static void
+net_request(double slat, double slon, double dlat, double dlon, char *url,
+            int nurl, char *body, int nbody)
+{
+    const int car = g_mode == NAV_MODE_CAR;
+
+    if (netroute_type(g_router_type) == NETROUTE_OSRM) {
+        /* %.6f: OSRM's own coordinate precision, and about 11 cm -- further
+         * decimals would be noise from a GPS with a 3 m CEP. */
+        snprintf(url, (size_t)nurl,
+                 "%s/%.6f,%.6f;%.6f,%.6f?overview=full&steps=true"
+                 "&geometries=polyline",
+                 g_router_url, slon, slat, dlon, dlat);
+        body[0] = '\0';
+        if (car)
+            fprintf(stderr, "beepy-nav: mode = car does not reach an OSRM "
+                            "server -- its profile is part of router_url\n");
+        return;
+    }
+    snprintf(url, (size_t)nurl, "%s", g_router_url);
+    /* directions_options.units is asked for explicitly because netroute.c
+     * believes whatever `trip.units` comes back saying, and a server whose
+     * default is miles would otherwise be checked against a distance in
+     * kilometres. Asking removes the question. */
+    snprintf(body, (size_t)nbody,
+             "{\"locations\":[{\"lat\":%.6f,\"lon\":%.6f},"
+             "{\"lat\":%.6f,\"lon\":%.6f}],\"costing\":\"%s\","
+             "\"directions_options\":{\"units\":\"kilometers\"}}",
+             slat, slon, dlat, dlon, car ? "auto" : "bicycle");
+}
+
+/* Ask the online router for what the pack could not answer. The FIND page stays
+ * up and the title bar says FETCHING; the rider can go on typing, which is the
+ * entire point of N1's child process. */
+static void
+net_start(app_t *a, const place_t *h)
+{
+    char url[CFG_PATH_MAX + 128], body[512];
+
+    if (!g_router_url[0]) {
+        /* The default state of this program, and therefore the one a rider meets
+         * first: there is no router, so there was never anything that could have
+         * answered. Both halves are said -- the panel because the rider is
+         * waiting on it, stderr because whoever is reading a log over SSH is
+         * the person who can fix it. */
+        fprintf(stderr, "beepy-nav: no router_url configured, so there is "
+                        "nothing to ask\n");
+        a->net = "NO ROUTER";
+        return;
+    }
+    if (a->epochs < 1) {
+        /* An online router needs two coordinates and we have one. Offline never
+         * hits this because FIND's origin falls back to the pack reference,
+         * which is fine for a distance and not for a route. */
+        fprintf(stderr, "beepy-nav: no fix yet, so there is no start to ask "
+                        "about\n");
+        a->net = "NO FIX";
+        return;
+    }
+    net_abandon(a);
+    net_request(a->fx.lat, a->fx.lon, h->lat, h->lon, url, (int)sizeof url,
+                body, (int)sizeof body);
+    if (netfetch_start(&g_fetch, g_fetch_cmd, url, body[0] ? body : NULL) != 0) {
+        fprintf(stderr, "beepy-nav: fetch not started -- %s\n", g_fetch.why);
+        a->net = "NO SIGNAL";
+        return;
+    }
+    g_req.live = 1;
+    g_req.lat = h->lat;
+    g_req.lon = h->lon;
+    snprintf(g_req.name, sizeof g_req.name, "%s", h->name ? h->name : "");
+    a->net = "FETCHING";
+    fprintf(stderr, "beepy-nav: asking %s for a route to %s\n", g_router_type,
+            g_req.name);
+}
+
+/* The bytes landed. Parse them into a proposal and show CONFIRM -- the same two
+ * lines the offline router reaches, so CONFIRM and everything past it cannot
+ * tell which router produced what it is drawing. */
+static void
+net_arrived(app_t *a)
+{
+    char why[NETROUTE_WHY];
+    int type = netroute_type(g_router_type);
+
+    g_req.live = 0;
+    find_drop_proposed(a);
+    why[0] = '\0';
+    if (netroute_parse(g_fetch.buf, type < 0 ? NETROUTE_VALHALLA : type,
+                       g_req.name, &a->proposed, why, (int)sizeof why)) {
+        fprintf(stderr, "beepy-nav: %s\n", why);
+        /* One message for every way bytes can arrive and not be a route. A
+         * rider cannot act differently on a captive portal than on a 442 -- both
+         * mean this destination is not going to happen right now -- and the
+         * sentence that tells them apart is on stderr for whoever debugs it. */
+        a->net = "NO ROUTE";
+        return;
+    }
+    a->have_proposed = 1;
+    a->net = NULL;
+    a->page = LIVE_CONFIRM;
+    fprintf(stderr, "beepy-nav: routed to %s -- %d points, %.2f km, %d cues"
+                    " (online)\n",
+            a->proposed.name, a->proposed.npt, a->proposed.total_m / 1000.0,
+            a->proposed.ncue);
+}
+
 /* Route to the selected hit and show CONFIRM. An unreachable destination is a
  * message on the FIND page's transient row and nothing else -- never a crash,
- * and never a half-built route (router_to() leaves `out` empty on failure). */
+ * and never a half-built route (router_to() leaves `out` empty on failure).
+ *
+ * OFFLINE FIRST, ALWAYS (DESIGN.md 7.10). Inside the pack the answer costs
+ * 0.1 ms and no connection; online costs 1.4 s and needs one. So the pack is
+ * asked first and the network only where the pack cannot honestly answer --
+ * which is two of the eight RC_* codes and not a judgement about the sentence
+ * router_to() wrote. */
 static void
 find_route_selected(app_t *a)
 {
     static char why[96];
     double e, n;
+    int code = RC_OK;
     const place_t *h;
 
     if (a->sel < 0 || a->sel >= a->nshown)
         return;
+    if (g_req.live)
+        return; /* one request at a time; ENTER during a fetch is not a queue */
     h = &a->hit[a->sel];
     find_origin(a, &e, &n);
     find_drop_proposed(a);
+    a->net = NULL;
     if (router_to(g_roads, e, n, h->e, h->n, g_mode, h->name, &a->proposed, why,
-                  (int)sizeof why)) {
+                  (int)sizeof why, &code)) {
         fprintf(stderr, "beepy-nav: %s\n", why);
+        if (code == RC_OFFMAP || code == RC_UNREACHABLE) {
+            net_start(a, h);
+            return;
+        }
         note_show(a, "NO ROUTE");
         return;
     }
@@ -2033,15 +2241,27 @@ find_key(app_t *a, int ch)
         find_route_selected(a);
         break;
     case 27: /* Esc */
+        /* Leaving the page abandons the request. A rider who backed out of FIND
+         * is not waiting for anything, and a CONFIRM page appearing over the
+         * NAV page 1.4 seconds later would be the program answering a question
+         * they had withdrawn. */
+        net_abandon(a);
         a->page = a->page_back;
         break;
     case '\b':
     case 127: /* DEL, which is what a terminal sends for Backspace */
         if (a->qn == 0) {
+            net_abandon(a);
             a->page = a->page_back;
             break;
         }
         a->query[--a->qn] = '\0';
+        /* Typing clears the STATUS but not the request: the count is about to
+         * be true again, and the fetch is still the rider's own. FETCHING is
+         * left alone for the same reason -- net_abandon() is the only thing that
+         * stops a fetch, and a keystroke is not it. */
+        if (!g_req.live)
+            a->net = NULL;
         find_update(a);
         break;
     case NAVKEY_DOWN:
@@ -2071,6 +2291,8 @@ find_key(app_t *a, int ch)
             return 0; /* the field is full; a silent no-op beats a wrap */
         a->query[a->qn++] = (char)ch;
         a->query[a->qn] = '\0';
+        if (!g_req.live)
+            a->net = NULL;
         find_update(a);
         break;
     }
@@ -2711,6 +2933,14 @@ run_live(app_t *a, const char *devpath, const char *replaypath, int headless,
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
+    /* In BOTH lanes, and not inside cleanup() with the panel, because the thing
+     * being cleaned up is not device-specific: a fetch still running at exit
+     * leaves an orphaned child holding a socket and a temp file in /tmp, which
+     * on this device is RAM. 7.8 promised the temp file was unlinked on every
+     * exit path; until FIND could start a fetch that outlives a page, nothing in
+     * this file had ever called netfetch_cancel() and the promise was only true
+     * because every fetch happened to finish. */
+    atexit(fetch_atexit);
 #ifdef NAV_DEVICE
     if (g_panel_open) {
         /* Inherited from the route picker, panel and grab and all. */
