@@ -71,6 +71,16 @@ typedef struct {
      * bicycle navigator) or NAV_MODE_CAR. It picks the online costing and,
      * offline, which road classes the router will use. */
     int mode;
+    /* Online routing (DESIGN.md 7.8). `router_url` empty means offline only,
+     * and there is NO DEFAULT -- a safety argument, not a licensing one: the
+     * public OSRM demo server is car-only and ignores the profile in the path,
+     * so defaulting to it would route a bicycle onto an expressway. */
+    char router_url[CFG_PATH_MAX];
+    char router_type[16]; /* "valhalla" (default) or "osrm" */
+    /* How the bytes are fetched. A command and not a compiled-in curl call,
+     * because that is what lets a test substitute `cat FIXTURE` and keeps the
+     * gate off the network structurally rather than by promise. */
+    char fetch_cmd[CFG_PATH_MAX];
 } navcfg_t;
 
 void cfg_defaults(navcfg_t *c);

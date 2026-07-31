@@ -1762,6 +1762,83 @@ online router worth its 1.4 seconds.
 
 ---
 
+### 7.8 Fetching, without stopping the ride
+
+The first thing in this program that reaches off the device, and the first that
+can fail for a reason no fixture predicts. Both facts shaped it more than what
+it fetches does — which is why the module knows nothing about routes, JSON or
+Valhalla. It produces **bytes**; §7.9 will make sense of them.
+
+**Why a child process.** A fetch takes about 1.4 s — measured, against FOSSGIS
+Valhalla from the device: `READY after 69 polls, 1.39 s, 5,565 bytes`. The
+render loop runs at 8 Hz, so a blocking call drops eleven frames and freezes
+the display mid-corner. A child can be started, ignored for a hundred frames
+and reaped when convenient; and a server that hangs cannot corrupt program
+state, because it is not *in* the program. That last property is also what
+lets the deadline be a `kill()` rather than a hope.
+
+```
+IDLE ──start()──> RUNNING ──child exits──> READY ──> bytes
+                     │                        │
+                     │ waitpid(WNOHANG)       └─ bad ──> FAILED
+                     │ once per frame
+                     └─ >10 s ──kill()──> FAILED "timed out"
+```
+
+**Why the command is config.** `fetch_cmd` is a shell string, not a compiled-in
+`curl` invocation, and that one choice is what makes *no test touches the
+network* **structural** rather than a promise:
+
+| | |
+|---|---|
+| default | `curl -s -m 10 --max-filesize 1000000 …` |
+| unit tests | `printf`, `true`, `sleep 60`, a command that does not exist |
+| T-NET-FETCH | `sh -c 'sleep 1.5; printf SLOWBYTES'` — a slow fetch, deterministically |
+
+The URL and request body reach the command through the **environment**
+(`$BEEPY_URL`, `$BEEPY_BODY`), never by interpolation. A URL from a config file
+spliced into a shell line is a quoting bug waiting for the first destination
+with an ampersand in its name.
+
+10 s deadline; 1 MB cap, which is 25× the 39 KB a 43.8 km bicycle route
+measured and still refuses a server having a bad day. Temp files are unlinked
+on every exit path, including the signal handler that already owns the panel.
+
+#### The deadline is on the wall clock, and that was a bug first
+
+`netfetch_poll()` originally took the ride's `t`, on the reasoning that one
+clock beats two. That is right everywhere else in this program and wrong here.
+A timeout is a statement about **how long a server has really had**, and the
+ride clock is not the real world in a `--no-pace` replay, where ten minutes of
+riding go by in a few seconds. The first slow-fetch test timed out after
+**eleven milliseconds**. It reads `CLOCK_MONOTONIC` internally now and takes no
+clock argument at all.
+
+#### What the gate measures
+
+**T-NET-FETCH**: a 1.5 s fetch fired mid-replay, and the frame trace shows *no
+gap over 200 ms* — against an 8 Hz nominal of 125 ms. A **maximum**, not an
+average: 97 frames with one 1,500 ms hole still averages 8 Hz, and the hole is
+the entire failure mode. Measured: **97 frames over 12.00 s, worst gap 125 ms,
+14 of them rendered while the fetch was in flight.**
+
+Two things about that test are load-bearing and were both wrong first. It is
+**paced**, because unpaced the ride clock outruns the wall clock and a gap in
+it means nothing. And it is **moving**, because §6.3 drops a stopped ride to
+1 Hz on purpose — the first version used a stationary fixture and was solemnly
+measuring the stop rate.
+
+**T-NETFETCH** (`tests/test_netfetch.c`, on the device) covers the eight ways a
+fetch ends: bytes, a slow fetch that proves the caller polled rather than
+blocked, the body and URL arriving by environment, a non-zero exit, an **empty
+reply** — which is what a captive portal and a rate limiter both look like from
+here — a fetcher that is not installed, an empty `fetch_cmd`, and a server that
+never answers, killed at the deadline. That last one really does take ten
+seconds, and it earns them: the deadline is the only thing protecting a rider
+from a program that has stopped.
+
+---
+
 ## 8. Data model
 
 Only what the pages consume. The MAP page of §1.5 consumes a strict subset of

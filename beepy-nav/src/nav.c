@@ -42,6 +42,7 @@
 
 #include "arrows.h"
 #include "chooser.h"
+#include "netfetch.h"
 #include "config.h"
 #include "fix.h"
 #include "led.h"
@@ -279,6 +280,19 @@ static savedmark_t g_savedmark[SAVED_MARK_MAX];
 /* The travel mode (DESIGN.md 7.7). At file scope with the packs: it outlives
  * every route, and both the router and the pages want it. */
 static int g_mode = NAV_MODE_BIKE;
+/* Online routing (DESIGN.md 7.8). One fetch at a time, at file scope with the
+ * packs because it outlives a route and because the signal handler that owns
+ * the panel must be able to kill the child on the way out -- an orphaned curl
+ * holding a socket open is a small thing, but it is a small thing that
+ * survives the program. */
+static netfetch_t g_fetch;
+static char g_router_url[CFG_PATH_MAX];
+static char g_router_type[16];
+static char g_fetch_cmd[CFG_PATH_MAX];
+/* Test seam: start a fetch at this replay second, so N1's frame-timing claim
+ * can be measured before anything is wired to FIND. < 0 is off. */
+static double g_fetch_at = -1.0;
+static int g_fetch_fired;
 
 static ridelog_t RIDELOG;
 
@@ -1541,6 +1555,25 @@ frame_at(app_t *a, double t)
 
     pace_to(t);
     a->frame_t = t;
+    /* The fetch, reaped between frames and never waited on (DESIGN.md 7.8).
+     * This is the whole non-blocking claim in two lines: a child that has not
+     * finished costs one waitpid(WNOHANG) per frame, and one that has finished
+     * costs a read of a file nothing is writing to any more. */
+    if (g_fetch.state == NF_RUNNING) {
+        int st = netfetch_poll(&g_fetch);
+        if (st == NF_READY)
+            fprintf(stderr, "beepy-nav: fetched %ld bytes\n", g_fetch.len);
+        else if (st == NF_FAILED)
+            fprintf(stderr, "beepy-nav: fetch failed -- %s\n", g_fetch.why);
+    }
+    if (g_fetch_at >= 0.0 && !g_fetch_fired && t >= g_fetch_at) {
+        g_fetch_fired = 1;
+        if (netfetch_start(&g_fetch, g_fetch_cmd, g_router_url, "{}") != 0)
+            fprintf(stderr, "beepy-nav: fetch not started -- %s\n",
+                    g_fetch.why);
+        else
+            fprintf(stderr, "beepy-nav: fetch started at t=%.2f\n", t);
+    }
     /* DESIGN.md 1.1, evaluated on the FRAME clock and not on the fix clock:
      * a fix is the one event that cannot happen during the gap this measures,
      * so a rule that only ran on fixes could never fire. Cleared in
@@ -2972,6 +3005,9 @@ main(int argc, char **argv)
         cfg_default_path(cfgpath, sizeof cfgpath);
         cfg_load(&cfg, cfgpath, 0);
     }
+    snprintf(g_router_url, sizeof g_router_url, "%s", cfg.router_url);
+    snprintf(g_router_type, sizeof g_router_type, "%s", cfg.router_type);
+    snprintf(g_fetch_cmd, sizeof g_fetch_cmd, "%s", cfg.fetch_cmd);
     memcpy(g_place, cfg.place, sizeof g_place);
     g_nplace = cfg.nplace;
     g_mode = cfg.mode;
@@ -3044,6 +3080,13 @@ main(int argc, char **argv)
             ftracepath = argv[++i];
         else if (!strcmp(a, "--stats"))
             RC.stats = 1;
+        else if (!strcmp(a, "--fetch-at") && i + 1 < argc) {
+            /* Test seam (DESIGN.md 7.8): start a fetch at this replay second.
+             * It exists so N1's claim -- that a fetch in flight costs the 8 Hz
+             * loop nothing -- can be MEASURED before anything is wired to
+             * FIND. The same reason --dump-at and --key exist. */
+            g_fetch_at = atof(argv[++i]);
+        }
         else if (!strcmp(a, "--fps") && i + 1 < argc) {
             fps = atof(argv[++i]);
             if (!(fps > 0.0) || fps > 60.0) {

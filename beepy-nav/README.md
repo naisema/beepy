@@ -233,6 +233,9 @@ basemap    =            # empty: no streets    (--basemap F / --no-basemap)
 roads      =            # empty: F does nothing (--roads F / --no-roads)
 place      =            # repeats: NAME LAT,LON -- see Saving Home and Work
 mode       = bike       # or car -- picks which roads routing will use
+router_url =            # empty: offline only. See Online routing below
+router_type = valhalla  # or osrm
+fetch_cmd  =            # how bytes are fetched; the default uses curl
 ```
 
 `place` is the one key here that **accumulates** rather than replaces: each line

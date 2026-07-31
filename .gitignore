@@ -20,6 +20,7 @@ out-*.fb
 /beepy-nav/tests/test_route
 /beepy-nav/tests/test_tile
 /beepy-nav/tests/test_search
+/beepy-nav/tests/test_netfetch
 out-*.tiles
 out-*.roads
 

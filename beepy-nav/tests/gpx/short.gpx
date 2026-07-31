@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DESIGN.md 7.8's fixture route: 111 m due north, ridden at 33 km/h so a
+     PACED replay of it lasts twelve seconds. Short because T-NET-FETCH runs
+     in real time -- the only test here that does, because the claim it makes
+     is about real time -- and moving because 6.3 drops a stopped ride to 1 Hz
+     and there would be no 8 Hz to measure. -->
+<gpx version="1.1" creator="beepy-nav tests"><trk><name>SHORT</name><trkseg>
+<trkpt lat="13.8851" lon="100.3785"/><trkpt lat="13.8861" lon="100.3785"/>
+</trkseg></trk></gpx>

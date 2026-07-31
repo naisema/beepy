@@ -18,6 +18,13 @@ cfg_defaults(navcfg_t *c)
     c->led_alerts = 1; /* 7.5; led.c already copes with an unwritable LED */
     c->nplace = 0;
     c->mode = NAV_MODE_BIKE;
+    c->router_url[0] = '\0';
+    snprintf(c->router_type, sizeof c->router_type, "valhalla");
+    snprintf(c->fetch_cmd, CFG_PATH_MAX, "%s",
+             "curl -s -m 10 --max-filesize 1000000 "
+             "-H 'Content-Type: application/json' "
+             "--data-binary @\"$BEEPY_BODY\" \"$BEEPY_URL\"");
+
     c->routes_dir[0] = '\0';
     c->rides_dir[0] = '\0';  /* 7.6; ridelog_default_dir() decides */
     c->basemap[0] = '\0';    /* 6.5; no pack, and no path to guess  */
@@ -187,6 +194,20 @@ cfg_load(navcfg_t *c, const char *path, int loud)
                     c->nplace++;
                 }
             }
+        } else if (!strcmp(key, "router_type")) {
+            if (strcmp(val, "valhalla") && strcmp(val, "osrm"))
+                complain(path, lineno,
+                         "router_type must be valhalla or osrm, not", val);
+            else
+                snprintf(c->router_type, sizeof c->router_type, "%s", val);
+        } else if (!strcmp(key, "router_url") ||
+                   !strcmp(key, "fetch_cmd")) {
+            char *dst = !strcmp(key, "fetch_cmd") ? c->fetch_cmd
+                                                  : c->router_url;
+            if (strlen(val) >= (size_t)CFG_PATH_MAX)
+                complain(path, lineno, "is too long", key);
+            else
+                snprintf(dst, CFG_PATH_MAX, "%s", val);
         } else if (!strcmp(key, "routes_dir") || !strcmp(key, "rides_dir") ||
                    !strcmp(key, "basemap") || !strcmp(key, "roads")) {
             /* Four paths, one rule. Not lowercased: on the device's f2fs and

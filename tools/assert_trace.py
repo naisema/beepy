@@ -407,6 +407,29 @@ class Checker:
         self.report(not moved, "the drawn position is frozen during a gap",
                     "" if not moved else f"{len(moved)} rows, first {moved[0]}")
 
+    def max_frame_gap(self, limit):
+        """No two consecutive frames further apart than `limit` seconds.
+
+        DESIGN.md 7.8's whole claim in one number. A fetch takes about 1.4 s
+        and the loop runs at 8 Hz; if the fetch were a function call there
+        would be one 1400 ms hole in this column and the rest would look
+        perfect. An average would hide it -- 97 frames with one gap of 1.5 s
+        still averages 8 Hz -- so this is a MAXIMUM and nothing else.
+
+        Only meaningful on a PACED replay: unpaced, the ride clock outruns the
+        wall clock and the gaps mean nothing. And only on a MOVING one, since
+        6.3 drops a stopped ride to 1 Hz on purpose -- the first version of
+        this test used a stationary fixture and was measuring the stop rate.
+        """
+        t = self.col("t")
+        worst, at = 0.0, 0.0
+        for a, b in zip(t, t[1:]):
+            if b - a > worst:
+                worst, at = b - a, a
+        self.report(worst <= limit,
+                    f"no frame gap over {limit * 1000:.0f} ms",
+                    f"worst {worst * 1000:.0f} ms at t={at:.2f}")
+
     def zero(self, name):
         v = self.col(name)
         bad = [(i, x) for i, x in enumerate(v) if x != 0.0]
@@ -443,6 +466,8 @@ def main(argv):
         elif a == "--latch-count":
             n = next(it)
             c.latch_count(n, int(next(it)))
+        elif a == "--max-frame-gap":
+            c.max_frame_gap(float(next(it)))
         elif a == "--zero":
             c.zero(next(it))
         elif a == "--any":

@@ -44,6 +44,10 @@ ROADPOIS   ?= beepy-nav/tests/roads/pois.json
 # dogleg between the same two points, so "the mode changed the route" is a
 # length and not a flag. Read by tests/test_search.c, which runs on the device.
 ROADMODES  ?= beepy-nav/tests/roads/modes.json
+# DESIGN.md 7.8's fetch fixtures: a deliberately slow fetcher, and the tiny
+# moving route the paced replay follows while it is in flight.
+NETCONF    ?= beepy-nav/tests/net/slow.conf
+SHORTGPX   ?= beepy-nav/tests/gpx/short.gpx
 ROADREF    ?= 13.740,100.560
 # The saved-places fixture (DESIGN.md 1.4.6). A config file and not flags,
 # because the feature IS a config file -- a test that set the places another
@@ -72,7 +76,7 @@ NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
             beepy-nav/src/tile.o beepy-nav/src/search.o \
             beepy-nav/src/router.o beepy-nav/src/view_find.o \
             beepy-nav/src/view_confirm.o beepy-nav/src/view_map.o \
-            beepy-nav/src/view_quit.o
+            beepy-nav/src/view_quit.o beepy-nav/src/netfetch.o
 HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h beepy-nav/src/*.h)
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav
@@ -313,7 +317,8 @@ RROUTE     = beepy-nav/tests/gpx/loop.gpx
 MKNMEA     = python3 tools/mknmea.py --gpx $(RROUTE)
 ASSERT     = python3 tools/assert_trace.py
 REPLAYS    = $(RDIR)/ride.nmea $(RDIR)/stationary.nmea $(RDIR)/detour.nmea \
-             $(RDIR)/rough.nmea $(RDIR)/still.nmea $(RDIR)/nofix.nmea
+             $(RDIR)/rough.nmea $(RDIR)/still.nmea $(RDIR)/nofix.nmea \
+             $(RDIR)/short.nmea
 # The four rides above run one frame per fix; these three run again at the
 # real 8 Hz, because 6.1's smoothing, 6.3's dead reckoning, 6.4's frame skip
 # and 7.5's alerts all happen BETWEEN fixes and a one-frame-per-fix trace
@@ -359,6 +364,13 @@ $(RDIR)/rough.nmea: tools/mknmea.py $(RROUTE)
 # FREEZE is what is under test rather than its smoothing.
 $(RDIR)/still.nmea: tools/mknmea.py $(RROUTE)
 	$(MKNMEA) --stationary 11@0 --hold-jitter 0 --duration 600 --seed 2 -o $@
+
+# DESIGN.md 7.8's fixture, and the only one ridden in REAL TIME: T-NET-FETCH is
+# paced, so twelve seconds of fixture costs twelve seconds of gate. Short for
+# that reason, and MOVING because 6.3 drops a stopped ride to 1 Hz and there
+# would be no 8 Hz left to measure. 33 km/h over 111 m is twelve seconds.
+$(RDIR)/short.nmea: tools/mknmea.py $(SHORTGPX)
+	python3 tools/mknmea.py --gpx $(SHORTGPX) --speed 33 --hz 1 -o $@
 
 test-replay: $(NAV) $(REPLAYS)
 	@echo "--- T-RIDE: a ride along its own route"
@@ -452,6 +464,24 @@ test-frames: $(NAV) $(REPLAYS)
 	python3 tools/fbdiff.py $(RDIR)/note-a.fb $(RDIR)/plain-a.fb \
 		--mask 0,216,127,239 --max-px 0
 	python3 tools/fbdiff.py $(RDIR)/note-b.fb $(RDIR)/plain-b.fb --max-px 0
+	@echo "--- T-NET-FETCH: a fetch in flight costs the frame clock nothing"
+#	DESIGN.md 7.8. A fetch takes about 1.4 s and the loop runs at 8 Hz, so a
+#	blocking implementation leaves ONE 1400 ms hole and 96 perfect frames
+#	either side -- which an average cannot see. Hence a maximum, and nothing
+#	else.
+#
+#	--pace and a MOVING fixture, both load-bearing. Unpaced, the ride clock
+#	outruns the wall clock and a gap in it means nothing; stationary, 6.3
+#	drops the loop to 1 Hz on purpose and the first version of this test was
+#	solemnly measuring the stop rate.
+	$(NAV) --route $(SHORTGPX) --replay $(RDIR)/short.nmea --headless $(FPS8) \
+		--pace --config $(NETCONF) --fetch-at 4 \
+		--trace-frames $(RDIR)/fetch-frames.tsv 2> $(RDIR)/fetch.log
+	grep -q "fetch started" $(RDIR)/fetch.log
+#	And it finished. Without this the gap assertion would pass on a build
+#	where the fetch never ran at all.
+	grep -q "fetched 9 bytes" $(RDIR)/fetch.log
+	$(ASSERT) $(RDIR)/fetch-frames.tsv --max-frame-gap 0.2
 	@echo "--- T-SKIP: a display that stopped changing stops being sent"
 	$(ASSERT) $(RDIR)/still-frames.tsv --settles presented
 	@echo "--- T-NOFIX: thirty seconds with no fix (DESIGN.md 1.1)"
@@ -764,6 +794,7 @@ HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
             host/led.o host/config.o host/ridelog.o host/tile.o \
             host/search.o host/router.o host/view_find.o \
             host/view_confirm.o host/view_map.o host/view_quit.o \
+           host/netfetch.o \
             host/nav.o
 
 # beepy-nav is portable end to end (no fbdev, no evdev), so the Mac can link
@@ -773,6 +804,7 @@ HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/chooser.o host/led.o host/config.o host/ridelog.o \
            host/tile.o host/search.o host/router.o host/view_find.o \
            host/view_confirm.o host/view_map.o host/view_quit.o \
+           host/netfetch.o \
            host/nmea.o host/gps.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
 
@@ -787,7 +819,8 @@ host/beepy-nav: $(HOST_NAV)
 # comparison. Runs in either lane; `check` runs it on the device.
 UNIT_TESTS = beepy-nav/tests/test_map beepy-nav/tests/test_gpx \
              beepy-nav/tests/test_route beepy-nav/tests/test_tile \
-             beepy-nav/tests/test_search
+             beepy-nav/tests/test_search \
+             beepy-nav/tests/test_netfetch
 
 test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
 	./beepy-nav/tests/test_map
@@ -795,6 +828,10 @@ test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
 	./beepy-nav/tests/test_route
 	./beepy-nav/tests/test_tile
 	./beepy-nav/tests/test_search
+#	Last, because it is the only test here that spends real time -- ten
+#	seconds of it, waiting for a deadline that is the sole defence against a
+#	server which accepts a connection and then says nothing (DESIGN.md 7.8).
+	./beepy-nav/tests/test_netfetch
 
 beepy-nav/tests/test_map: beepy-nav/tests/test_map.c beepy-nav/src/map.c $(HDRS)
 	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
@@ -827,6 +864,14 @@ beepy-nav/tests/test_tile: beepy-nav/tests/test_tile.c beepy-nav/src/tile.c \
 # they are checked by assertion. route.c joins the link because router_to()
 # leaves a prepared route_t -- which is the point of it -- and gpx.c because
 # route.c calls route_load(). No cover.c: nothing here draws.
+# The fetcher (DESIGN.md 7.8). Links netfetch.c and nothing else -- it knows
+# about bytes and child processes, not about routes -- which is what lets this
+# run in `make check` on the device with no network anywhere near it.
+beepy-nav/tests/test_netfetch: beepy-nav/tests/test_netfetch.c \
+                               beepy-nav/src/netfetch.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
+		beepy-nav/tests/test_netfetch.c beepy-nav/src/netfetch.c
+
 beepy-nav/tests/test_search: beepy-nav/tests/test_search.c \
                              beepy-nav/src/search.c beepy-nav/src/router.c \
                              beepy-nav/src/route.c beepy-nav/src/gpx.c $(HDRS)
