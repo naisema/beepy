@@ -2277,18 +2277,28 @@ net_arrived(app_t *a)
 {
     char why[NETROUTE_WHY];
     int type = netroute_type(g_router_type);
+    int code = NR_OK;
 
     g_req.live = 0;
     find_drop_proposed(a);
     why[0] = '\0';
     if (netroute_parse(g_fetch.buf, type < 0 ? NETROUTE_VALHALLA : type,
-                       g_req.name, &a->proposed, why, (int)sizeof why)) {
+                       g_req.name, &a->proposed, why, (int)sizeof why, &code)) {
         fprintf(stderr, "beepy-nav: %s\n", why);
-        /* One message for every way bytes can arrive and not be a route. A
-         * rider cannot act differently on a captive portal than on a 442 -- both
-         * mean this destination is not going to happen right now -- and the
+        /* THREE answers, because three is what a rider can act on differently --
+         * and this used to be one, which told them the wrong thing. A 203 km
+         * destination refused by a server that caps a bicycle at 200 km reported
+         * NO ROUTE, i.e. "there is no way there", when the truth was "not from
+         * this server": ride to it, or point router_url somewhere without the
+         * cap. TOO FAR is the difference between those two.
+         *
+         * The rest still collapse, and that part of the original argument
+         * stands: a captive portal and a malformed body are both BAD REPLY,
+         * because a rider cannot do anything different about them and the
          * sentence that tells them apart is on stderr for whoever debugs it. */
-        a->net = "NO ROUTE";
+        a->net = code == NR_TOOFAR    ? "TOO FAR"
+                 : code == NR_REFUSED ? "NO ROUTE"
+                                      : "BAD REPLY";
         return;
     }
     a->net = NULL;

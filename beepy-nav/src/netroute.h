@@ -73,6 +73,34 @@ int netroute_polyline(const char *s, int precision, pt_t **out, char *why,
  * handful of via points is not a thing this device asks for. */
 #define NETROUTE_MAXLEG 64
 
+/* Why a response could not become a route, for the caller that has to put four
+ * words on a panel (DESIGN.md 7.10).
+ *
+ * The SAME argument router.h makes for RC_*: `why` is a sentence for a log and
+ * these are for the program, and a title bar 28 characters wide cannot show the
+ * sentence. Three categories, because three is all a rider can act on
+ * differently:
+ *
+ *   NR_TOOFAR    the router answered and said the distance exceeds its limit.
+ *                A DIFFERENT THING from "no route": the path exists, this server
+ *                will not compute it. FOSSGIS caps a bicycle at 200 km, and a
+ *                destination 203 km away reported NO ROUTE -- which told the
+ *                rider the opposite of the truth.
+ *   NR_REFUSED   the router answered with some other error. Its own words are in
+ *                `why`, because "no path could be found" is worth reading.
+ *   NR_BADREPLY  the bytes are not a route at all: empty, a captive portal,
+ *                truncated, a shape that will not decode, the wrong adapter.
+ *                Nothing the router said, because it may not have been the
+ *                router that answered.
+ */
+enum { NR_OK = 0, NR_TOOFAR, NR_REFUSED, NR_BADREPLY };
+
+/* Valhalla's documented code for the distance cap. Matched as a NUMBER and not
+ * by reading its message: the number is an API contract and the sentence beside
+ * it is not. OSRM has no equivalent -- its `code` is prose like "NoRoute" -- so
+ * an OSRM refusal lands on NR_REFUSED, which is honest rather than a guess. */
+#define NETROUTE_VH_TOOFAR 154
+
 /* Parse one response into `out`. `json` is the NUL-terminated body netfetch
  * left behind; `type` is NETROUTE_*; `name` becomes the route's name (NULL
  * gives "DESTINATION", as router_to() does).
@@ -83,6 +111,6 @@ int netroute_polyline(const char *s, int precision, pt_t **out, char *why,
  * object and a shape that does not decode are four different things, and a
  * rider who is told "NO ROUTE" for all four learns nothing. */
 int netroute_parse(const char *json, int type, const char *name, route_t *out,
-                   char *why, int nwhy);
+                   char *why, int nwhy, int *code);
 
 #endif /* BEEPY_NAV_NETROUTE_H */

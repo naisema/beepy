@@ -12,7 +12,7 @@ exists so that no fixture in this repo is a file somebody made by hand once
     beepy-nav/tests/net/osrm-bike.json       the same ride, in OSRM's shape
     beepy-nav/tests/net/osrm-poly6.json      ...encoded polyline6, which OSRM
                                              does when asked and cannot say
-    beepy-nav/tests/net/bad-*.{json,html}    the seven ways a 200 OK lies
+    beepy-nav/tests/net/bad-*.{json,html}    the eight ways a reply is not a route
 
 WHY THE OSRM FIXTURE IS TRANSCODED AND NOT CAPTURED. There is no OSRM server
 this project may ask for a bicycle route: the public demo is car-only, ignores
@@ -260,6 +260,12 @@ def main():
                                "legs": [{"shape": "o`nnY!ovrm~D",
                                          "summary": {"length": 4.969},
                                          "maneuvers": []}]}}, indent=1) + "\n")
+    # NOT generated: bad-toofar.json is a REAL capture off FOSSGIS Valhalla, the
+    # refusal it sent when the rider asked for a destination 203 km away against
+    # a bicycle cap of 200 km. Left as it arrived, for valhalla-bike.json's
+    # reason: a server's own error body is not something to invent, and the
+    # error_code in it (154) is the API contract TOO FAR is matched on.
+
     # Two points 30 cm apart: valid JSON, valid polyline, and not a route --
     # route_prepare() refuses anything shorter than the 50 m its bearing arms
     # need, and the refusal has to arrive as a message and not as a crash.

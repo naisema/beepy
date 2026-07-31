@@ -310,7 +310,9 @@ again:
 | `FETCHING` | a request is out; about 1.4 s on a decent connection |
 | `NO SIGNAL` | it could not be sent, or nothing useful came back |
 | `TIMED OUT` | ten seconds, and the server never answered |
-| `NO ROUTE` | the reply arrived and there is no route in it |
+| `TOO FAR` | the router refuses distances that long. FOSSGIS caps a bicycle at 200 km — the road exists, that server just will not compute it |
+| `NO ROUTE` | the router answered and said it cannot get you there |
+| `BAD REPLY` | something answered, and it was not a route — a captive portal is the usual culprit |
 | `NO ROUTER` | no `router_url` — nothing to ask |
 | `NO FIX` | no position yet, so there is no start to ask about |
 

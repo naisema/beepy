@@ -116,7 +116,7 @@ one_good(const char *path, int type, int want_pts, double want_m,
         return;
     memset(&r, 0, sizeof r);
     why[0] = '\0';
-    if (netroute_parse(body, type, "WORK", &r, why, sizeof why) != 0) {
+    if (netroute_parse(body, type, "WORK", &r, why, sizeof why, NULL) != 0) {
         printf("FAIL %s did not parse: %s\n", path, why);
         failures++;
         free(body);
@@ -178,17 +178,19 @@ one_good(const char *path, int type, int want_pts, double want_m,
  * function that only clobbers output it was given for real is a function whose
  * tests pass. */
 static void
-one_bad(route_t *live, const char *path, int type, const char *expect)
+one_bad(route_t *live, const char *path, int type, const char *expect,
+        int want_code)
 {
     char *body = slurp(path), why[NETROUTE_WHY];
     int rc, before_npt = live->npt, before_ncue = live->ncue;
+    int code = -1;
     double before_m = live->total_m;
     pt_t *before_pt = live->pt;
 
     if (!body)
         return;
     why[0] = '\0';
-    rc = netroute_parse(body, type, "WORK", live, why, sizeof why);
+    rc = netroute_parse(body, type, "WORK", live, why, sizeof why, &code);
     printf("    %-22s %s\n", path + strlen(NET), why);
     check(rc == -1, path);
     check(live->npt == before_npt && live->ncue == before_ncue &&
@@ -196,6 +198,14 @@ one_bad(route_t *live, const char *path, int type, const char *expect)
           "the route in flight is untouched");
     check(why[0] != '\0', "and the refusal says something");
     check(strstr(why, expect) != NULL, expect);
+    /* And the CODE, which is what the panel reads. `why` is for the log; a
+     * wrong code shows the rider the wrong four words while the log looks
+     * perfect -- which is exactly the bug this parameter was added for. */
+    {
+        char what[80];
+        snprintf(what, sizeof what, "%s -> code %d", expect, want_code);
+        check(code == want_code, what);
+    }
     free(body);
 }
 
@@ -269,12 +279,12 @@ main(void)
 
     /* --------------------------------------------------- T-NETROUTE-BAD */
 
-    printf("--- T-NETROUTE-BAD: a route in flight, and nine bad replies\n");
+    printf("--- T-NETROUTE-BAD: a route in flight, and ten bad replies\n");
     memset(&live, 0, sizeof live);
     {
         char *body = slurp(NET "valhalla-bike.json");
         if (!body || netroute_parse(body, NETROUTE_VALHALLA, "WORK", &live, why,
-                                    sizeof why) != 0) {
+                                    sizeof why, NULL) != 0) {
             printf("FAIL cannot set up the in-flight route: %s\n", why);
             free(body);
             return 1;
@@ -282,22 +292,33 @@ main(void)
         free(body);
     }
 
-    one_bad(&live, NET "bad-empty.json", NETROUTE_VALHALLA, "empty");
-    one_bad(&live, NET "bad-captive.html", NETROUTE_VALHALLA, "web page");
-    one_bad(&live, NET "bad-truncated.json", NETROUTE_VALHALLA, "truncated");
-    one_bad(&live, NET "bad-malformed.json", NETROUTE_VALHALLA, "malformed");
+    one_bad(&live, NET "bad-empty.json", NETROUTE_VALHALLA, "empty", NR_BADREPLY);
+    one_bad(&live, NET "bad-captive.html", NETROUTE_VALHALLA, "web page", NR_BADREPLY);
+    one_bad(&live, NET "bad-truncated.json", NETROUTE_VALHALLA, "truncated", NR_BADREPLY);
+    one_bad(&live, NET "bad-malformed.json", NETROUTE_VALHALLA, "malformed", NR_BADREPLY);
     /* Its own words, not ours: "no path could be found" tells a rider to pick
      * somewhere else; "the reply has no route in it" tells them the program is
      * broken, which would be a lie. */
-    one_bad(&live, NET "bad-noroute.json", NETROUTE_VALHALLA, "No path");
-    one_bad(&live, NET "bad-shape.json", NETROUTE_VALHALLA, "polyline");
-    one_bad(&live, NET "bad-tooshort.json", NETROUTE_VALHALLA, "only 0 m");
+    one_bad(&live, NET "bad-noroute.json", NETROUTE_VALHALLA, "No path", NR_REFUSED);
+    one_bad(&live, NET "bad-shape.json", NETROUTE_VALHALLA, "polyline", NR_BADREPLY);
+    one_bad(&live, NET "bad-tooshort.json", NETROUTE_VALHALLA, "only 0 m", NR_BADREPLY);
     /* A well-formed Valhalla reply read by the OSRM adapter, which is what a
      * wrong `router_type` in the config file looks like from here. */
-    one_bad(&live, NET "valhalla-bike.json", NETROUTE_OSRM, "no route in it");
+    one_bad(&live, NET "valhalla-bike.json", NETROUTE_OSRM, "no route in it", NR_BADREPLY);
     /* And the reverse. The Valhalla adapter finds no `trip`, and OSRM's own
      * `code` is the nearest thing to a reason in the body. */
-    one_bad(&live, NET "osrm-bike.json", NETROUTE_VALHALLA, "Ok");
+    one_bad(&live, NET "osrm-bike.json", NETROUTE_VALHALLA, "Ok", NR_REFUSED);
+    /* TOO FAR, and this one is a REAL server refusal -- captured off FOSSGIS
+     * Valhalla when the rider asked for Central Nakhon Sawan, 203 km away,
+     * against a bicycle cap of 200 km. It reported NO ROUTE before this code
+     * existed, which told them the opposite of the truth: the path is there and
+     * this server will not compute it.
+     *
+     * The code is what separates them, and it is matched on Valhalla's NUMBER
+     * (154) rather than its sentence, so a reworded message cannot silently turn
+     * TOO FAR back into NO ROUTE. */
+    one_bad(&live, NET "bad-toofar.json", NETROUTE_VALHALLA, "max distance",
+            NR_TOOFAR);
 
     /* Not from a file: a body with a shape whose length contradicts the
      * distance beside it, which is the precision defence firing on a response
@@ -309,7 +330,7 @@ main(void)
             "\"maneuvers\":[]}]}}";
         why[0] = '\0';
         check(netroute_parse(bogus, NETROUTE_VALHALLA, NULL, &live, why,
-                             sizeof why) == -1 &&
+                             sizeof why, NULL) == -1 &&
               strstr(why, "but the reply says") != NULL,
               "a shape that contradicts its own stated distance is refused");
         printf("    %-22s %s\n", "(length mismatch)", why);
@@ -359,7 +380,7 @@ main(void)
         memset(&r, 0, sizeof r);
         why[0] = '\0';
         if (netroute_parse(body, NETROUTE_VALHALLA, NULL, &r, why,
-                           sizeof why) != 0) {
+                           sizeof why, NULL) != 0) {
             printf("FAIL the synthetic right turn did not parse: %s\n", why);
             failures++;
         } else {
@@ -425,7 +446,7 @@ main(void)
         memset(&r, 0, sizeof r);
         why[0] = '\0';
         if (netroute_parse(body, NETROUTE_VALHALLA, NULL, &r, why,
-                           sizeof why) != 0) {
+                           sizeof why, NULL) != 0) {
             printf("FAIL the synthetic roundabout did not parse: %s\n", why);
             failures++;
         } else {
@@ -467,7 +488,7 @@ main(void)
             memset(&r, 0, sizeof r);
             why[0] = '\0';
             check(netroute_parse(body, NETROUTE_VALHALLA, NULL, &r, why,
-                                 sizeof why) == 0,
+                                 sizeof why, NULL) == 0,
                   "a reply in miles parses");
             if (r.npt) {
                 check(r.npt == 177 && fabs(r.total_m - 4953.3) < 1.0,

@@ -2155,7 +2155,7 @@ any of this C existed. The two OSRM fixtures are the same ride transcoded
 a bicycle route), one at polyline5 and one at **polyline6**, and all three parse
 to the same points, the same cue vertices and the same nine kinds.
 
-**T-NETROUTE-BAD**: nine bad replies against a live route — empty, a captive
+**T-NETROUTE-BAD**: ten bad replies against a live route — empty, a captive
 portal, truncated, malformed, a 200 with an error object, a corrupt shape
 alphabet, a 0 m route, and each fixture read by the *wrong* adapter — each
 refused, each with a different reason, and the route in flight byte-identical
@@ -2249,10 +2249,34 @@ somewhere with signal, versus the server is having a bad day — so `netfetch_t`
 grew one flag, `timedout`, for the one distinction that changes what a rider
 does. Everything past that is a sentence for the log.
 
-`NO ROUTE` covers **every** way bytes can arrive and not be a route, and that is
-deliberate: a rider cannot act differently on a captive portal than on a 442, and
-§7.9's nine distinct reasons are all on stderr for whoever is reading a log over
-SSH. `NO ROUTER` and `NO FIX` are said in both places, because the person who can
+`NO ROUTE` used to cover **every** way bytes can arrive and not be a route, on the
+argument that a rider cannot act differently on a captive portal than on a 442.
+**Most of that still holds and one case broke it.**
+
+The rider searched Central Nakhon Sawan, 203 km away, and got `NO ROUTE`. FOSSGIS
+Valhalla caps a bicycle at **200 km** and had said so exactly:
+
+```
+{"error_code":154,"error":"Path distance exceeds the max distance limit: 200000 meters"}
+```
+
+Every layer had worked — the pack refused, the router was asked, the router
+answered, §7.9 surfaced its words to the log — and the panel then reported the one
+thing that was *false*. "No route" means no path exists. The path exists; this
+server will not compute it. Ride to it, or point `router_url` at something without
+the cap. A rider told `NO ROUTE` learns the opposite.
+
+So there are three answers now, and three is what a rider can act on:
+
+| `NR_*` | panel | |
+|---|---|---|
+| `NR_TOOFAR` | `TOO FAR` | the router refused on distance. Matched on Valhalla's **error_code 154**, a number that is an API contract — not by reading its sentence, which is not |
+| `NR_REFUSED` | `NO ROUTE` | the router answered with any other error; its own words go to the log |
+| `NR_BADREPLY` | `BAD REPLY` | the bytes are not a route at all — empty, captive portal, truncated, undecodable shape, wrong adapter. It may not even have been the router that answered |
+
+The collapse survives where the original argument was sound: a captive portal and
+a malformed body are both `BAD REPLY`, and §7.9's ten distinct reasons are all on
+stderr for whoever is reading a log over SSH. `NO ROUTER` and `NO FIX` are said in both places, because the person who can
 fix those two is the person reading the log.
 
 #### One promise 7.8 made that nothing kept

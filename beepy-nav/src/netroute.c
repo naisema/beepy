@@ -884,9 +884,20 @@ vh_metres(const char *trip, const char *summary)
     return len * 1000.0;
 }
 
+/* One place, so no exit below can set a reason and forget the code -- router.c's
+ * refuse() for the same reason. */
+static int
+nr_fail(char *why, int nwhy, int *code, int nr, const char *msg)
+{
+    if (code)
+        *code = nr;
+    say(why, nwhy, "%s", msg);
+    return -1;
+}
+
 int
 netroute_parse(const char *json, int type, const char *name, route_t *out,
-               char *why, int nwhy)
+               char *why, int nwhy, int *code)
 {
     const char *root, *end, *node, *err;
     route_t r;
@@ -896,27 +907,26 @@ netroute_parse(const char *json, int type, const char *name, route_t *out,
 
     if (!out)
         return -1;
-    if (!json || !*jws(json)) {
-        say(why, nwhy, "the reply was empty");
-        return -1;
-    }
+    if (code)
+        *code = NR_OK;
+    if (!json || !*jws(json))
+        return nr_fail(why, nwhy, code, NR_BADREPLY, "the reply was empty");
     root = jws(json);
     if (*root != '{') {
         /* A login page, and the commonest failure on a bicycle: the phone
          * hotspot dropped and the device joined a cafe's captive portal, which
          * answers 200 OK to everything. */
-        say(why, nwhy, root[0] == '<' ? "got a web page, not a route"
+        return nr_fail(why, nwhy, code, NR_BADREPLY,
+                       root[0] == '<' ? "got a web page, not a route"
                                       : "the reply is not JSON");
-        return -1;
     }
     /* Validate all of it before believing any of it -- see the note above the
      * scanner. This is what makes a body truncated after the last field we
      * happen to read a refusal rather than a short route. */
     end = jend(root, 0);
-    if (!end || *jws(end)) {
-        say(why, nwhy, "the reply is truncated or malformed JSON");
-        return -1;
-    }
+    if (!end || *jws(end))
+        return nr_fail(why, nwhy, code, NR_BADREPLY,
+                       "the reply is truncated or malformed JSON");
 
     if (type == NETROUTE_VALHALLA) {
         node = jget(root, "trip");
@@ -933,24 +943,40 @@ netroute_parse(const char *json, int type, const char *name, route_t *out,
          * found" tells a rider to pick a different destination, and "the reply
          * has no route in it" tells them the program is broken. */
         char msg[NETROUTE_WHY];
+        double ec = 0.0;
         int wide;
         err = jget(root, "error");
         if (!err)
             err = jget(root, "message");
         if (!err)
             err = jget(root, "code");
-        if (err && jstr(err, msg, sizeof msg, &wide) == 0 && msg[0])
-            say(why, nwhy, "%s", msg);
-        else
-            say(why, nwhy, "the reply has no route in it");
+        if (err && jstr(err, msg, sizeof msg, &wide) == 0 && msg[0]) {
+            /* TOO FAR is its own answer, and the reason this code exists at all.
+             * A server that caps a bicycle at 200 km refusing a 203 km trip is
+             * saying "not from me", not "there is no way there" -- and a panel
+             * reading NO ROUTE tells the rider the opposite of the truth. Read as
+             * a NUMBER: error_code is Valhalla's API contract, the sentence
+             * beside it is not. */
+            if (jnum(jget(root, "error_code"), &ec) == 0 &&
+                (int)ec == NETROUTE_VH_TOOFAR)
+                return nr_fail(why, nwhy, code, NR_TOOFAR, msg);
+            return nr_fail(why, nwhy, code, NR_REFUSED, msg);
+        }
+        return nr_fail(why, nwhy, code, NR_BADREPLY,
+                       "the reply has no route in it");
+    }
+    if (!(stated > 0.0))
+        return nr_fail(why, nwhy, code, NR_BADREPLY,
+                       "the reply states no distance");
+    /* Everything past here is "the bytes arrived and are not a route", which is
+     * NR_BADREPLY to a caller: the router already answered, so a shape that will
+     * not decode is a proxy or a precision problem and not the router's refusal.
+     * decode_shape() writes the detail into `why` itself. */
+    if (decode_shape(node, type, stated, &s, &prec, why, nwhy)) {
+        if (code)
+            *code = NR_BADREPLY;
         return -1;
     }
-    if (!(stated > 0.0)) {
-        say(why, nwhy, "the reply states no distance");
-        return -1;
-    }
-    if (decode_shape(node, type, stated, &s, &prec, why, nwhy))
-        return -1;
 
     route_init(&r);
     r.pt = s.pt;
@@ -960,8 +986,8 @@ netroute_parse(const char *json, int type, const char *name, route_t *out,
                                                         : "DESTINATION");
     if (route_prepare(&r)) {
         route_free(&r);
-        say(why, nwhy, "the route is too short to follow");
-        return -1;
+        return nr_fail(why, nwhy, code, NR_BADREPLY,
+                       "the route is too short to follow");
     }
     /* Shorter than one pair of bearing arms and nothing in it can be
      * classified -- route_cues_derive() gives up at the same threshold -- so
@@ -969,15 +995,19 @@ netroute_parse(const char *json, int type, const char *name, route_t *out,
      * instructions. It is also what a router returns when it snapped both ends
      * to one node, which is router_to()'s "you are already there". */
     if (r.total_m < 2 * CUE_BEARING_M) {
+        char msg[NETROUTE_WHY];
+        double m = r.total_m;
         route_free(&r);
-        say(why, nwhy, "the route is only %.0f m long", r.total_m);
-        return -1;
+        snprintf(msg, sizeof msg, "the route is only %.0f m long", m);
+        return nr_fail(why, nwhy, code, NR_BADREPLY, msg);
     }
     ncue = count_cues(node, type);
     r.cue = calloc((size_t)ncue + 1, sizeof *r.cue);
     if (!r.cue) {
         route_free(&r);
         say(why, nwhy, "out of memory for %d cues", ncue);
+        if (code)
+            *code = NR_BADREPLY;
         return -1;
     }
     r.ncue = 0;
@@ -989,8 +1019,8 @@ netroute_parse(const char *json, int type, const char *name, route_t *out,
      * list is missing and put a CUE_DEST on the end if the router did not. */
     if (route_cues_finish(&r) < 0) {
         route_free(&r);
-        say(why, nwhy, "out of memory finishing the cues");
-        return -1;
+        return nr_fail(why, nwhy, code, NR_BADREPLY,
+                       "out of memory finishing the cues");
     }
     *out = r; /* the last line, and the first time `out` is touched at all */
     return 0;
