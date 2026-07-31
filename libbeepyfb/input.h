@@ -20,6 +20,13 @@ void evdev_close(void);
 int evdev_count(void);
 int evdev_fd(int i);
 
+/* How many of the keyboards evdev_open(1) opened REFUSED the grab, because
+ * something else holds them exclusively -- in practice another beepy-nav. Such a
+ * reader receives no events at all while the holder runs, so a diagnostic must
+ * say so rather than appear to work. The ride path ignores this: there, a lost
+ * grab only means keys also reach the console. Zero after evdev_close(). */
+int evdev_grab_failed(void);
+
 /* Drain the next EV_KEY event from fd into code/value (raw keycode and
  * 0=release 1=press 2=repeat). Skips non-key events. Returns 1 when a key
  * event was read, 0 when fd has no complete event left. */

@@ -96,7 +96,8 @@ static const char USAGE[] =
     "  --dump-at S:F write the frame at replay second S to file F (up to 4;\n"
     "                this is how a moving page gets into fbshow --verify)\n"
     "  --key S:C     press key C at replay second S (up to 8) -- how the\n"
-    "                keymap is driven in a headless test\n"
+    "                keymap is driven in a headless test. C may also be\n"
+    "                kcNNN, a raw keycode through the panel's own keymap\n"
     "  --print       dump nav_t as text, per fix\n"
     "  --north-up    start north-up instead of course-up\n"
     "  --imperial    feet and miles; --metric is the default\n"
@@ -111,6 +112,9 @@ static const char USAGE[] =
     "  --no-log      do not record the ride. On a real port the raw NMEA and\n"
     "                the per-fix trace go to ~/rides/YYYYMMDD-HHMMSS.{nmea,tsv}\n"
     "                unless this says otherwise (rides_dir in the config)\n"
+    "  --print-keys  print every keypress as a raw keycode and the character\n"
+    "                this program makes of it, then exit. Does NOT take the\n"
+    "                panel. For checking the Beepy's Alt digit layer\n"
     "  --demo        render a static design state instead of navigating\n"
     "  --page P      nav, nav-off, nav-nofix, nav-ask, nav-tiles, map,\n"
     "                map-nofix,\n"
@@ -3197,9 +3201,10 @@ keycode_to_char(int code)
     case KEY_X: return 'x';
     case KEY_Y: return 'y';
     case KEY_Z: return 'z';
-    /* The digit row needs the Beepy's symbol layer (DESIGN.md 2), which sends
-     * these keycodes; the FIND page is the one place a digit is worth the
-     * modifier, and "SOI 23" is why. */
+    /* An ordinary keyboard's digit row -- a USB keyboard, or ssh, where the
+     * terminal sends the characters and stdin_keys() handles them anyway. Kept
+     * because it costs ten lines and is what every keyboard EXCEPT this device's
+     * does. It is not, however, how a Beepy sends a digit. */
     case KEY_0: return '0';
     case KEY_1: return '1';
     case KEY_2: return '2';
@@ -3210,6 +3215,51 @@ keycode_to_char(int code)
     case KEY_7: return '7';
     case KEY_8: return '8';
     case KEY_9: return '9';
+    /* THE BEEPY'S SYMBOL LAYER, and this is where "the digit row needs the Alt
+     * modifier" (DESIGN.md 2) stopped being a footnote and became ten keycodes.
+     *
+     * Alt+W is not KEY_1. beepy-kbd emits keycode 136 and the CONSOLE KEYMAP
+     * turns that into a digit -- `keycode 136 = one` in
+     * /usr/share/kbd/keymaps/beepy-kbd.map, which the driver package installs and
+     * loadkeys applies. That translation belongs to the console, and beepy-nav
+     * reads /dev/input/event0 directly to bypass the console (input.c exists for
+     * exactly that reason). So the ten cases above have NEVER fired on this
+     * device, and the FIND page's digits were unreachable from the panel: typing
+     * "SOI 23" worked over ssh and not on the bike.
+     *
+     * Found by asking the keyboard instead of the header. --print-keys printed
+     *
+     *     keycode 136  ->  nothing (this program ignores it)
+     *     keycode 137  ->  nothing (this program ignores it)
+     *     keycode 138  ->  nothing (this program ignores it)
+     *
+     * for Alt+W, Alt+E, Alt+R. Before that I had read the driver's capability
+     * bitmap, found KEY_3 missing from it, and inferred that Alt+R specifically
+     * was broken. THAT WAS WRONG IN A WAY THAT LOOKED RIGHT: the bit really is
+     * clear, and it explains nothing, because these keys were never going to send
+     * KEY_1..KEY_0 at all. A measurement of the wrong thing is not evidence.
+     *
+     * The numbers are written out rather than named, and NOT because names were
+     * unavailable: Linux calls 136 KEY_FIND, 137 KEY_CUT, 138 KEY_HELP, 150
+     * KEY_WWW. Using those names here would be a lie about intent -- the Beepy
+     * repurposes the range wholesale, so `case KEY_FIND: return '1';` reads as a
+     * bug in a way `case 136:` does not. The keymap file is the authority and is
+     * cited above; a comment beside each keeps it checkable.
+     *
+     * Only the DIGITS are taken. The same layer carries brackets, quotes and
+     * arithmetic (keycodes 139-169 in that file), and find_key() accepts A-Z, 0-9
+     * and space alone -- so mapping them would add characters the one page that
+     * reads text discards. */
+    case 130: return '0'; /* beepy-kbd.map: keycode 130 = zero  */
+    case 136: return '1'; /* Alt+W */
+    case 137: return '2'; /* Alt+E */
+    case 138: return '3'; /* Alt+R */
+    case 150: return '4'; /* Alt+S */
+    case 151: return '5'; /* Alt+D */
+    case 152: return '6'; /* Alt+F */
+    case 163: return '7'; /* Alt+Z */
+    case 164: return '8'; /* Alt+X */
+    case 165: return '9'; /* Alt+C */
     case KEY_SPACE: return ' ';
     case KEY_BACKSPACE: return '\b';
     case KEY_ENTER:
@@ -3223,6 +3273,131 @@ keycode_to_char(int code)
     default:
         return 0;
     }
+}
+
+/* --print-keys: what the KEYBOARD sends, before this program has an opinion.
+ *
+ * A rider asked whether the Beepy's symbol layer reaches the FIND page -- Alt+W
+ * through Alt+C for 1..9 -- and the question could not be answered by reading
+ * either side. keycode_to_char() maps KEY_0..KEY_9 and always has. The DRIVER's
+ * capability bitmap on this device declares every keycode from 1 to 31 EXCEPT
+ * code 4, which is KEY_3. One of those two is lying about Alt+R and only a
+ * physical keypress can say which, so this prints the keypress.
+ *
+ * IT DOES NOT TAKE THE PANEL, and that is the whole reason it is a mode of its
+ * own rather than a flag on a ride. Taking the panel means SIGSTOPping fbterm
+ * and SIGCONTing it on every exit path including a crash, and the failure leaves
+ * the device looking dead (DESIGN.md 2). A keycode diagnostic has no business
+ * risking that: it opens evdev, prints, and returns. Nothing is loaded either --
+ * no config, no basemap, no road pack -- because 400 MB of packs to answer "what
+ * number is that key" would be absurd, and slow enough to look broken.
+ *
+ * It DOES grab (EVIOCGRAB), because the ride does, and an ungrabbed reading is a
+ * reading of a different situation: the console would also see the keys, and the
+ * question is what beepy-nav sees when it owns them. The kernel drops a grab when
+ * the fd closes -- including on SIGKILL -- so unlike the panel there is nothing
+ * here that can be left behind.
+ *
+ * Both halves are printed for every press: the raw keycode, and the character
+ * this program makes of it. A key that arrives and maps to nothing is a
+ * different bug from a key that never arrives, and the rider needs to be able to
+ * tell them apart without reading this file. */
+static int
+print_keys(void)
+{
+    int n, i;
+
+    evdev_open(1);
+    n = evdev_count();
+    if (n == 0) {
+        fputs("beepy-nav: no keyboard found on /dev/input/event*\n", stderr);
+        return 1;
+    }
+    /* The grab is REPORTED, not assumed. Another beepy-nav holding the keyboard
+     * exclusively is the likeliest state on a device somebody is testing on --
+     * it was the actual state the first time this ran -- and an ungrabbed reader
+     * gets no events at all. Announcing a keyboard we do not have would turn
+     * "quit your other beepy-nav" into "Alt+R does nothing", which is the exact
+     * wrong answer to the question this mode exists to settle. */
+    if (evdev_grab_failed() > 0) {
+        fprintf(stderr,
+                "beepy-nav: found %d keyboard%s but could not grab %d of them "
+                "--\n"
+                "  something else has it exclusively, almost certainly another\n"
+                "  beepy-nav (check with `pgrep -a beepy-nav`). No keypress "
+                "will\n"
+                "  arrive here until that one quits, so quit it first: press Q\n"
+                "  on the panel, or kill that PID.\n",
+                n, n == 1 ? "" : "s", evdev_grab_failed());
+        evdev_close();
+        return 1;
+    }
+    printf("beepy-nav --print-keys: %d keyboard%s grabbed.\n", n,
+           n == 1 ? "" : "s");
+    puts("Press keys. For the digits, hold Alt: W=1 E=2 R=3 S=4 D=5 F=6 "
+         "Z=7 X=8 C=9.");
+    puts("Esc twice to quit.  The console sees nothing while this runs.\n");
+    fflush(stdout);
+    for (;;) {
+        struct pollfd pfd[MAX_EVDEV];
+        int code, value;
+        static int esc;
+        for (i = 0; i < n; i++) {
+            pfd[i].fd = evdev_fd(i);
+            pfd[i].events = POLLIN;
+        }
+        if (poll(pfd, (unsigned)n, -1) <= 0)
+            break;
+        for (i = 0; i < n; i++) {
+            if (!(pfd[i].revents & POLLIN))
+                continue;
+            while (evdev_next_key(pfd[i].fd, &code, &value)) {
+                int ch;
+                /* Presses only. A release carries the same keycode and would
+                 * double every line, which on a 400x240 panel read over ssh is
+                 * the difference between a readable answer and a wall. */
+                if (value != 1)
+                    continue;
+                ch = keycode_to_char(code);
+                printf("keycode %3d  ->  ", code);
+                if (ch >= ' ' && ch <= '~')
+                    printf("'%c'\n", ch);
+                else if (ch == 0)
+                    puts("nothing (this program ignores it)");
+                else if (ch == '\n')
+                    puts("ENTER");
+                else if (ch == '\b')
+                    puts("BACKSPACE");
+                else if (ch == 27)
+                    puts("ESC");
+                else if (ch == '\t')
+                    puts("TAB");
+                else if (ch == NAVKEY_UP)
+                    puts("UP");
+                else if (ch == NAVKEY_DOWN)
+                    puts("DOWN");
+                else if (ch == NAVKEY_LEFT)
+                    puts("LEFT");
+                else if (ch == NAVKEY_RIGHT)
+                    puts("RIGHT");
+                else
+                    printf("key 0x%x\n", ch);
+                fflush(stdout);
+                /* TWICE, because one Esc is a plausible thing to press while
+                 * testing the keymap and losing the session to it would be
+                 * irritating. Any other key resets the count. */
+                if (code == KEY_ESC) {
+                    if (++esc >= 2) {
+                        evdev_close();
+                        return 0;
+                    }
+                } else
+                    esc = 0;
+            }
+        }
+    }
+    evdev_close();
+    return 0;
 }
 
 /* stdin, byte at a time, with just enough of a state machine to turn the two
@@ -3941,6 +4116,37 @@ main(int argc, char **argv)
         else if (!strcmp(a, "--key") && i + 1 < argc) {
             const char *v = argv[++i], *colon = strchr(v, ':');
             int ch = colon ? keyname_to_ch(colon + 1) : -1;
+            /* `--key 12:kc136` presses a RAW KEYCODE, through the same
+             * keycode_to_char() the panel's evdev reader uses. It exists because
+             * the Beepy's Alt digits were unreachable from the panel for the
+             * whole life of the FIND page and no test could have noticed: every
+             * assertion in this repo presses a CHARACTER, which enters below the
+             * keymap and so tests everything except the keymap.
+             *
+             * WHAT IT DOES AND DOES NOT PROVE. It proves this program still turns
+             * 136 into '1'. It CANNOT prove the Beepy still sends 136 -- if the
+             * driver's keymap changed, this passes while the bike breaks. That
+             * half is hardware and belongs to --print-keys, which is why that
+             * mode is documented rather than temporary.
+             *
+             * Device-only, like keycode_to_char() itself: the table is built from
+             * linux/input.h. The gate runs on the device, which is where it
+             * matters anyway. */
+            if (colon && ch < 0 && !strncmp(colon + 1, "kc", 2) &&
+                colon[3]) {
+#ifdef NAV_DEVICE
+                ch = keycode_to_char(atoi(colon + 3));
+                if (ch == 0) {
+                    fprintf(stderr, "--key %s: keycode %d maps to nothing\n", v,
+                            atoi(colon + 3));
+                    return 2;
+                }
+#else
+                fputs("beepy-nav: --key kcNNN needs the device's keymap\n",
+                      stderr);
+                return 2;
+#endif
+            }
             if (!colon || ch < 0 || g_nkeys >= MAX_KEYS) {
                 fprintf(stderr, "bad --key: %s\n%s", v, USAGE);
                 return 2;
@@ -3991,6 +4197,20 @@ main(int argc, char **argv)
             cfg.roads[0] = '\0';
         else if (!strcmp(a, "--config") && i + 1 < argc)
             i++; /* already read, above */
+        /* Answered HERE and not after the packs load: a keycode question needs
+         * no map, and the mode's whole value is that it starts instantly and
+         * touches nothing. On the Mac it is refused rather than silently
+         * accepted -- there is no evdev to read, and a flag that appeared to
+         * work and printed nothing would be worse than one that says why. */
+        else if (!strcmp(a, "--print-keys")) {
+#ifdef NAV_DEVICE
+            return print_keys();
+#else
+            fputs("beepy-nav: --print-keys needs evdev, so it only runs on "
+                  "the device\n", stderr);
+            return 2;
+#endif
+        }
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
             fputs(USAGE, stdout);
             return 0;

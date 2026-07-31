@@ -19,6 +19,10 @@
 
 static int g_ev[MAX_EVDEV];
 static int g_evn;
+/* How many of the opened keyboards refused to be grabbed -- see
+ * evdev_grab_failed(). Counted rather than returned, so evdev_open() keeps the
+ * signature every existing caller uses. */
+static int g_ev_ungrabbed;
 
 static int bit_set(const unsigned long *b, int n)
 {
@@ -44,9 +48,18 @@ void evdev_open(int grab)
         }
         /* Grabbing stops the keys we consume from also queueing up on the
          * console, which would otherwise spill into the shell on exit. The
-         * kernel releases the grab when the fd closes, including on a crash. */
-        if (grab)
-            ioctl(fd, EVIOCGRAB, 1);
+         * kernel releases the grab when the fd closes, including on a crash.
+         *
+         * A REFUSED grab is counted, because it means something else already
+         * holds this keyboard exclusively -- in practice another beepy-nav -- and
+         * a reader without the grab sees NOTHING while that one runs. The ride
+         * path has always ignored the result and still does; what it costs there
+         * is keys spilling to the console, which is cosmetic. It is not cosmetic
+         * for a diagnostic whose entire job is "did the key arrive", so
+         * --print-keys asks. Silently claiming a keyboard we do not have turns
+         * "your other beepy-nav is holding it" into "your key does nothing". */
+        if (grab && ioctl(fd, EVIOCGRAB, 1) < 0)
+            g_ev_ungrabbed++;
         g_ev[g_evn++] = fd;
     }
 }
@@ -58,7 +71,10 @@ void evdev_close(void)
         close(g_ev[i]);
     }
     g_evn = 0;
+    g_ev_ungrabbed = 0;
 }
+
+int evdev_grab_failed(void) { return g_ev_ungrabbed; }
 
 int evdev_count(void) { return g_evn; }
 

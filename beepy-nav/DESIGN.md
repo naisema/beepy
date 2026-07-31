@@ -527,6 +527,57 @@ Digits need the symbol layer (§2), which is why the keymap accepts `KEY_0`…`K
 from evdev: `SOI 23` is the query in the screenshot and it is not typeable
 without them.
 
+#### …and for the whole life of this page, that was not enough
+
+`KEY_0`…`KEY_9` are what an **ordinary** keyboard sends. **beepy-kbd does not send
+them.** Alt+W is **keycode 136**, and `/usr/share/kbd/keymaps/beepy-kbd.map` — the
+driver package's own file — says `keycode 136 = one`. That translation belongs to
+the **console keymap**, and this program reads `/dev/input/event0` directly *to
+bypass the console* (`libbeepyfb/input.c` exists for exactly that). So the ten
+cases above never fired on this device: `SOI 23` was typeable over ssh and
+**impossible on the bike**, which is where the screenshot was taken.
+
+Ten more cases, sourced from that file and cited beside each:
+
+| keycode | | keycode | | keycode | |
+|---|---|---|---|---|---|
+| 130 | `0` | 138 | Alt+R → `3` | 152 | Alt+F → `6` |
+| 136 | Alt+W → `1` | 150 | Alt+S → `4` | 163 | Alt+Z → `7` |
+| 137 | Alt+E → `2` | 151 | Alt+D → `5` | 164 | Alt+X → `8` |
+| | | | | 165 | Alt+C → `9` |
+
+Written as **numbers, not names**, and not for lack of names: Linux calls 136
+`KEY_FIND`, 137 `KEY_CUT`, 150 `KEY_WWW`. The Beepy repurposes the range wholesale,
+so `case KEY_FIND: return '1';` would read as a bug where `case 136:` does not.
+Only the digits are taken — the same layer carries brackets, quotes and arithmetic
+(139–169 in that file), and `find_key()` accepts A–Z, 0–9 and space alone.
+
+**No test in this repo could have caught it, and that is the lasting lesson.**
+Every `--key` presses a *character*, which enters **below** the keymap. A suite
+that drives a program through its own keymap tests everything except the keymap.
+So `--key kcNNN` now injects a raw keycode, and **T-BEEPY-DIGITS** asserts the two
+paths render a **byte-identical frame** — no golden, because the character path is
+already the reference — plus a third run proving it is not passing vacuously by
+drawing `SOI ` twice.
+
+What that test **cannot** do is prove the Beepy still *sends* 136; if the driver's
+keymap changes it passes while the bike breaks. That half is hardware, and
+`beepy-nav --print-keys` is the documented way to ask it — a mode that prints each
+press as a raw keycode *and* the character this program makes of it, because "the
+key never arrived" and "the key arrived and mapped to nothing" are different bugs.
+It deliberately **does not take the panel**: a diagnostic has no business risking
+the `SIGCONT`-on-every-exit-path obligation (§2) that leaves the device looking
+dead. It does grab, because the ride does — and it *reports* a refused grab, since
+another `beepy-nav` holding the keyboard would otherwise look exactly like a dead
+key.
+
+**How this was found is itself a caution.** The first evidence was the driver's
+evdev capability bitmap, which is missing bit 4 — `KEY_3`. From that I concluded
+Alt+R specifically was broken. The bit really is clear and it **explains nothing**,
+because these keys were never going to send `KEY_1`…`KEY_0` at all. A confident
+measurement of the wrong thing is worse than no measurement: it produced a tidy,
+plausible, entirely wrong diagnosis. Asking the keyboard settled it in one press.
+
 The 24 px query is a **generated glyph table** (`tools/gen_query.py` →
 `src/query24.h`, 40 glyphs at cap 24, 2.4 KB) rather than a live TrueType
 render, by §5.2's argument and for a harder reason: the device has no

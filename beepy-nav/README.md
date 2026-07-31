@@ -233,7 +233,15 @@ and on **CONFIRM** there are two, both printed on the screen: `Enter` to go and
 `Q` to cancel back to FIND.
 
 Digits *do* need the Beepy's Alt layer, which is the one place this program asks
-for it — `SOI 23` is not typeable without them.
+for it — `SOI 23` is not typeable without them. Hold **Alt**: W E R = 1 2 3,
+S D F = 4 5 6, Z X C = 7 8 9.
+
+> **If you are upgrading:** this did not work before. `beepy-nav` reads the
+> keyboard directly to bypass the console, and the console is what used to turn
+> those keys into digits — so on the panel they did nothing, while the same query
+> typed over ssh worked. Any address with a number in it was unreachable from the
+> bike. Fixed; if digits still do nothing after an upgrade, `beepy-nav
+> --print-keys` prints what your keyboard actually sends.
 
 ---
 

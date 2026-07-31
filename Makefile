@@ -1097,6 +1097,48 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
 #	draws for a TOO FAR.
 	! python3 tools/fbdiff.py $(RDIR)/toofar-car.fb \
 		goldens/nav-find-toofar.fb --mask 0,26,399,239 --max-px 0
+	@echo "--- T-BEEPY-DIGITS: the Alt digit layer reaches the FIND page"
+#	DESIGN.md 2. This is the regression test for a bug that shipped with the FIND
+#	page and survived every gate: keycode_to_char() mapped KEY_1..KEY_0, and
+#	beepy-kbd does not send those. Alt+W is keycode 136, and
+#	/usr/share/kbd/keymaps/beepy-kbd.map turns THAT into a digit -- a translation
+#	belonging to the console, which this program reads evdev specifically to
+#	bypass. So "SOI 23" could be typed over ssh and not on the bike.
+#
+#	NO TEST COULD HAVE CAUGHT IT, and that is the interesting part: every --key in
+#	this file presses a CHARACTER, which enters below the keymap. A suite that
+#	drives a program under its own keymap tests everything except the keymap.
+#	--key kcNNN exists to close that, and this is the only test that uses it.
+#
+#	THE ASSERTION IS THAT THE TWO PATHS AGREE. Run one types 1 2 3 as characters,
+#	run two sends keycodes 136 137 138, and the frames must be byte-identical --
+#	no golden, because the character path is already the reference and a golden
+#	would just be a third thing to keep in step.
+#
+#	Stationary, for T-MODE-KEY's reason: these frames are compared byte for byte
+#	and a moving rider changes every distance in the list legitimately.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
+		--roads $(ROADPACK) --config /dev/null \
+		--key 10:f --key 11:s --key 12:o --key 13:i --key 14:space \
+		--key 15:1 --key 16:2 --key 17:3 \
+		--dump-at 19:$(RDIR)/digits-char.fb
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
+		--roads $(ROADPACK) --config /dev/null \
+		--key 10:f --key 11:s --key 12:o --key 13:i --key 14:space \
+		--key 15:kc136 --key 16:kc137 --key 17:kc138 \
+		--dump-at 19:$(RDIR)/digits-kc.fb
+	cmp $(RDIR)/digits-char.fb $(RDIR)/digits-kc.fb
+#	And NOT vacuously: the same page with the digits never pressed must differ.
+#	Without this, a build where kc136 mapped to nothing would pass the cmp above
+#	by drawing "SOI " in both runs.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
+		--roads $(ROADPACK) --config /dev/null \
+		--key 10:f --key 11:s --key 12:o --key 13:i --key 14:space \
+		--dump-at 19:$(RDIR)/digits-none.fb
+	! cmp -s $(RDIR)/digits-none.fb $(RDIR)/digits-kc.fb
+#	What this canNOT prove: that the Beepy still SENDS 136. If the driver's keymap
+#	changes, this passes while the bike breaks -- that half is hardware, and
+#	`beepy-nav --print-keys` is the documented way to ask it.
 	@echo "--- T-NOTE-FITS: a note stays inside the panel, over a drawn map"
 #	The pair above asserts "changes nothing outside the panel" -- but only as
 #	strongly as the map under the note is interesting, and for a long time it
