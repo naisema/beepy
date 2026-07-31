@@ -114,7 +114,8 @@ static const char USAGE[] =
     "  --demo        render a static design state instead of navigating\n"
     "  --page P      nav, nav-off, nav-nofix, nav-ask, nav-tiles, map,\n"
     "                map-nofix,\n"
-    "                map-wait, map-tiles, overview, overview-tiles, arrows,\n"
+    "                map-wait, map-pan, map-pan-ask, map-tiles, overview,\n"
+    "                overview-tiles, arrows,\n"
     "                chooser, find, find-none, confirm, cliptest,\n"
     "                cliptest-panel -- and with --route it picks the page\n"
     "                the ride opens on\n"
@@ -140,6 +141,8 @@ enum {
     PAGE_MAP,
     PAGE_MAP_NOFIX,
     PAGE_MAP_WAIT,
+    PAGE_MAP_PAN,
+    PAGE_MAP_PAN_ASK,
     PAGE_MAP_TILES,
     PAGE_OVERVIEW,
     PAGE_OVERVIEW_TILES,
@@ -417,6 +420,12 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
     case PAGE_MAP_NOFIX:
         view_map_demo(cov, 1);
         break;
+    case PAGE_MAP_PAN:
+        view_map_pan_demo(cov, 0);
+        break;
+    case PAGE_MAP_PAN_ASK:
+        view_map_pan_demo(cov, 1);
+        break;
     case PAGE_MAP_WAIT:
         view_map_wait_demo(cov);
         break;
@@ -511,6 +520,15 @@ static int g_ndumps;
 #define DR_FPS 8.0        /* while moving                                  */
 #define DR_STOPPED_FPS 1.0/* "and 1 Hz when stopped"                       */
 #define DR_MOVING_KMH 3.0 /* the same threshold the heading freeze uses     */
+/* Screen pixels per arrow press (1.5.1). 24 is a tenth of the map's height:
+ * enough that one press is visibly a move, small enough to aim with -- and the
+ * Beepy's trackpad sends a stream of presses per swipe, so a bigger step would
+ * make a flick unrecoverable. */
+#define PAN_STEP 24.0
+/* Five screens in each direction. There is no navigational reason to be further
+ * out than this, `C` is always one key away, and a bound means a fumbled swipe
+ * cannot leave the rider looking at empty space with no idea which way home is. */
+#define PAN_MAX 1000.0
 #define DR_SNAP_M 5.0     /* beyond this a fix is a correction, not drift   */
 #define DR_EASE 3         /* frames a correction inside 5 m is spread over  */
 #define DR_MAX_EXTRAP 2.0 /* seconds: after this the position simply holds  */
@@ -626,6 +644,19 @@ typedef struct {
      * the thing happens, and a `char[]` would invite a caller to compose a
      * sentence too long for the bar. NULL is the ordinary count. */
     const char *net;
+
+    /* --- the MAP pan (DESIGN.md 1.5.1) ---------------------------------- */
+
+    /* Screen pixels away from the rider; 0,0 is following them. It does NOT
+     * decay and nothing recentres it but `C` -- a map the rider deliberately
+     * moved is a map they are reading, and snapping it back under them would
+     * throw away the one thing they asked for. */
+    double pan_x, pan_y;
+    /* A pan was asked for while MOVING and is waiting for ENTER (1.5.1). The
+     * step that triggered it is held here, so accepting applies the swipe the
+     * rider actually made rather than nothing. */
+    int pan_ask;
+    double pan_want_x, pan_want_y;
 
     /* --- rerouting (DESIGN.md 7.11) ------------------------------------- */
 
@@ -1114,6 +1145,9 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
          * split matters: 1.4.6 gives a magic name no behaviour, and this is
          * the one place where recognising HOME is harmless, because an
          * unrecognised name simply gets its initial. */
+        lm.pan_x = a->pan_x;
+        lm.pan_y = a->pan_y;
+        lm.ask_pan = a->pan_ask;
         lm.nsaved = 0;
         lm.saved = g_savedmark;
         if (g_have_ref) {
@@ -1964,6 +1998,23 @@ key_repaint(app_t *a)
  * enough that the row it borrowed is back before the rider next wants it. */
 #define NOTE_S 1.5
 
+/* Move the view, clamped. Nothing else touches pan_x/pan_y, so the clamp cannot
+ * be bypassed by a second caller forgetting it. */
+static void
+pan_by(app_t *a, double dx, double dy)
+{
+    a->pan_x += dx;
+    a->pan_y += dy;
+    if (a->pan_x > PAN_MAX)
+        a->pan_x = PAN_MAX;
+    if (a->pan_x < -PAN_MAX)
+        a->pan_x = -PAN_MAX;
+    if (a->pan_y > PAN_MAX)
+        a->pan_y = PAN_MAX;
+    if (a->pan_y < -PAN_MAX)
+        a->pan_y = -PAN_MAX;
+}
+
 static void
 note_show(app_t *a, const char *s)
 {
@@ -1980,6 +2031,12 @@ note_show(app_t *a, const char *s)
  */
 #define NAVKEY_DOWN 0x100
 #define NAVKEY_UP 0x101
+/* LEFT and RIGHT exist for the MAP pan of 1.5.1 and for nothing else. They were
+ * unmapped everywhere until then -- which is also why the Beepy's trackpad,
+ * whose driver runs it in arrow mode (touch_as = keys), could scroll the FIND
+ * list with up and down but do nothing at all sideways. */
+#define NAVKEY_LEFT 0x102
+#define NAVKEY_RIGHT 0x103
 
 /* Where the search measures from. The fix if there has ever been one, and
  * otherwise the pack's own reference -- which is the middle of the corridor it
@@ -2717,10 +2774,58 @@ handle_key(app_t *a, int ch)
         return find_key(a, ch);
     if (a->page == LIVE_CONFIRM)
         return confirm_key(a, ch);
+    /* The MAP pan of 1.5.1. Arrows, and only on MAP -- the NAV page's map is a
+     * third of the screen with a route in it and auto-zooms to the next cue, so
+     * there is nothing there a pan would improve.
+     *
+     * PANNING WHILE MOVING IS A DECISION, not a nudge: the map stops following
+     * the rider and nothing puts it back but `C`. So at speed the first swipe
+     * asks instead of moving, and the swipe it asks about is remembered so that
+     * ENTER applies the pan the rider actually made. Stopped, it just pans --
+     * there is nothing to be unaware of when the map and the bike are both
+     * still. */
+    if (a->page == LIVE_MAP &&
+        (ch == NAVKEY_UP || ch == NAVKEY_DOWN || ch == NAVKEY_LEFT ||
+         ch == NAVKEY_RIGHT)) {
+        double dx = ch == NAVKEY_LEFT ? PAN_STEP : ch == NAVKEY_RIGHT ? -PAN_STEP : 0.0;
+        double dy = ch == NAVKEY_UP ? PAN_STEP : ch == NAVKEY_DOWN ? -PAN_STEP : 0.0;
+        if (a->fx.speed_kmh >= DR_MOVING_KMH && !a->pan_x && !a->pan_y &&
+            !a->pan_ask) {
+            a->pan_ask = 1;
+            a->pan_want_x = dx;
+            a->pan_want_y = dy;
+            fprintf(stderr, "beepy-nav: map pan while moving -- ENTER to hold "
+                            "the map, C to centre it\n");
+        } else if (!a->pan_ask) {
+            pan_by(a, dx, dy);
+        }
+        key_repaint(a);
+        return 1;
+    }
+    if (a->page == LIVE_MAP && a->pan_ask && (ch == '\n' || ch == '\r')) {
+        a->pan_ask = 0;
+        pan_by(a, a->pan_want_x, a->pan_want_y);
+        key_repaint(a);
+        return 1;
+    }
+    /* C centres it, from either state, and is the ONLY thing that does. Bound
+     * even when the map is already centred, because a rider who has lost track
+     * of where the view is should not have to work out whether the key applies
+     * before pressing it. */
+    if (a->page == LIVE_MAP && (ch == 'c' || ch == 'C')) {
+        a->pan_ask = 0;
+        a->pan_x = a->pan_y = 0.0;
+        key_repaint(a);
+        return 1;
+    }
+
     /* ENTER answers the reroute prompt of 7.11, and answers nothing else: it is
      * unbound on all three ride pages, which is what left it free to become the
      * one key this question needs. Esc declines -- the prompt does not simply
      * expire, because a rider who has not looked down yet has not declined.
+     *
+     * The pan question above cannot collide with it: that one is MAP only and
+     * this one needs a route, and MAP is the page with no route.
      *
      * Both are checked BEFORE the switch, so a prompt cannot be answered by
      * accident with a key that already means something else. */
@@ -2877,7 +2982,8 @@ keyname_to_ch(const char *s)
         int ch;
     } NAMES[] = {{"enter", '\n'}, {"esc", 27},        {"bs", '\b'},
                  {"space", ' '},  {"tab", '\t'},      {"down", NAVKEY_DOWN},
-                 {"up", NAVKEY_UP}};
+                 {"up", NAVKEY_UP},   {"left", NAVKEY_LEFT},
+                 {"right", NAVKEY_RIGHT}};
     size_t i;
     if (!s || !*s)
         return -1;
@@ -2979,6 +3085,8 @@ keycode_to_char(int code)
     case KEY_ESC: return 27;
     case KEY_DOWN: return NAVKEY_DOWN;
     case KEY_UP: return NAVKEY_UP;
+    case KEY_LEFT: return NAVKEY_LEFT;
+    case KEY_RIGHT: return NAVKEY_RIGHT;
     case KEY_TAB: return '\t';
     default:
         return 0;
@@ -3009,7 +3117,11 @@ stdin_keys(app_t *a)
                 handle_key(a, NAVKEY_UP);
             else if (k == 'B')
                 handle_key(a, NAVKEY_DOWN);
-            /* Left, Right, Home and the rest: swallowed rather than typed. */
+            else if (k == 'D')
+                handle_key(a, NAVKEY_LEFT);
+            else if (k == 'C')
+                handle_key(a, NAVKEY_RIGHT);
+            /* Home, End and the rest: swallowed rather than typed. */
             continue;
         }
         if (esc == 1) {
@@ -3622,6 +3734,10 @@ main(int argc, char **argv)
                 page = PAGE_NAV_TILES;
             else if (!strcmp(p, "map"))
                 page = PAGE_MAP;
+            else if (!strcmp(p, "map-pan"))
+                page = PAGE_MAP_PAN;
+            else if (!strcmp(p, "map-pan-ask"))
+                page = PAGE_MAP_PAN_ASK;
             else if (!strcmp(p, "map-nofix"))
                 page = PAGE_MAP_NOFIX;
             else if (!strcmp(p, "map-wait"))

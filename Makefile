@@ -123,6 +123,10 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	./beepy-nav/beepy-nav --demo --page map       --dump out-nav-map.fb
 	./beepy-nav/beepy-nav --demo --page map-nofix --dump out-nav-map-nofix.fb
 	./beepy-nav/beepy-nav --demo --page map-wait  --dump out-nav-map-wait.fb
+#	DESIGN.md 1.5.1's two states: the map held off-centre, and the question a
+#	swipe raises while moving.
+	./beepy-nav/beepy-nav --demo --page map-pan     --dump out-nav-map-pan.fb
+	./beepy-nav/beepy-nav --demo --page map-pan-ask --dump out-nav-map-pan-ask.fb
 #	And the fourth: a position in the tile pack's OWN reference frame, which is
 #	the frame the MAP page introduced -- with no route there is no first point to
 #	reference to, so the pack's own is what the world is measured from and
@@ -178,6 +182,14 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	cmp goldens/nav-map.fb       out-nav-map.fb
 	cmp goldens/nav-map-nofix.fb out-nav-map-nofix.fb
 	cmp goldens/nav-map-wait.fb  out-nav-map-wait.fb
+	cmp goldens/nav-map-pan.fb     out-nav-map-pan.fb
+	cmp goldens/nav-map-pan-ask.fb out-nav-map-pan-ask.fb
+#	Neither is the centred page with nothing added, and they are not each other:
+#	a build that drew no pan, or drew the pan but not the question, would pass
+#	both cmps above and fail here.
+	! cmp -s goldens/nav-map-pan.fb     goldens/nav-map.fb
+	! cmp -s goldens/nav-map-pan-ask.fb goldens/nav-map.fb
+	! cmp -s goldens/nav-map-pan.fb     goldens/nav-map-pan-ask.fb
 	cmp goldens/nav-map-tiles.fb out-nav-map-tiles.fb
 	cmp goldens/nav-tiles.fb    out-nav-tiles.fb
 	cmp goldens/nav-overview-tiles.fb out-nav-overview-tiles.fb
@@ -273,6 +285,9 @@ endif
 		--dump goldens/nav-map-nofix.fb
 	./beepy-nav/beepy-nav --demo --page map-wait \
 		--dump goldens/nav-map-wait.fb
+	./beepy-nav/beepy-nav --demo --page map-pan     --dump goldens/nav-map-pan.fb
+	./beepy-nav/beepy-nav --demo --page map-pan-ask \
+		--dump goldens/nav-map-pan-ask.fb
 	./beepy-nav/beepy-nav --demo --page map-tiles \
 		--basemap $(TILEPACK) --dump goldens/nav-map-tiles.fb
 	./beepy-nav/beepy-nav --demo --page nav-tiles \
@@ -767,6 +782,49 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
 #	And installed as the live route by the same line a GPX takes, which is what
 #	makes it a destination rather than a map label.
 	grep -q "beepy-nav: THE ACADEMY -- " $(RDIR)/find-poi.log
+	@echo "--- T-MAP-PAN: the arrows move the map, and C brings it back"
+#	DESIGN.md 1.5.1. The trackpad on this keyboard is in arrow mode
+#	(touch_as = keys), so this is the same key path a thumb on the pad produces --
+#	and up/down already reached the FIND list, which is why only left/right had to
+#	be added to the keymap at all.
+#
+#	STATIONARY, because "C gives the frame back byte for byte" is the assertion
+#	that says the pan is a pure view offset and nothing else, and a moving rider
+#	changes the frame on their own. The same reason T-QUIT-CONFIRM uses this
+#	fixture.
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config $(SAVEDCONF) \
+		--dump-at 16:$(RDIR)/pan-centred.fb \
+		--key 20:right --key 21:right --key 22:down \
+		--dump-at 26:$(RDIR)/pan-held.fb \
+		--key 30:c --dump-at 34:$(RDIR)/pan-back.fb 2> $(RDIR)/pan.log
+#	The map moved...
+	! python3 tools/fbdiff.py $(RDIR)/pan-centred.fb $(RDIR)/pan-held.fb \
+		--max-px 0
+#	...and C put it back EXACTLY. A pan that leaked into the projection, the
+#	breadcrumb or the marker's own position would fail this and nothing else
+#	would.
+	python3 tools/fbdiff.py $(RDIR)/pan-centred.fb $(RDIR)/pan-back.fb --max-px 0
+#	Stopped, a swipe just pans: no question, because there is nothing to be
+#	unaware of when the map and the bike are both still.
+	! grep -q "pan while moving" $(RDIR)/pan.log
+#	MOVING, the first swipe ASKS and does not move the map -- then ENTER applies
+#	the swipe that raised the question, which is why the step is remembered.
+	$(NAV) --replay $(RDIR)/asok.nmea --headless $(FPS8) --no-basemap \
+		--config $(SAVEDCONF) \
+		--dump-at 20:$(RDIR)/panm-plain.fb \
+		--key 22:right --dump-at 24:$(RDIR)/panm-ask.fb \
+		--key 26:enter --dump-at 28:$(RDIR)/panm-held.fb 2> $(RDIR)/panm.log
+	grep -q "map pan while moving" $(RDIR)/panm.log
+	! python3 tools/fbdiff.py $(RDIR)/panm-plain.fb $(RDIR)/panm-ask.fb --max-px 0
+	! python3 tools/fbdiff.py $(RDIR)/panm-ask.fb $(RDIR)/panm-held.fb --max-px 0
+#	And the arrows do NOT pan the NAV page (1.5.1 is MAP only): with a route
+#	loaded, the same presses change nothing at all.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
+		--dump-at 16:$(RDIR)/pan-nav-a.fb \
+		--key 20:right --key 21:down --key 22:left \
+		--dump-at 26:$(RDIR)/pan-nav-b.fb 2>/dev/null
+	python3 tools/fbdiff.py $(RDIR)/pan-nav-a.fb $(RDIR)/pan-nav-b.fb --max-px 0
 	@echo "--- T-MODE-KEY: M on CONFIRM rebuilds the route, it does not relabel it"
 #	DESIGN.md 7.7. That bike and car return DIFFERENT routes is already gated by
 #	test_search.c on tests/roads/modes.roads -- 442 m up the motorway against

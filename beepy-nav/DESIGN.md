@@ -780,6 +780,65 @@ drawn position still matches §6.3's closed form, and that **nothing in the trac
 is NaN** — which needed a new assertion, because every other one in
 `assert_trace.py` is a comparison and every comparison against NaN is false.
 
+#### 1.5.1 Panning, and the one key that makes it safe
+
+The map follows the rider, which is right until they want to look at something
+that is not under them — the junction ahead, the saved place two soi over, the
+`WORK` icon 33 km away that no zoom on this page can reach, because the map
+extends 190 px right of the marker and only 65 px below it.
+
+**The arrow keys pan it, and `C` centres it.** On the Beepy that is the *trackpad*:
+the driver runs it in arrow mode (`touch_as = keys`, `touch_act = click`), so a
+click and a swipe already produced `KEY_UP`/`KEY_DOWN` — which is why the FIND list
+could always be scrolled with it, and why only left and right had to be added to
+the keymap. They were unmapped in all three input paths (evdev, the ssh CSI
+decoder, `--key`).
+
+Panning is **one line of the page**, and deliberately so: every layer — the
+basemap, the breadcrumb, the saved marks, the position marker — is already
+projected about a single centre, so moving that centre moves all four together and
+in step. A pan threaded through four projections would be four chances for one of
+them to disagree.
+
+The offset is in **screen pixels**, not world metres. Zooming while panned
+therefore changes which ground the offset covers — the right trade, because it
+means *up stays up*, which is what a thumb on a trackpad expects. `PAN_STEP` is
+24 px, a tenth of the map's height: one press is visibly a move, and a trackpad
+flick — which sends a stream of presses — stays recoverable. `PAN_MAX` is five
+screens, because `C` is always one key away and a bound means a fumbled swipe
+cannot leave a rider staring at empty space with no idea which way home is.
+
+**It does not decay, and nothing recentres it but `C`.** A map the rider
+deliberately moved is a map they are reading; snapping it back under them a second
+later would throw away the one thing they asked for.
+
+That is safe stopped and is a hazard moving, so the two cases differ:
+
+| | |
+|---|---|
+| stopped | the swipe just pans. There is nothing to be unaware of when the map and the bike are both still |
+| **moving** | the first swipe **asks** — `MAP WILL NOT FOLLOW  ENTER`, inverted — and does not move the map. `ENTER` applies **the swipe that raised the question**, which is why the step is remembered rather than discarded |
+
+Once held, the hint row stops advertising the keymap and reports the state:
+`MAP HELD    C = CENTRE`. That row is the only thing on the screen that says the
+map has stopped following the rider, so it is never allowed to be silent — and it
+covers the path the confirmation cannot, a rider who pans while stopped and then
+rides off.
+
+**MAP only.** The NAV page's map is a third of the screen with a route in it and
+auto-zooms to the next cue; there is nothing there a pan would improve, and
+T-MAP-PAN asserts that the same presses change a NAV frame not at all.
+
+**What the gate measures.** T-MAP-PAN, on the *stationary* fixture for
+T-QUIT-CONFIRM's reason: the map moves, and then `C` gives the frame back **byte
+for byte** — which is the assertion that says a pan is a pure view offset and
+nothing else. A pan that leaked into the projection, the breadcrumb or the
+marker's own position would fail that and nothing else would. Then, moving: the
+first swipe asks, the frame changes when it does, and changes again when `ENTER`
+accepts. `goldens/nav-map-pan.fb` and `nav-map-pan-ask.fb` freeze the two states,
+with `! cmp` against `nav-map.fb` and against each other — a build that drew no
+pan, or drew the pan but not the question, would pass both `cmp`s and fail those.
+
 ### 1.6 Leaving — QUIT, and ending a route — `nav-quit.png`
 
 Two different things a rider means by "stop", and until now the program offered
@@ -882,6 +941,8 @@ key absent from it was never claimed by the page.
 | Key | Action |
 |---|---|
 | `F` | open FIND — the whole point of the flow: open, see where you are, search, go |
+| arrows | pan the map (§1.5.1) — the trackpad, in arrow mode, is these four keys |
+| `C` | centre it again. The only thing that does |
 | `R` | open the route picker; `Q` there comes back to MAP, it does not exit |
 | `Q` | open QUIT (§1.6). The question is the shorter one — there is no ride to end |
 | `E` | **not bound** — there is no route to end, and the transient says so rather than the key doing nothing |

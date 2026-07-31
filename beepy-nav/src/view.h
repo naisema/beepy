@@ -169,6 +169,22 @@ typedef struct {
      * frozen golden and every rider with no saved places gets. */
     int have_home;
     double home_e, home_n;
+    /* Where the map is looking, in SCREEN PIXELS away from the rider (1.5.1).
+     * 0,0 is the ordinary state -- the rider at the centre, the map following
+     * them. The arrow keys move it and `C` puts it back.
+     *
+     * PIXELS and not world metres, because every layer of this page already
+     * projects about one centre: shifting that centre pans the tiles, the
+     * breadcrumb, the saved marks and the position marker together, and there
+     * is nothing to keep in step. The cost is that zooming while panned changes
+     * which ground the offset covers -- which is the right trade for a rider who
+     * swiped to look at something, because "up" stays up. */
+    double pan_x, pan_y;
+    /* Panning while MOVING has to be acknowledged (1.5.1): the map stops
+     * following the rider and does not start again by itself, so the hint row
+     * asks first and this is the question waiting. The pan does not happen until
+     * it is answered. */
+    int ask_pan;
     /* The saved places to draw (1.4.6), or none. MAP only: the NAV page
      * already carries a route, a ridden track, cue dots and a turn pin, and a
      * sixth kind of mark on the busiest screen buys nothing a rider is looking
@@ -371,6 +387,8 @@ void view_confirm_demo(cov_t *c);
 void view_quit_demo(cov_t *c, int riding);
 void view_map_wait_home_demo(cov_t *c, struct tiles *t);
 void view_map_saved_demo(cov_t *c, struct tiles *t);
+/* DESIGN.md 1.5.1: `asking` picks the question, 0 the held map. */
+void view_map_pan_demo(cov_t *c, int asking);
 
 /* The clipping test of DESIGN.md 10: the NAV map at a zoom where the route
  * leaves the view on all four sides. Nothing but the panel may put ink in

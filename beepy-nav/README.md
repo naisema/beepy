@@ -92,6 +92,21 @@ If the fix is lost after you have had one, the last known position stays on
 screen with an inverted `NO FIX` beside the coordinates — the same rule the NAV
 panel follows, in the one row this page has for it.
 
+**The arrows pan the map, and `C` centres it again.** On the Beepy that is the
+**trackpad**: click it, then swipe. The map stays where you put it — nothing drags
+it back under you but `C`, because a map you moved on purpose is one you are
+reading. The hint row changes to `MAP HELD    C = CENTRE` so the state is never
+silent.
+
+Panning is also the way to see a saved place that is too far off to fit on screen:
+the icons are only drawn where the place actually is, so `WORK` 30 km away is not
+on the map until you either zoom out or pan towards it.
+
+If you swipe **while moving**, it asks first — `MAP WILL NOT FOLLOW  ENTER` — and
+does not move until you accept. Then it applies the swipe you actually made. That
+is the one place this program makes you confirm a view change, and the reason is
+that a map which has quietly stopped following you at 25 km/h is worse than no map.
+
 `Tab` does nothing here: there is no OVERVIEW without a route. The hint row is
 the page's whole keymap, so if a key is not on that line it does not do anything.
 
@@ -168,8 +183,10 @@ passed, total distance, distance and time remaining.
 | `E` | end the route — stop navigating, stay on the map, keep riding |
 | `Q` | quit — it asks first, and shows what you would be ending |
 | `M` | bike ↔ car. On `CONFIRM` it rebuilds the route in front of you; on a ride it steers the next one |
-| `ENTER` | accept a reroute, and nothing else — it does nothing unless the panel is asking |
-| `Esc` | decline one |
+| arrows | pan the MAP page — the trackpad, clicked, sends these |
+| `C` | centre the map again |
+| `ENTER` | accept a reroute, or a pan while moving — it does nothing unless something is asking |
+| `Esc` | decline a reroute |
 
 ### Stopping
 

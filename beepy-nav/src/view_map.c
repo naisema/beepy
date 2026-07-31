@@ -99,7 +99,26 @@ map_strip(cov_t *c, const livemap_t *m)
             cov_text(c, W - 8 - wd, H - strip + 5, "NO FIX", 2, COV_INK);
         }
     }
-    cov_text(c, 6, H - 19, MAPP_HINTS, 2, COV_PAPER);
+    /* The hint row carries the map's STATE when it has one, because a map that
+     * has stopped following the rider must never be silent about it (1.5.1).
+     * Three states, in order of how much they are owed the row:
+     *
+     *   asking    the rider swiped while moving. Inverted, for panel_nofix()'s
+     *             reason -- the strip is solid ink, so a bar of paper is the one
+     *             treatment here that cannot be read as ordinary content.
+     *   panned    the map is held off-centre. The row says the way back.
+     *   neither   the keymap, which is what the page has always advertised.
+     */
+    if (m->ask_pan) {
+        static const char Q[] = "MAP WILL NOT FOLLOW  ENTER";
+        int wd = cov_text_w(Q, 2);
+        cov_fill_rect(c, 4, H - 21, 8 + wd, H - 2, COV_PAPER);
+        cov_text(c, 6, H - 19, Q, 2, COV_INK);
+    } else if (m->pan_x != 0.0 || m->pan_y != 0.0) {
+        cov_text(c, 6, H - 19, "MAP HELD    C = CENTRE", 2, COV_PAPER);
+    } else {
+        cov_text(c, 6, H - 19, MAPP_HINTS, 2, COV_PAPER);
+    }
 }
 
 /* Before the first fix. Nothing of the map is drawn -- no marker, no compass,
@@ -298,11 +317,17 @@ map_saved(cov_t *c, const livemap_t *m, double mpp, double cx, double cy,
 void
 view_map(cov_t *c, const livemap_t *m)
 {
-    double cx = W / 2.0;
     /* The centre of the map, which is what a where-am-I screen wants: the NAV
      * page's 0.72 exists to give the road ahead of a route two thirds of the
-     * height, and with no route there is no ahead. */
-    double cy = (H - MAPP_STRIP) / 2.0;
+     * height, and with no route there is no ahead.
+     *
+     * Plus the pan of 1.5.1, and this is the whole of panning: every layer below
+     * -- tiles, breadcrumb, saved marks, the position marker itself -- is
+     * projected about this one point, so moving it moves all four together and
+     * in step. A pan that had to be threaded through four projections would be
+     * four chances for one of them to disagree. */
+    double cx = W / 2.0 + m->pan_x;
+    double cy = (H - MAPP_STRIP) / 2.0 + m->pan_y;
     double mpp = m->mpp_manual > 0.0 ? m->mpp_manual : MAP_MPP_DEFAULT;
     /* The direction the track ran INTO the fix. view_nav_map() takes its
      * fallback rotation from the route ahead of the fix; there is no ahead
@@ -437,6 +462,10 @@ map_demo_state(livemap_t *m)
     m->nsaved = 0;
     m->have_home = 0;
     m->home_e = m->home_n = 0.0;
+    /* Centred and not asking, explicitly: either would take the hint row of
+     * every frozen design frame. */
+    m->pan_x = m->pan_y = 0.0;
+    m->ask_pan = 0;
 }
 
 void
@@ -453,6 +482,31 @@ view_map_demo(cov_t *c, int nofix)
      * set in beepy-nav.conf, that is precisely what it did, and the golden moved.
      * view_map_tiles_demo() below is the state that WANTS a pack. */
     m.tiles = NULL;
+    view_map(c, &m);
+}
+
+/* The two states of 1.5.1, frozen. A pan is not a variation on the centred page:
+ * the position marker leaves the middle, the breadcrumb goes with it, and the
+ * hint row stops advertising the keymap and starts reporting the map's state --
+ * which is the part a golden is really for, because it is the only thing on the
+ * screen that says the map has stopped following the rider.
+ *
+ * `held` is the ordinary panned state; `asking` is the question a swipe raises
+ * while moving, and it is drawn INVERTED for panel_nofix()'s reason. Both are
+ * offset by more than one press so that a build applying the pan to some layers
+ * and not others cannot look right. */
+void
+view_map_pan_demo(cov_t *c, int asking)
+{
+    livemap_t m;
+    map_demo_state(&m);
+    m.tiles = NULL;
+    if (asking) {
+        m.ask_pan = 1; /* the question comes BEFORE the pan, so no offset yet */
+    } else {
+        m.pan_x = -72.0; /* three presses right */
+        m.pan_y = -48.0; /* two presses down    */
+    }
     view_map(c, &m);
 }
 
