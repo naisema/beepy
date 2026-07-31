@@ -21,6 +21,7 @@ out-*.fb
 /beepy-nav/tests/test_tile
 /beepy-nav/tests/test_search
 /beepy-nav/tests/test_netfetch
+/beepy-nav/tests/test_netroute
 out-*.tiles
 out-*.roads
 

@@ -1767,7 +1767,7 @@ online router worth its 1.4 seconds.
 The first thing in this program that reaches off the device, and the first that
 can fail for a reason no fixture predicts. Both facts shaped it more than what
 it fetches does — which is why the module knows nothing about routes, JSON or
-Valhalla. It produces **bytes**; §7.9 will make sense of them.
+Valhalla. It produces **bytes**; §7.9 makes sense of them.
 
 **Why a child process.** A fetch takes about 1.4 s — measured, against FOSSGIS
 Valhalla from the device: `READY after 69 polls, 1.39 s, 5,565 bytes`. The
@@ -1836,6 +1836,157 @@ here — a fetcher that is not installed, an empty `fetch_cmd`, and a server tha
 never answers, killed at the deadline. That last one really does take ten
 seconds, and it earns them: the deadline is the only thing protecting a rider
 from a program that has stopped.
+
+### 7.9 Making a route out of what a router said
+
+§7.8 produces bytes. This turns one response into a `route_t` that nothing
+downstream can distinguish from a GPX or an offline Dijkstra result — because
+§1.4 *claims* nothing downstream can tell, and a second way of building one is
+exactly how that claim would quietly stop being true. Two adapters,
+`netroute.c`: Valhalla's `trip.legs[].shape` + `maneuvers`, OSRM's
+`routes[0].geometry` + `steps`.
+
+**Positions from the router, kinds from geometry.** The router knows *where* a
+maneuver is; §7.4's classifier decides *what* it is, at that vertex, over the
+same ±25 m arms a derived cue uses.
+
+```
+for each maneuver:
+    vertex = begin_shape_index      <- the router knows where
+    kind   = route_turn_at(vertex)  <- 7.4's classifier, at that vertex
+```
+
+Rejected: a table mapping Valhalla's thirty-odd types onto the nine cue kinds.
+Two enumerations, both free to grow upstream, and a mismatch that would fail
+**silently** as a wrong arrow. What little of the type *is* read is structural
+and cannot be got from geometry — where a leg **ends** (geometry cannot say "you
+have arrived") and which two maneuvers are one **roundabout**. Everything
+unrecognised falls through to the classifier, which is a default rather than a
+hole. `tests/test_netroute.c` asserts the rule the only way that means anything:
+a synthetic L-bend that turns **left** while the maneuver declares Valhalla type
+10, `turn right`. The cue comes out `CUE_LEFT`.
+
+**Roundabouts collapse.** Enter and exit become one cue, classified across the
+*whole* circle — bearing in taken before the entry, bearing out after the exit —
+so the rider is told the direction they actually end up going instead of "bear
+right" into a ring road. This is what `route_turn_at()` takes two positions for.
+On the captured ride the first exit comes out 15° off the way it went in, so the
+cue classifies straight and is **dropped**: there is nothing to tell a rider who
+carries straight on. Rejected: a tenth glyph for roundabouts — `arrows.c`,
+`mockup.py`, design-gate parity and a new golden, for a case a GPX route can
+never produce.
+
+**The departure is dropped, and by geometry rather than by type.** Every router
+reports a maneuver at vertex 0. There is no 25 m of route behind it to take a
+bearing over, so `route_turn_at()` returns 0 — `CUE_STRAIGHT`'s band — and it
+falls out with the other straight cues. That is the same guard
+`route_cues_derive()` applies at both ends of a route, which is the point: no
+second rule to keep in step with the first.
+
+**Street names are dropped when non-ASCII**, exactly as the pack drops them
+(§1.4.2). The captured response contains `Turn right onto นบ.1009`; the panel
+shows the arrow with no name line rather than four blanks.
+
+#### Nobody says what precision the polyline is, and getting it wrong looks like success
+
+Both routers encode the geometry as a Google polyline. Valhalla emits
+**polyline6** and ignores `shape_format`; OSRM's default is **polyline5** and it
+can be asked for either. Neither says which is in the body. A 1e6 shape read at
+1e5 is a route of the *right shape at a tenth the size*, sitting plausibly on the
+map a tenth of the way to its destination — the one failure in this module that
+does not look like one.
+
+So the precision is never trusted. Two independent checks:
+
+| | |
+|---|---|
+| not on Earth | Bangkok at 1e6 read as 1e5 is latitude 138. Cheap, and useless near the equator. |
+| **length** | the decoded tangent-plane length against the distance the response **states**. Disagree by more than 2×, and the other precision is tried; if that fails too, the response is refused. |
+
+A factor of two is loose on purpose: our length is measured on §6.1's tangent
+plane over the shape we were sent, the router's on the geodesic along the road,
+and `overview=simplified` legitimately sends a shape several percent short. Two
+is far beyond any of that and far short of the ten a precision mix-up produces.
+The refusal quotes the attempt at the **configured** router's precision, not the
+retry — the retry is a rescue attempt on a hunch about somebody else's server.
+
+This is also why `trip.units` is read rather than assumed. Valhalla answers in
+whatever units it was asked for and says which; believing `length: 3.088` is
+kilometres when it is miles turns the length check into a coin toss.
+
+#### The JSON is scanned, not parsed
+
+No tree, no allocation, no ownership: every function takes a pointer *into* the
+response and returns one, and the response is the only copy. Bodies are up to a
+megabyte (§7.8's cap) on a device with a framebuffer in it, and a parsed tree of
+a 20 000-point route would cost more than the route does.
+
+The cost of scanning lazily is that damage *past* the last field we happen to
+want would go unnoticed, so the whole document is walked once and refused entire
+if any of it is malformed — one linear pass, before any of it is believed. That
+is what makes a body truncated after the fields we read a refusal rather than a
+short route.
+
+One thing the scanner may **not** do, and the first draft did: decode a shape in
+place. A polyline character is `chunk + 63`, so the alphabet is 63–126 — which
+contains **92, the backslash**, which JSON must escape. All three committed
+fixtures carry one. Read in place, a shape is a string with `\\` in the middle
+and no terminator, and the decoder walks off the end of it into the rest of the
+response. The three fixtures failed to parse at all on the first run, which is
+the good outcome.
+
+#### On failure the route in flight is not touched
+
+Not overwritten, not zeroed, not `route_init()`ed. A rider mid-ride is
+*following* the route in `out`, and a reroute that fails must leave them
+following it. Everything is built in a local `route_t` and moved into place on
+the last line. `router_to()`'s habit of calling `route_init(out)` first would be
+a bug here, and T-NETROUTE-BAD is run against a **live** route rather than a
+fresh one — a function that only clobbers output it was given for real is a
+function whose tests pass.
+
+The reasons are as much the deliverable as the routes. A captive portal, a
+truncated body, a 200 OK carrying an error object and a shape that does not
+decode are four different things, and a rider told `NO ROUTE` for all four learns
+nothing:
+
+```
+the reply was empty                        an empty 200, a rate limiter
+got a web page, not a route                a cafe captive portal
+the reply is truncated or malformed JSON   the connection dropped in a lift
+No path could be found for input           the router's OWN words, 200 OK
+shape is not an encoded polyline           a proxy rewrote the body
+shape is 298 m but the reply says 40000 m  the precision check firing
+the route is only 0 m long                 both ends snapped to one node
+the reply has no route in it               `router_type` names the wrong router
+```
+
+The router's own words win where it gave any: *no path could be found* tells a
+rider to pick somewhere else, and *the reply has no route in it* tells them the
+program is broken, which would be a lie.
+
+#### What the gate measures
+
+**T-NETROUTE** (`tests/test_netroute.c`): three readings of one ride, **231
+assertions**. `tests/net/valhalla-bike.json` is a real FOSSGIS Valhalla bicycle
+response for the rider's own HOME→WORK, and its correct decode — **177 points,
+13.88495,100.37849 to 13.90008,100.38916, 4 953 m, 9 cues** at vertices 8, 15,
+45, 133, 153, 156, 164, 166, 176 — was established in the phase 11 plan before
+any of this C existed. The two OSRM fixtures are the same ride transcoded
+(`tools/mknetfix.py` says why: there is no OSRM server this project may ask for
+a bicycle route), one at polyline5 and one at **polyline6**, and all three parse
+to the same points, the same cue vertices and the same nine kinds.
+
+**T-NETROUTE-BAD**: nine bad replies against a live route — empty, a captive
+portal, truncated, malformed, a 200 with an error object, a corrupt shape
+alphabet, a 0 m route, and each fixture read by the *wrong* adapter — each
+refused, each with a different reason, and the route in flight byte-identical
+afterwards.
+
+The fixtures are **committed**, unlike every other generated fixture here, and
+`make netfix` regenerates them. `make check` runs on the device, and a gate whose
+bad-input cases exist only if python3 and a script are both on the Pi is a gate
+with a second thing to go wrong.
 
 ---
 

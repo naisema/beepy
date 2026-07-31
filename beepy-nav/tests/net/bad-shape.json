@@ -1,0 +1,17 @@
+{
+ "trip": {
+  "units": "kilometers",
+  "summary": {
+   "length": 4.969
+  },
+  "legs": [
+   {
+    "shape": "o`nnY!ovrm~D",
+    "summary": {
+     "length": 4.969
+    },
+    "maneuvers": []
+   }
+  ]
+ }
+}

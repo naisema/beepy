@@ -1,0 +1,246 @@
+{
+ "code": "Ok",
+ "waypoints": [
+  {
+   "hint": "",
+   "name": "",
+   "location": [
+    100.37849,
+    13.88495
+   ],
+   "distance": 0.0
+  },
+  {
+   "hint": "",
+   "name": "",
+   "location": [
+    100.38916,
+    13.90008
+   ],
+   "distance": 0.0
+  }
+ ],
+ "routes": [
+  {
+   "geometry": "}{vsAqdtcRAHAd@YpEErAAj@@bDBTJHlANfA?hAAhAAX?VBZHBd@DrB@z@Br@?JF@BBBD@DADCDF\\NZXVb@N^TX\\JTDJNj@Bl@?p@Dd@@h@A\\ItC?XAZCROXQIkBu@[KoAk@oAk@cE_B{B_AiAc@{@]gA]gAY}Bk@i@K{@Sq@Mg@K{A]y@Sw@Q]Ea@A]AS?}@?EAc@AYG[O]WMQKMKSgBgDKQiAwB_AeBMSg@aAqAeCCCCIYg@]q@CGcAmB[k@Ue@CGiAyBIOEIqAgCIWGa@Bq@Ny@ZuANaAFc@@GHe@\\}BDYf@qD`@mCF[`@oCJq@PiAHg@@GF_@@KBOBMLo@Lu@Fg@Fg@NeANiAHk@ZyBBSFa@BUDWT_BIA[ACACCOMKGECEA[BG@m@JYDUDk@HsANi@HgALo@HCD?BCL?N?BEDcAJuCLsDVgCPG@IBEB?D@f@yBFIBYCkABOEGICEICIAsBK",
+   "legs": [
+    {
+     "steps": [
+      {
+       "geometry": "}{vsAqdtcRAHAd@YpEErAAj@@bDBTJH",
+       "maneuver": {
+        "bearing_after": 282,
+        "bearing_before": 0,
+        "location": [
+         100.37849,
+         13.88495
+        ],
+        "type": "depart",
+        "modifier": "left"
+       },
+       "mode": "cycling",
+       "name": "",
+       "distance": 319.0,
+       "duration": 69.4
+      },
+      {
+       "geometry": "q|vsAkrscRlANfA?hAAhAAX?VBZH",
+       "maneuver": {
+        "bearing_after": 191,
+        "bearing_before": 219,
+        "location": [
+         100.37558,
+         13.88505
+        ],
+        "type": "turn",
+        "modifier": "left"
+       },
+       "mode": "cycling",
+       "name": "",
+       "distance": 209.8,
+       "duration": 45.6
+      },
+      {
+       "geometry": "ypvsAqqscRBd@DrB@z@Br@?J",
+       "maneuver": {
+        "bearing_after": 264,
+        "bearing_before": 199,
+        "location": [
+         100.37545,
+         13.88317
+        ],
+        "type": "turn",
+        "modifier": "right"
+       },
+       "mode": "cycling",
+       "name": "",
+       "distance": 150.5,
+       "duration": 32.7
+      },
+      {
+       "geometry": "ipvsA{hscRF@BBBD@DADCD",
+       "maneuver": {
+        "bearing_after": 194,
+        "bearing_before": 270,
+        "location": [
+         100.37406,
+         13.88309
+        ],
+        "type": "roundabout",
+        "modifier": "straight"
+       },
+       "mode": "cycling",
+       "name": "",
+       "distance": 22.3,
+       "duration": 4.9
+      },
+      {
+       "geometry": "}ovsA}gscRF\\NZXVb@N^TX\\JTDJNj@Bl@?p@Dd@@h@A\\ItC?XAZCROX",
+       "maneuver": {
+        "bearing_after": 255,
+        "bearing_before": 304,
+        "location": [
+         100.37391,
+         13.88303
+        ],
+        "type": "exit roundabout",
+        "modifier": "straight"
+       },
+       "mode": "cycling",
+       "name": "",
+       "distance": 414.4,
+       "duration": 90.1
+      },
+      {
+       "geometry": "akvsAqrrcRQIkBu@[KoAk@oAk@cE_B{B_AiAc@{@]gA]gAY}Bk@i@K{@Sq@Mg@K{A]y@Sw@Q]Ea@A]AS?}@?EAc@AYG[O]WMQKMKSgBgDKQiAwB_AeBMSg@aAqAeCCCCIYg@]q@CGcAmB[k@Ue@CGiAyBIOEIqAgCIWGa@Bq@Ny@ZuANaAFc@@GHe@\\}BDYf@qD`@mCF[`@oCJq@PiAHg@@GF_@@KBOBMLo@Lu@Fg@Fg@NeANiAHk@ZyBBSFa@BUDWT_B",
+       "maneuver": {
+        "bearing_after": 29,
+        "bearing_before": 302,
+        "location": [
+         100.37049,
+         13.88225
+        ],
+        "type": "turn",
+        "modifier": "right"
+       },
+       "mode": "cycling",
+       "name": "นบ.1009",
+       "distance": 2955.6,
+       "duration": 642.5
+      },
+      {
+       "geometry": "mlxsAmmvcRIA[ACACCOMKGECEA[BG@m@JYDUDk@HsANi@HgALo@HCD?B",
+       "maneuver": {
+        "bearing_after": 11,
+        "bearing_before": 103,
+        "location": [
+         100.39015,
+         13.89271
+        ],
+        "type": "turn",
+        "modifier": "left"
+       },
+       "mode": "cycling",
+       "name": "",
+       "distance": 297.1,
+       "duration": 64.6
+      },
+      {
+       "geometry": "k|xsAokvcRCL?N?B",
+       "maneuver": {
+        "bearing_after": 286,
+        "bearing_before": 270,
+        "location": [
+         100.38984,
+         13.89526
+        ],
+        "type": "turn",
+        "modifier": "left"
+       },
+       "mode": "cycling",
+       "name": "",
+       "distance": 18.7,
+       "duration": 4.1
+      },
+      {
+       "geometry": "o|xsAmjvcREDcAJuCLsDVgCPG@IBEB",
+       "maneuver": {
+        "bearing_after": 316,
+        "bearing_before": 270,
+        "location": [
+         100.38967,
+         13.89528
+        ],
+        "type": "turn",
+        "modifier": "right"
+       },
+       "mode": "cycling",
+       "name": "",
+       "distance": 316.6,
+       "duration": 68.8
+      },
+      {
+       "geometry": "cnysAygvcR?D@f@",
+       "maneuver": {
+        "bearing_after": 270,
+        "bearing_before": 327,
+        "location": [
+         100.38925,
+         13.8981
+        ],
+        "type": "turn",
+        "modifier": "left"
+       },
+       "mode": "cycling",
+       "name": "",
+       "distance": 24.9,
+       "duration": 5.4
+      },
+      {
+       "geometry": "anysAkfvcRyBFIBYCkABOEGICEICIAsBK",
+       "maneuver": {
+        "bearing_after": 356,
+        "bearing_before": 267,
+        "location": [
+         100.38902,
+         13.89809
+        ],
+        "type": "turn",
+        "modifier": "right"
+       },
+       "mode": "cycling",
+       "name": "",
+       "distance": 226.4,
+       "duration": 49.2
+      },
+      {
+       "geometry": "ozysAggvcR",
+       "maneuver": {
+        "bearing_after": 0,
+        "bearing_before": 6,
+        "location": [
+         100.38916,
+         13.90008
+        ],
+        "type": "arrive",
+        "modifier": "right"
+       },
+       "mode": "cycling",
+       "name": "",
+       "distance": 0.0,
+       "duration": 0.0
+      }
+     ],
+     "summary": "",
+     "distance": 4955.4,
+     "duration": 1077.3,
+     "weight": 1077.3
+    }
+   ],
+   "weight_name": "cyclability",
+   "distance": 4955.4,
+   "duration": 1077.3,
+   "weight": 1077.3
+  }
+ ]
+}

@@ -253,4 +253,22 @@ double route_wrap_deg(double d);
 /* CUE_* for a signed turn in degrees (7.4's bands). CUE_STRAIGHT below 30. */
 int route_classify(double theta_deg);
 
+/* The signed turn, degrees, + = right, between the route ARRIVING at `in_m`
+ * and LEAVING at `out_m` -- both distances along the route in metres, and the
+ * same +/-CUE_BEARING_M arms route_cues_derive() takes.
+ *
+ * Two positions rather than one because a roundabout is two maneuvers and one
+ * cue (7.9): the bearing in is measured before the entry and the bearing out
+ * after the exit, so the rider is told the direction they actually end up
+ * going rather than "bear right" into the circle. `in_m == out_m` is the
+ * ordinary case, a single junction.
+ *
+ * Returns 0 -- which is CUE_STRAIGHT's band, so a caller that drops straight
+ * cues drops these too -- when either arm runs off the end of the route.
+ * There is no bearing there to difference, and that is the same guard
+ * route_cues_derive() applies at both ends. It is also why a maneuver the
+ * router reports at vertex 0, where every router puts one, produces no cue:
+ * "depart" is not a turn, and geometry is not able to pretend otherwise. */
+double route_turn_at(const route_t *r, double in_m, double out_m);
+
 #endif /* BEEPY_NAV_ROUTE_H */

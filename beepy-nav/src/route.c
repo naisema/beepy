@@ -167,6 +167,26 @@ vertex_at(const route_t *r, double d)
     return (d - r->cum[lo]) <= (r->cum[hi] - d) ? lo : hi;
 }
 
+double
+route_turn_at(const route_t *r, double in_m, double out_m)
+{
+    double ae, an, be, bn, ce, cn, de, dn;
+
+    if (!r->prepared || r->npt < 2)
+        return 0.0;
+    /* The arms, not the positions, are what has to fit: a cue 30 m in is fine
+     * and a cue 10 m in is not, because the 25 m before it does not exist. */
+    if (in_m < CUE_BEARING_M || out_m > r->total_m - CUE_BEARING_M ||
+        out_m < in_m)
+        return 0.0;
+    at_along(r, in_m - CUE_BEARING_M, &ae, &an);
+    at_along(r, in_m, &be, &bn);
+    at_along(r, out_m, &ce, &cn);
+    at_along(r, out_m + CUE_BEARING_M, &de, &dn);
+    return route_wrap_deg(bearing_deg(ce, cn, de, dn) -
+                          bearing_deg(ae, an, be, bn));
+}
+
 int
 route_cues_derive(route_t *r)
 {

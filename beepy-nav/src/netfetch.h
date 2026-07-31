@@ -3,7 +3,8 @@
  * The first thing in this program that reaches off the device, and the first
  * that can fail for a reason no fixture predicts. Both facts shape it more
  * than what it fetches does, which is why this module knows nothing about
- * routes, JSON or Valhalla -- it produces BYTES, and N2 makes sense of them.
+ * routes, JSON or Valhalla -- it produces BYTES, and netroute.c makes sense of
+ * them.
  *
  * WHY A CHILD PROCESS. A fetch takes about 1.4 seconds against the router
  * measured in the plan; the render loop runs at 8 Hz, so a blocking call would

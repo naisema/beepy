@@ -794,7 +794,7 @@ HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
             host/led.o host/config.o host/ridelog.o host/tile.o \
             host/search.o host/router.o host/view_find.o \
             host/view_confirm.o host/view_map.o host/view_quit.o \
-           host/netfetch.o \
+           host/netfetch.o host/netroute.o \
             host/nav.o
 
 # beepy-nav is portable end to end (no fbdev, no evdev), so the Mac can link
@@ -820,6 +820,7 @@ host/beepy-nav: $(HOST_NAV)
 UNIT_TESTS = beepy-nav/tests/test_map beepy-nav/tests/test_gpx \
              beepy-nav/tests/test_route beepy-nav/tests/test_tile \
              beepy-nav/tests/test_search \
+             beepy-nav/tests/test_netroute \
              beepy-nav/tests/test_netfetch
 
 test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
@@ -828,6 +829,9 @@ test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
 	./beepy-nav/tests/test_route
 	./beepy-nav/tests/test_tile
 	./beepy-nav/tests/test_search
+#	T-NETROUTE / T-NETROUTE-BAD. Reads its fixtures by relative path, so it
+#	runs from the repo root like the rest.
+	./beepy-nav/tests/test_netroute
 #	Last, because it is the only test here that spends real time -- ten
 #	seconds of it, waiting for a deadline that is the sole defence against a
 #	server which accepts a connection and then says nothing (DESIGN.md 7.8).
@@ -872,6 +876,18 @@ beepy-nav/tests/test_netfetch: beepy-nav/tests/test_netfetch.c \
 	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
 		beepy-nav/tests/test_netfetch.c beepy-nav/src/netfetch.c
 
+# The parsers (DESIGN.md 7.9). route.c joins the link because netroute_parse()
+# leaves a PREPARED route_t -- the identical object route_load() and router_to()
+# leave, which is the claim -- and gpx.c because route.c calls route_load().
+# No netfetch.c: this module never sees a socket, only a string.
+beepy-nav/tests/test_netroute: beepy-nav/tests/test_netroute.c \
+                               beepy-nav/src/netroute.c \
+                               beepy-nav/src/route.c beepy-nav/src/gpx.c \
+                               $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
+		beepy-nav/tests/test_netroute.c beepy-nav/src/netroute.c \
+		beepy-nav/src/route.c beepy-nav/src/gpx.c $(LDLIBS)
+
 beepy-nav/tests/test_search: beepy-nav/tests/test_search.c \
                              beepy-nav/src/search.c beepy-nav/src/router.c \
                              beepy-nav/src/route.c beepy-nav/src/gpx.c $(HDRS)
@@ -899,6 +915,16 @@ host/%.o: beepy-nav/src/%.c $(HDRS)
 
 tables:
 	cd beepy-nav && python3 ../tools/gen_tables.py
+
+# ------------------------------------------------- the router-reply fixtures
+#
+# Mac lane, and the outputs are COMMITTED -- unlike every other generated
+# fixture here. `make check` runs on the device, and a gate whose bad-input
+# cases only exist if python3 and this script are both on the Pi is a gate with
+# a second thing to go wrong. The rule exists so that none of them is a file
+# somebody made by hand once; regenerate and `git diff` should be empty.
+netfix:
+	python3 tools/mknetfix.py
 
 # M2 acceptance: the C pages against mockup.py's own frames. Mac lane only
 # (it renders the reference through Pillow); see tools/design_gate.py.
@@ -1120,4 +1146,4 @@ clean:
 
 .PHONY: all check goldens host test-unit test-replay test-frames test-find \
 	host-replay tables design-gate test-tiles tiles test-roads roads \
-	bench sync clean
+	bench sync clean netfix
