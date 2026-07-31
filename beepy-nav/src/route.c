@@ -39,8 +39,10 @@ geo_project(double lat0, double lon0, double lat, double lon, double *e,
     *n = (lat - lat0) * GEO_M_PER_DEG_LAT;
 }
 
-int
-route_prepare(route_t *r)
+/* en[], cum[], the bbox and total_m about a GIVEN tangent origin. The body of
+ * route_prepare(), factored out for route_rebase() -- see route.h. */
+static int
+prepare_at(route_t *r, double lat0, double lon0)
 {
     int i;
     if (r->npt < 2)
@@ -56,13 +58,8 @@ route_prepare(route_t *r)
         r->en = NULL;
         return -1;
     }
-    /* The reference is the first point rather than the centroid: DESIGN.md
-     * 6.1 re-references every 10 km and quotes <0.1% error inside 50 km, and
-     * a route long enough to care is re-referenced by the live code, not
-     * here. Using the start keeps en[0] exactly (0, 0), which several tests
-     * and the snap window's arithmetic read more easily. */
-    r->lat0 = r->pt[0].lat;
-    r->lon0 = r->pt[0].lon;
+    r->lat0 = lat0;
+    r->lon0 = lon0;
     for (i = 0; i < r->npt; i++)
         geo_project(r->lat0, r->lon0, r->pt[i].lat, r->pt[i].lon,
                     &r->en[2 * i], &r->en[2 * i + 1]);
@@ -83,6 +80,38 @@ route_prepare(route_t *r)
     }
     r->total_m = r->cum[r->npt - 1];
     r->prepared = 1;
+    return 0;
+}
+
+int
+route_prepare(route_t *r)
+{
+    if (r->npt < 2)
+        return -1;
+    /* The reference is the first point rather than the centroid: DESIGN.md
+     * 6.1 re-references every 10 km and quotes <0.1% error inside 50 km, and
+     * a route long enough to care is re-referenced by the live code, not
+     * here. Using the start keeps en[0] exactly (0, 0), which several tests
+     * and the snap window's arithmetic read more easily. */
+    return prepare_at(r, r->pt[0].lat, r->pt[0].lon);
+}
+
+int
+route_rebase(route_t *r, double lat0, double lon0)
+{
+    int i;
+
+    if (prepare_at(r, lat0, lon0))
+        return -1;
+    /* The cues' along_m came from the OLD cum[]. They are the same junctions on
+     * the same vertices -- idx does not move -- but the distances to them are
+     * measured on a plane that just changed, so they are re-read rather than
+     * kept. Missing this leaves a route whose cue list is a few metres out of
+     * step with its own geometry, which is the kind of wrong that looks right
+     * for a hundred kilometres. */
+    for (i = 0; i < r->ncue; i++)
+        if (r->cue[i].idx >= 0 && r->cue[i].idx < r->npt)
+            r->cue[i].along_m = r->cum[r->cue[i].idx];
     return 0;
 }
 

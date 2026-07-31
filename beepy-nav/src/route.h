@@ -185,6 +185,25 @@ void route_free(route_t *r);
 /* cum[], en[], the bbox and total_m. Idempotent. 0 on success. */
 int route_prepare(route_t *r);
 
+/* The same, about a GIVEN tangent origin instead of the route's first point,
+ * and keeping the cue list (every cue's along_m is re-read from the new cum[]).
+ *
+ * WHY A ROUTE WOULD EVER WANT SOMEBODY ELSE'S ORIGIN. A route's en[] is in its
+ * own frame, and the navigator hands route_snap() a position in the WORLD frame
+ * -- which works only because the two are the same frame, set from the route's
+ * first point when it is loaded. Replacing a route mid-ride (7.11's reroute)
+ * therefore has two options: move the world frame, which means shifting every
+ * dead-reckoning coordinate that is already in it, or bring the new route into
+ * the frame that is already there. This is the second, and it is the smaller of
+ * the two: pure geometry over one array, testable on its own, against a spread
+ * of state mutations that is not.
+ *
+ * The cost is DESIGN.md 6.1's tangent-plane error, which grows with the distance
+ * from the origin -- under 0.1% inside 50 km, and a re-referenced route spans no
+ * further than the one it replaced. It shows in cum[] and total_m, never in
+ * off_m: that is a local perpendicular, and the plane is locally exact. */
+int route_rebase(route_t *r, double lat0, double lon0);
+
 /* DESIGN.md 7.4, the derived path: resample at 10 m, bearings over +/-25 m,
  * classify, merge within 20 m keeping the largest |theta|. Replaces any
  * existing cue list. Returns the cue count, or -1 on allocation failure. */

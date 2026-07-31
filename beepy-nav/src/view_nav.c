@@ -341,11 +341,16 @@ panel_row(cov_t *c, int y, const char *s)
  * "ALERTS OFF" is a preference the rider expressed two seconds ago, and NO FIX
  * is a fault they do not yet know about. */
 static void
-panel_nofix(cov_t *c)
+panel_bar(cov_t *c, const char *s)
 {
     cov_fill_rect(c, 0, H - 16, PANEL_W - 1, H - 1, COV_PAPER);
-    cov_text(c, (PANEL_W - cov_text_w("NO FIX", 2)) / 2, H - 16, "NO FIX", 2,
-             COV_INK);
+    cov_text(c, (PANEL_W - cov_text_w(s, 2)) / 2, H - 16, s, 2, COV_INK);
+}
+
+static void
+panel_nofix(cov_t *c)
+{
+    panel_bar(c, "NO FIX");
 }
 
 void
@@ -414,6 +419,17 @@ view_turn_panel(cov_t *c, const panel_t *p)
      * space is the scarce resource, and a setting the rider chose two seconds
      * ago does not need continuous display. */
     panel_row(c, 192, p->remain);
+    /* DESIGN.md 7.11's question takes both lower rows: "REROUTE?" where the
+     * whole-route distance sits and the key that answers it, inverted, where
+     * arrival does. Inverted for panel_nofix()'s reason -- the panel is solid
+     * ink, so a bar of paper is the one treatment here that cannot be read as
+     * ordinary content, and this row is a demand for attention rather than a
+     * value. Eight characters and five, against the ten-character budget. */
+    if (p->ask_reroute && !p->nofix) {
+        panel_row(c, 208, "REROUTE?");
+        panel_bar(c, "ENTER");
+        return;
+    }
     if (p->togo_m >= 0.0) {
         fmt_togo(buf, sizeof buf, p->togo_m, p->units);
         panel_row(c, 208, buf);
@@ -590,7 +606,7 @@ static const double DEMO_ROUTE[] = {
 #define DEMO_NPTS ((int)(sizeof DEMO_ROUTE / sizeof DEMO_ROUTE[0] / 2))
 
 void
-view_nav_demo(cov_t *c, int off, int nofix)
+view_nav_demo(cov_t *c, int off, int nofix, int ask)
 {
     navmap_t m;
     panel_t p;
@@ -620,6 +636,7 @@ view_nav_demo(cov_t *c, int off, int nofix)
     p.off = off;
     p.units = UNITS_METRIC;
     p.note = NULL;
+    p.ask_reroute = ask;
     /* The frozen NO FIX state draws the same map and the same countdown as
      * the turn page: that is the point of it. A lost fix does not blank the
      * screen, it stops the numbers moving and says so on one row -- and the
@@ -693,6 +710,7 @@ view_nav_tiles_demo(cov_t *c, struct tiles *t)
     p.units = UNITS_METRIC;
     p.note = NULL;
     p.nofix = 0;
+    p.ask_reroute = 0;
     p.turn_m = cue_quantise(420);
     p.kind = ARROW_RIGHT;
     p.remain = "3 MIN";
@@ -742,6 +760,9 @@ clip_panel(panel_t *p)
     p->units = UNITS_METRIC;
     p->note = NULL;
     p->nofix = 0;
+    /* Explicitly, like note and nofix above it: a stack-garbage flag here would
+     * take both lower rows of every frozen design frame. */
+    p->ask_reroute = 0;
 }
 
 void

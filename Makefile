@@ -109,6 +109,8 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	./beepy-nav/beepy-nav --demo --page nav     --dump out-nav-turn.fb
 	./beepy-nav/beepy-nav --demo --page nav-off --dump out-nav-off.fb
 	./beepy-nav/beepy-nav --demo --page nav-nofix --dump out-nav-nofix.fb
+#	DESIGN.md 7.11's question, over the OFF ROUTE panel it can only appear on.
+	./beepy-nav/beepy-nav --demo --page nav-ask   --dump out-nav-ask.fb
 	./beepy-nav/beepy-nav --demo --page arrows  --dump out-nav-arrows.fb
 	./beepy-nav/beepy-nav --demo --page overview --dump out-nav-overview.fb
 #	The MAP page of DESIGN.md 1.5, in its three states. Three and not one
@@ -167,6 +169,10 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	cmp goldens/nav-turn.fb     out-nav-turn.fb
 	cmp goldens/nav-off.fb      out-nav-off.fb
 	cmp goldens/nav-nofix.fb    out-nav-nofix.fb
+	cmp goldens/nav-ask.fb      out-nav-ask.fb
+#	And it is not the OFF ROUTE panel with nothing added: without this, a build
+#	where ask_reroute drew nothing at all would pass the cmp above and this one.
+	! cmp -s goldens/nav-ask.fb goldens/nav-off.fb
 	cmp goldens/nav-arrows.fb   out-nav-arrows.fb
 	cmp goldens/nav-overview.fb out-nav-overview.fb
 	cmp goldens/nav-map.fb       out-nav-map.fb
@@ -258,6 +264,7 @@ endif
 	./beepy-nav/beepy-nav --demo --page nav     --dump goldens/nav-turn.fb
 	./beepy-nav/beepy-nav --demo --page nav-off --dump goldens/nav-off.fb
 	./beepy-nav/beepy-nav --demo --page nav-nofix --dump goldens/nav-nofix.fb
+	./beepy-nav/beepy-nav --demo --page nav-ask   --dump goldens/nav-ask.fb
 	./beepy-nav/beepy-nav --demo --page arrows  --dump goldens/nav-arrows.fb
 	./beepy-nav/beepy-nav --demo --page overview --dump goldens/nav-overview.fb
 	./beepy-nav/beepy-nav --demo --page map \
@@ -365,6 +372,24 @@ $(RDIR)/rough.nmea: tools/mknmea.py $(RROUTE)
 # FREEZE is what is under test rather than its smoothing.
 $(RDIR)/still.nmea: tools/mknmea.py $(RROUTE)
 	$(MKNMEA) --stationary 11@0 --hold-jitter 0 --duration 600 --seed 2 -o $@
+
+# DESIGN.md 7.11's two fixtures, and they exist as a PAIR because the two brakes
+# on rerouting have to be told apart. Both are the same 300 m excursion off the
+# same loop; only the speed differs, and the speed is what decides how long the
+# rider spends past the 200 m trigger.
+#
+#   reroute.nmea       25 km/h, 105 s past 200 m -> the 60 s spacing allows 2,
+#                      the cap allows 5. Exactly 2 can only be the spacing.
+#   reroute-long.nmea   6 km/h, 436 s past 200 m -> the spacing allows 8, the cap
+#                      allows 5. Exactly 5 can only be the cap.
+#
+# One fixture could not do it: at any single speed where the two bounds agree,
+# a build with either brake missing still passes. The windows are measured, not
+# assumed -- tools/assert_trace.py reads off_m out of the same trace.
+$(RDIR)/reroute.nmea: tools/mknmea.py $(RROUTE)
+	$(MKNMEA) --speed 25 --detour 300:2000:3000 --seed 5 -o $@
+$(RDIR)/reroute-long.nmea: tools/mknmea.py $(RROUTE)
+	$(MKNMEA) --speed 6 --detour 300:2000:3000 --seed 5 -o $@
 
 # The same standstill, twenty-six seconds of it, for T-FIND-ONLINE's FETCHING and
 # TIMED OUT frames (DESIGN.md 7.10). Three things about it are load-bearing.
@@ -589,7 +614,8 @@ test-frames: $(NAV) $(REPLAYS)
 # screen again" and "the second ENTER started a ride on a route named after the
 # place" are exactly the claims of 1.4 and each of them has a way to fail.
 test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
-           $(RDIR)/still-net.nmea
+           $(RDIR)/still-net.nmea $(RDIR)/reroute.nmea \
+           $(RDIR)/reroute-long.nmea $(RDIR)/detour.nmea
 	@echo "--- T-FIND: F, a typed query, ENTER, CONFIRM, ENTER, riding"
 	$(NAV) --route $(TILEROUTE) --replay $(RDIR)/asok.nmea --headless $(FPS8) \
 		--roads $(ROADPACK) \
@@ -741,6 +767,96 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
 #	And installed as the live route by the same line a GPX takes, which is what
 #	makes it a destination rather than a map label.
 	grep -q "beepy-nav: THE ACADEMY -- " $(RDIR)/find-poi.log
+	@echo "--- T-REROUTE: 200 m and sustained, once a minute, five to an episode"
+#	DESIGN.md 7.11. Rerouting is the first thing in this program that ACTS on its
+#	own while the rider is moving, so every assertion here is about a COUNT: how
+#	many times it fired, and whether each brake is the one doing the stopping.
+#
+#	THE BRAKES ARE MEASURED WITH NOTHING ABLE TO INSTALL -- --no-roads and no
+#	router_url -- and that is what makes them arithmetic. Let a reroute succeed
+#	and the deviation clears, the episode ends, and the count becomes a fact about
+#	the pack's geography instead of about the rate limit. The install is proved
+#	separately, below.
+#
+#	Two fixtures, because one cannot tell the two brakes apart: at 25 km/h the
+#	rider is past 200 m for 105 s, where the 60 s spacing allows 2 and the cap
+#	allows 5; at 6 km/h for 436 s, where the spacing allows 8 and the cap allows 5.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/reroute.nmea --headless $(FPS1) \
+		--no-roads --config beepy-nav/tests/net/reroute-auto.conf \
+		2> $(RDIR)/reroute-auto.log
+#	EXACTLY TWO, and only the 60 s spacing can produce that number: a build that
+#	fired once per fix would give ninety-five, and the cap would have allowed five.
+	test `grep -c "reroute [0-9] of" $(RDIR)/reroute-auto.log` -eq 2
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/reroute-long.nmea --headless \
+		$(FPS1) --no-roads --config beepy-nav/tests/net/reroute-auto.conf \
+		2> $(RDIR)/reroute-cap.log
+#	EXACTLY FIVE, and only the cap can produce that number: this deviation lasts
+#	long enough for the spacing alone to allow eight.
+	test `grep -c "reroute [0-9] of" $(RDIR)/reroute-cap.log` -eq 5
+#	NOT the 40 m off-route latch, which is the distinction 7.11 exists to draw.
+#	T-DETOUR's own fixture is the control: a 100 m excursion that latches off
+#	route, on the same route, with rerouting on auto -- and nothing fires.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/detour.nmea --headless $(FPS1) \
+		--no-roads --config beepy-nav/tests/net/reroute-auto.conf \
+		2> $(RDIR)/reroute-latch.log
+	! grep -q "reroute" $(RDIR)/reroute-latch.log
+#	`off` produces none, on the fixture that produces five under auto.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/reroute-long.nmea --headless \
+		$(FPS1) --no-roads --config beepy-nav/tests/net/reroute-off.conf \
+		2> $(RDIR)/reroute-off.log
+	! grep -q "reroute" $(RDIR)/reroute-off.log
+#	`ask` produces none WITHOUT the key -- which is the whole difference between
+#	ask and auto: it spends nothing until asked. The prompt is armed, and that is
+#	all that happens.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/reroute-long.nmea --headless \
+		$(FPS1) --no-roads --config beepy-nav/tests/net/reroute-ask.conf \
+		2> $(RDIR)/reroute-ask.log
+	! grep -q "reroute [0-9] of" $(RDIR)/reroute-ask.log
+	grep -q "off route -- ENTER to reroute" $(RDIR)/reroute-ask.log
+#	And exactly one WITH it. One key, one attempt: a prompt that armed a repeating
+#	timer would show more.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/reroute.nmea --headless $(FPS1) \
+		--no-roads --config beepy-nav/tests/net/reroute-ask.conf \
+		--key 460:enter 2> $(RDIR)/reroute-key.log
+	test `grep -c "reroute [0-9] of" $(RDIR)/reroute-key.log` -eq 1
+#	THE INSTALL, which is the other half and needs a pack that can answer. One
+#	route replaces another under a running ride:
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/reroute.nmea --headless $(FPS1) \
+		--roads $(ROADPACK) \
+		--config beepy-nav/tests/net/reroute-auto.conf \
+		--trace $(RDIR)/reroute-live.tsv 2> $(RDIR)/reroute-live.log
+#	"0 m off" is the assertion that route_rebase() did its job, and it is exact
+#	because there is no third possible answer: a new route starts where the rider
+#	is, so a re-snap reads a few metres. Skip the rebase and route_snap() compares
+#	a world-frame position against a route-frame polyline and reads the distance
+#	between the two origins -- kilometres.
+	grep -q "rerouted to Sukhumvit Loop -- 59 points, 1.67 km, 11 cues, 0 m off" \
+		$(RDIR)/reroute-live.log
+#	ONE ride, not two. This is what says the route was swapped IN PLACE rather
+#	than through CONFIRM's hand-off, which leaves run_live() and comes back --
+#	re-opening the serial port, re-running 6.3's UBX exchange and starting a
+#	second ride log, all while the rider is off route and moving. Two "fixes,"
+#	lines would mean the ride had been restarted underneath them.
+	test `grep -c "fixes," $(RDIR)/reroute-live.log` -eq 1
+#	TWO attempts, and the pair is better evidence than one would have been: the
+#	first is refused by the pack (the rider is in a component of this small
+#	extract that cannot reach the finish) and the second succeeds. The log says
+#	when -- "for 10 s" and "for 70 s", the age of the same unbroken deviation --
+#	so the 60 s spacing is visible here in the lane where a reroute SUCCEEDS,
+#	which is the lane the --no-roads runs above cannot reach at all.
+	test `grep -c "reroute [0-9] of" $(RDIR)/reroute-live.log` -eq 2
+	grep -q "reroute 1 of 5: 247 m off route for 10 s" $(RDIR)/reroute-live.log
+	grep -q "reroute 2 of 5: 288 m off route for 70 s" $(RDIR)/reroute-live.log
+#	And the ride went on navigating the REPLACEMENT. `pct` was reset to zero when
+#	the route changed, so 62% at the end is a kilometre travelled and measured
+#	along the new route -- which a route installed into the wrong frame could not
+#	produce, because every fix would have landed kilometres off it. The rider does
+#	NOT arrive: the fixture rides the original track home and the replacement is
+#	the road route from the detour, so it ends 633 m short of its own finish. That
+#	is the fixture being a replay and not a rider, and asserting arrival here would
+#	be asserting something untrue.
+	$(ASSERT) $(RDIR)/reroute-live.tsv --final pct ">=" 55
+	test `wc -l < $(RDIR)/reroute-live.tsv` -eq 598
 	@echo "--- T-FIND-ONLINE: the pack first, and the network only where it cannot"
 #	DESIGN.md 7.10. Three runs, because the three claims fail independently.
 #

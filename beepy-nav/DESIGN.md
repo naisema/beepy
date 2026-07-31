@@ -866,6 +866,8 @@ not a rehearsal of anything:
 | `H` | hold — freeze the display |
 | `E` | end the route and drop to MAP — stop navigating without stopping the program (§1.6) |
 | `Q` | open QUIT, which asks before it exits (§1.6) |
+| `ENTER` | **only** while `REROUTE?` is on the panel — accept it (§7.11). Unbound otherwise, which is what left it free to be this |
+| `Esc` | **only** while `REROUTE?` is on the panel — decline it |
 
 On the MAP page of §1.5, which is what the program is when there is no route.
 Its own hint row lists the three that matter, and that row is load-bearing: a
@@ -1556,9 +1558,14 @@ the trip average in the first 10 minutes.
 
 Off when the perpendicular distance exceeds **40 m for 3 consecutive fixes**;
 back on below **25 m**. The asymmetry stops the panel flickering on a wide road.
-**There is no rerouting** — no routing engine and no map data. The display says
-how far off you are and which way the route lies, and that is all it can
-honestly do.
+The display says how far off you are and which way the route lies.
+
+This section used to end "**there is no rerouting** — no routing engine and no map
+data", and that is no longer true: §1.4's pack and §7.10's router between them
+supply both. What remains true is that **this latch does not reroute**, and §7.11
+says at length why it must not — 40 m for 3 fixes is GPS wobble and a stop at a
+shop, and rerouting on it would be irritating and expensive. The trigger that does
+is 200 m sustained, and it is a different rule with different numbers.
 
 ### 7.4 Cues
 
@@ -2133,6 +2140,181 @@ stop rate. (That same 1 Hz is why the dumps are a second apart: the first versio
 put the baseline 0.5 s before the keypress, got the very same frame back, and was
 asserting "the bar changed" against itself.)
 
+### 7.11 Rerouting — the first thing here that acts on its own
+
+Everything up to §7.10 happens because a thumb pressed something. This does not,
+and that single difference is why every number in it is a brake.
+
+```
+reroute = ask        # or auto, off
+```
+
+**`ask` by default**, because a program that changes the route under a moving
+rider should have been asked the first time. It is also the only one of the three
+that spends nothing until it is: ask mode fetches no bytes and routes nothing
+until `ENTER`.
+
+#### The trigger is 200 m sustained, and NOT the off-route latch
+
+§7.3's latch fires at 40 m for 3 fixes. It is right for what it does — the panel
+withholds a junction distance it can no longer vouch for — and it is wrong for
+this: it fires for GPS wobble in a city canyon and for a deliberate stop at a shop
+twenty metres off the line, and rerouting on either would be both irritating and
+expensive. **200 m is a distance a bicycle only reaches by having gone somewhere
+else.**
+
+`REROUTE_OFF_S` is **10 seconds of ride clock, not a fix count**. The same ten
+seconds is ten fixes at 1 Hz and fifty at the 5 Hz of §6.3, so a count would
+quietly mean something different on a receiver that had been sped up. Ten seconds
+at city speed is seventy metres of extra riding, which against a 200 m deviation
+is noise; ten fixes agreeing is not multipath.
+
+#### Two brakes, and they stop different things
+
+| | |
+|---|---|
+| `REROUTE_MIN_S` 60 s | one attempt a minute, however long the rider stays out there |
+| `REROUTE_MAX` 5 | per **episode** — reset when the deviation clears, and nowhere else |
+
+Resetting the cap on a *successful install* is the obvious rule and it is the
+wrong one. A router that snaps the rider to a road they are not on returns a route
+they are still 300 m off; every attempt would "succeed", reset the count, and the
+runaway the cap exists to stop would run straight through the success path.
+Resetting on **back on route** is the condition that actually means the situation
+resolved. It is also the answer to what happens when an online route starts 500 m
+from the rider — that needs no refusal of its own, because this stops it after
+five.
+
+#### Where a reroute goes
+
+**The destination, not the next cue.** Off route by 200 m the next cue is very
+often behind you, and a route to it would turn the rider round to reach a junction
+they no longer need. It is also all a GPX can offer: a file names a path and an
+endpoint, and once the rider is 200 m off the path, the endpoint is the only part
+of it they still want.
+
+That a scenic GPX becomes the shortest way to its own finish **is a real loss**.
+The honest alternative — rejoin the line at the nearest point ahead — is a routing
+problem the pack cannot pose, and `off` exists for riders who would rather keep
+the line.
+
+Offline first, exactly as §7.10 is, and on the same two `RC_*` codes.
+
+#### Asking, on the panel, in two rows
+
+```
+┌──────────┬─────────────
+│   OFF    │
+│  ROUTE   │      map
+│  250 M   │
+│  ───     │
+│  44 MIN  │
+│ REROUTE? │   ← where the whole-route distance sits
+│▓▓ENTER▓▓ │   ← inverted, where arrival sits
+└──────────┴─────────────
+```
+
+Both rows, because **a question a rider cannot see the answer to is not a
+question**. They are taken from the whole-route distance and the arrival time,
+which are the two figures on this panel least worth having while the rider is
+200 m off the route they describe. The key row is inverted for `panel_nofix()`'s
+reason: the panel is solid ink, so a bar of paper is the one treatment here that
+cannot be read as ordinary content.
+
+`ENTER` answers it and `Esc` declines. ENTER was free — it is bound on none of the
+three ride pages — and both are handled *before* the page's own key switch, so a
+prompt can never be answered by accident with a key that already means something
+else. Declining counts as an attempt, so the 60 s spacing is what stops "no" from
+being asked again on the next fix.
+
+It outranks the transient of §7.5 and is outranked by `NO FIX`: a transient is a
+confirmation of something the rider just did and they can afford to miss it, this
+one is waiting on them, and with no position there is nothing to reroute from.
+
+#### Putting a route under a moving rider
+
+`CONFIRM`'s `ENTER` installs a route by leaving `run_live()` and coming back
+(§1.4). That path **re-opens the serial port, re-runs §6.3's UBX rate exchange and
+starts a second ride log** — several seconds with no position. Acceptable for
+FIND, where the rider is stopped and choosing. Not acceptable at the exact moment
+they are off route and moving.
+
+So a reroute swaps the route under a running ride, and the whole price is paid in
+one line. A route's `en[]` is in its own tangent frame, and the navigator hands
+`route_snap()` a position in the **world** frame — which works only because the
+two are the same frame, set from the route's first point when it was loaded. There
+were two ways out:
+
+| | |
+|---|---|
+| move the world frame | shift every dead-reckoning coordinate already in it, re-bind the tile pack, re-project the drawn position — a spread of state mutations, testable only through a replay |
+| **bring the route into the frame** | `route_rebase()`: pure geometry over one array, unit-testable on its own |
+
+The second. The cost is §6.1's tangent-plane error, which is under 0.1% inside
+50 km and shows in `cum[]` and `total_m` but never in `off_m` — that is a local
+perpendicular, and the plane is locally exact.
+
+Everything else that survives a reroute — the breadcrumb, the odometer, the ride
+log, the port, the panel — survives because it was **never in `app_t`, or never in
+the frame**: the breadcrumb and the saved places are stored in degrees and
+re-projected every frame, and the odometer accumulates metres. What does *not*
+survive is every value §7 keeps between fixes: the snap window hint, the off-route
+latch, the ten-minute speed ring, the countdown latch. A window hint pointing at
+segment 900 of a route with 40 segments is not a stale optimisation, it is a wrong
+answer.
+
+#### What the gate measures
+
+**T-REROUTE** (`test-find`). Every assertion is about a **count**, because both
+brakes are claims about one.
+
+The brakes are measured with **nothing able to install** — `--no-roads` and no
+`router_url`. Let a reroute succeed and the deviation clears, the episode ends,
+and the count becomes a fact about the pack's geography instead of about the rate
+limit.
+
+**Two fixtures, because one cannot tell the two brakes apart.** Both are the same
+300 m excursion off the same loop; only the speed differs, and the speed decides
+how long the rider spends past 200 m:
+
+| fixture | past 200 m | spacing allows | cap allows | asserted |
+|---|---|---|---|---|
+| `reroute.nmea` 25 km/h | 105 s | 2 | 5 | **2** — only the spacing gives that |
+| `reroute-long.nmea` 6 km/h | 436 s | 8 | 5 | **5** — only the cap gives that |
+
+A build firing once per fix would give 95 and 430. Then: `off` produces none;
+`ask` produces none **without the key** and exactly one **with it**; and
+`detour.nmea` — T-DETOUR's own 100 m excursion, which latches off route — produces
+none at all, which is the distinction this section exists to draw.
+
+The install is proved separately, with a pack that can answer. Two attempts there,
+and the pair is better evidence than one: the first is refused (the rider is in a
+component of that small extract which cannot reach the finish) and the second, by
+the log's own numbers, comes 60 s later — `for 10 s` then `for 70 s`, the age of
+one unbroken deviation. So the spacing is visible in the lane where a reroute
+*succeeds*, which the `--no-roads` runs cannot reach.
+
+Two assertions on that run carry the design:
+
+- **`0 m off`** on the install line. A new route starts where the rider is, so a
+  re-snap reads a few metres. Skip `route_rebase()` and `route_snap()` compares a
+  world-frame position against a route-frame polyline and reads the distance
+  between the two origins — kilometres. There is no third answer, which is what
+  makes one `grep` enough.
+- **one `fixes,` line.** Two would mean the ride had been restarted underneath the
+  rider — the hand-off this section exists to avoid.
+
+The rider does **not** arrive, and the gate says so rather than pretending: the
+fixture rides the original track home while the replacement is the road route from
+the detour, so it ends 633 m short of its own finish. `pct` was reset to zero when
+the route changed, so the 62% it reaches is a kilometre travelled and measured
+along the **new** route — which a route installed into the wrong frame could not
+produce.
+
+`goldens/nav-ask.fb` freezes the two rows, over the OFF ROUTE panel they can only
+appear on, and `! cmp` against `nav-off.fb` is what stops a build that draws
+nothing at all from passing.
+
 ---
 
 ## 8. Data model
@@ -2368,8 +2550,10 @@ Installed to `/usr/local/bin/beepy-nav` on the Raspberry Pi OS install that is
 actually on the device — same as `gps-monitor`.
 
 **Out of scope:** no Buildroot package, no `br_defconfig` or `zero2w_defconfig`
-change, no rerouting, no cloud sync, and none of the cycle-computer features
-listed in §14.
+change, no cloud sync, and none of the cycle-computer features listed in §14.
+(Rerouting was on this list until §7.11 built it. It is off the list rather than
+crossed off it: the sentence's job is to say what the program does not do, and a
+list of things it used to not do would be a different sentence.)
 
 **Still true, and worth restating because the pack got a great deal bigger
 without changing it:** the basemap is nationwide and the routing is not. Tiles

@@ -112,7 +112,8 @@ static const char USAGE[] =
     "                the per-fix trace go to ~/rides/YYYYMMDD-HHMMSS.{nmea,tsv}\n"
     "                unless this says otherwise (rides_dir in the config)\n"
     "  --demo        render a static design state instead of navigating\n"
-    "  --page P      nav, nav-off, nav-nofix, nav-tiles, map, map-nofix,\n"
+    "  --page P      nav, nav-off, nav-nofix, nav-ask, nav-tiles, map,\n"
+    "                map-nofix,\n"
     "                map-wait, map-tiles, overview, overview-tiles, arrows,\n"
     "                chooser, find, find-none, confirm, cliptest,\n"
     "                cliptest-panel -- and with --route it picks the page\n"
@@ -134,6 +135,7 @@ enum {
     PAGE_NAV,
     PAGE_NAV_OFF,
     PAGE_NAV_NOFIX,
+    PAGE_NAV_ASK,
     PAGE_NAV_TILES,
     PAGE_MAP,
     PAGE_MAP_NOFIX,
@@ -309,9 +311,17 @@ static int g_fetch_fired;
  * ASKED for, not the one their thumb has since selected. */
 static struct {
     int live;
+    /* A REROUTE rather than a FIND, which decides what happens to the route
+     * when it lands: a FIND proposes it on CONFIRM and waits for a thumb, a
+     * reroute has already been agreed to and goes straight under the rider. */
+    int reroute;
     char name[ROUTE_NAME];
     double lat, lon; /* the destination, degrees */
 } g_req;
+
+/* Rerouting policy (DESIGN.md 7.11): REROUTE_OFF / REROUTE_ASK / REROUTE_AUTO.
+ * At file scope with the mode and the packs, because it outlives every route. */
+static int g_reroute = REROUTE_ASK;
 
 static ridelog_t RIDELOG;
 
@@ -366,10 +376,18 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
     cov_begin(cov);
     switch (page) {
     case PAGE_NAV_OFF:
-        view_nav_demo(cov, 85, 0);
+        view_nav_demo(cov, 85, 0, 0);
         break;
     case PAGE_NAV_NOFIX:
-        view_nav_demo(cov, 0, 1);
+        view_nav_demo(cov, 0, 1, 0);
+        break;
+    /* DESIGN.md 7.11's question, frozen. OFF ROUTE as well, and not as
+     * decoration: the trigger is 200 m, so a rider who is being asked this is
+     * always off route, and a golden of the prompt over a normal panel would
+     * freeze a frame the program cannot produce. 250 m is past the trigger and
+     * reads as three digits, which is what the row has to hold. */
+    case PAGE_NAV_ASK:
+        view_nav_demo(cov, 250, 0, 1);
         break;
     /* The basemap state. With no --basemap this is the SAME page with the
      * tile layer absent, which is exactly the comparison that says the layer
@@ -451,7 +469,7 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
         break;
     }
     default:
-        view_nav_demo(cov, 0, 0);
+        view_nav_demo(cov, 0, 0, 0);
         break;
     }
     cov_resolve(cov, cv);
@@ -599,6 +617,21 @@ typedef struct {
      * sentence too long for the bar. NULL is the ordinary count. */
     const char *net;
 
+    /* --- rerouting (DESIGN.md 7.11) ------------------------------------- */
+
+    /* The ride second the deviation first passed REROUTE_OFF_M, or < 0 for "on
+     * route". This is the whole of "SUSTAINED": one wild fix sets it and the
+     * next good one clears it, and only a deviation that survives
+     * REROUTE_OFF_S of ride clock ever reaches the trigger. */
+    double off_since;
+    double last_try;  /* ride second of the last attempt; < 0 = none yet   */
+    int tries;        /* attempts since the deviation last cleared         */
+    /* The panel prompt of `reroute = ask` is up and ENTER will answer it. Armed
+     * by the trigger, cleared by the answer, by Esc, and by getting back on
+     * route -- a question about a situation that has resolved itself must not
+     * still be on the screen. */
+    int reroute_ask;
+
     /* R: leave this route and go back to the picker, without leaving the
      * program. Distinct from quit, because the panel, the evdev grab and the
      * process all survive it -- only the route does not. */
@@ -647,6 +680,20 @@ typedef struct {
 
     int cue_idx[ROUTE_MAXCUE];
 } app_t;
+
+/* The three forward declarations in this file, and they earn themselves for one
+ * reason: all three are reached from the fix and frame loops, and all three are
+ * written further down with the ROUTING they belong to. Moving either group to
+ * meet the other would put the parser and the router next to the frame clock, or
+ * the frame clock next to the search.
+ *
+ *   net_arrived()    bytes landed; make a route of them        (7.9, 7.10)
+ *   reroute_check()  one fix's worth of 7.11's arithmetic
+ *   route_install()  put a route under a running ride          (7.11)
+ */
+static void net_arrived(app_t *a);
+static void reroute_check(app_t *a);
+static void route_install(app_t *a, route_t *nr);
 
 static app_t APP;
 
@@ -1197,6 +1244,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
          * the only thing that has to change, and its whole job is to say that
          * the rest has stopped. */
         p.nofix = a->nofix;
+        p.ask_reroute = a->reroute_ask;
         view_nav(cov, &m, &p);
     }
     cov_resolve(cov, cv);
@@ -1442,6 +1490,11 @@ on_epoch(app_t *a, time_t now)
         route_offroute_update(&a->ctx, &a->nv);
         route_cue_ahead(&a->rt, &a->nv);
         route_progress(&a->rt, &a->ctx, a->t, &a->nv);
+        /* DESIGN.md 7.11, and on the FIX rather than the frame: it is a rule
+         * about how far off the route the rider MEASURABLY is, and between fixes
+         * there is no new measurement -- only dead reckoning, which would let
+         * the trigger fire on an extrapolation. */
+        reroute_check(a);
     }
     dr_on_fix(a, a->e, a->n, a->fx.course, a->fx.speed_kmh, a->t);
     a->alert_fired = alerts_update(a);
@@ -1569,13 +1622,6 @@ stats_flush(const app_t *a, int final)
                 RC.ms_sum / (double)RC.frames, p95, RC.ms_max);
     }
 }
-
-/* The one forward declaration in this file, and it earns itself: an arriving
- * route is reaped by the FRAME loop and built by the FIND page's code, which
- * sits three hundred lines further down with the rest of 1.4. Moving either to
- * meet the other would put the parser next to the frame clock or the frame
- * clock next to the search. */
-static void net_arrived(app_t *a);
 
 /* Draw one frame at ride-second `t`, present it only if it differs from the
  * last one presented, and account for it. Returns 1 when it was presented. */
@@ -2108,7 +2154,7 @@ net_request(double slat, double slon, double dlat, double dlon, char *url,
  * up and the title bar says FETCHING; the rider can go on typing, which is the
  * entire point of N1's child process. */
 static void
-net_start(app_t *a, const place_t *h)
+net_start(app_t *a, const place_t *h, int reroute)
 {
     char url[CFG_PATH_MAX + 128], body[512];
 
@@ -2141,6 +2187,11 @@ net_start(app_t *a, const place_t *h)
         return;
     }
     g_req.live = 1;
+    /* Set HERE and nowhere else: this is the line where the request becomes real,
+     * and a `reroute` flag left standing after a FAILED start would make the next
+     * FIND install its route without a CONFIRM page. That is the bug this
+     * parameter exists to make impossible rather than to remember not to write. */
+    g_req.reroute = reroute;
     g_req.lat = h->lat;
     g_req.lon = h->lon;
     snprintf(g_req.name, sizeof g_req.name, "%s", h->name ? h->name : "");
@@ -2171,13 +2222,21 @@ net_arrived(app_t *a)
         a->net = "NO ROUTE";
         return;
     }
-    a->have_proposed = 1;
     a->net = NULL;
-    a->page = LIVE_CONFIRM;
     fprintf(stderr, "beepy-nav: routed to %s -- %d points, %.2f km, %d cues"
                     " (online)\n",
             a->proposed.name, a->proposed.npt, a->proposed.total_m / 1000.0,
             a->proposed.ncue);
+    if (g_req.reroute) {
+        /* Already agreed to -- by the config in `auto`, by ENTER in `ask` -- so
+         * there is nothing left to confirm. It goes under the rider. */
+        g_req.reroute = 0;
+        route_install(a, &a->proposed);
+        a->have_proposed = 0;
+        return;
+    }
+    a->have_proposed = 1;
+    a->page = LIVE_CONFIRM;
 }
 
 /* Route to the selected hit and show CONFIRM. An unreachable destination is a
@@ -2209,7 +2268,7 @@ find_route_selected(app_t *a)
                   (int)sizeof why, &code)) {
         fprintf(stderr, "beepy-nav: %s\n", why);
         if (code == RC_OFFMAP || code == RC_UNREACHABLE) {
-            net_start(a, h);
+            net_start(a, h, 0);
             return;
         }
         note_show(a, "NO ROUTE");
@@ -2220,6 +2279,225 @@ find_route_selected(app_t *a)
     fprintf(stderr, "beepy-nav: routed to %s -- %d points, %.2f km, %d cues\n",
             a->proposed.name, a->proposed.npt, a->proposed.total_m / 1000.0,
             a->proposed.ncue);
+}
+
+/* ---------------------------------------------------- rerouting (7.11)
+ *
+ * The first thing in this program that acts on its own while the rider is
+ * moving, which is why every number below is a brake rather than a feature.
+ */
+
+/* NOT the 40 m off-route latch of 7.3. That latch fires for GPS wobble in a
+ * city canyon and for a deliberate stop at a shop twenty metres off the line,
+ * and rerouting on either would be both irritating and expensive. 200 m is a
+ * distance a bicycle only reaches by having gone somewhere else. */
+#define REROUTE_OFF_M 200.0
+/* And sustained, on the RIDE clock rather than a fix count, because the same
+ * ten seconds is ten fixes at 1 Hz and fifty at the 5 Hz of 6.3 -- a count would
+ * quietly mean something different on a receiver that had been sped up. Ten
+ * seconds at city speed is seventy metres of extra riding, which against a 200 m
+ * deviation is noise; ten fixes agreeing is not multipath. */
+#define REROUTE_OFF_S 10.0
+/* One attempt a minute. A rider parked 300 m off route must not re-fetch until
+ * the battery dies, and this is the first of the two brakes that stops it. */
+#define REROUTE_MIN_S 60.0
+/* The second brake, and it counts attempts since the deviation last CLEARED
+ * rather than since the ride began.
+ *
+ * Resetting on a successful install would be the obvious rule and it is the
+ * wrong one: a router that snaps the rider to a road they are not on returns a
+ * route they are still 300 m off, so every attempt would "succeed", reset the
+ * count, and the loop the cap exists to stop would run through the success path.
+ * Resetting on "back on route" is the condition that actually means the
+ * situation resolved -- and it is also the answer to what happens when an online
+ * route starts 500 m away, which needs no refusal of its own because this stops
+ * it after five. */
+#define REROUTE_MAX 5
+
+/* Put a route under the rider, in place, mid-ride.
+ *
+ * NOT the RUN_FIND_ROUTE hand-off that CONFIRM's ENTER uses. That leaves
+ * run_live() and comes back, which re-opens the serial port, re-runs the UBX
+ * rate exchange of 6.3 and starts a new ride log -- several seconds with no
+ * position, at the exact moment the rider is off route and moving. Acceptable
+ * for FIND, where the rider is stopped and choosing; not acceptable here.
+ *
+ * So the route is swapped under a running ride, and the price is paid in one
+ * line: route_rebase() brings it into the tangent frame the ride is ALREADY in
+ * (route.h says why that is cheaper than moving the frame). Everything else
+ * that survives -- the breadcrumb, the odometer, the ride log, the port, the
+ * panel -- survives because it was never in app_t or was never in the frame. */
+static void
+route_install(app_t *a, route_t *nr)
+{
+    int units = a->ctx.units;
+
+    if (g_have_ref)
+        route_rebase(nr, g_ref_lat, g_ref_lon);
+    route_free(&a->rt);
+    a->rt = *nr;
+    memset(nr, 0, sizeof *nr); /* ownership moved; the caller must not free it */
+    a->have_route = 1;
+
+    /* Every value section 7 keeps between fixes was about the route that is
+     * gone: the snap window hint, the off-route latch, the ten-minute speed
+     * ring, the countdown latch. A window hint pointing at segment 900 of a
+     * route with 40 segments is not a stale optimisation, it is a wrong answer.
+     */
+    nav_init(&a->ctx);
+    nav_init(&a->rctx);
+    nav_set_units(&a->ctx, units); /* nav_init() zeroes it back to metric */
+    nav_reset(&a->nv);
+    a->alert_cue = -1; /* 7.5's rungs are indices into the old cue list */
+
+    /* Re-snap on the spot rather than waiting for the next fix, so no frame is
+     * ever drawn with a new route and last second's position on it. */
+    if (a->have_pos) {
+        route_snap(&a->rt, &a->ctx, a->e, a->n, (time_t)a->t, &a->nv);
+        route_offroute_update(&a->ctx, &a->nv);
+        route_cue_ahead(&a->rt, &a->nv);
+        route_progress(&a->rt, &a->ctx, a->t, &a->nv);
+    }
+    a->reroute_ask = 0;
+    a->off_since = -1.0;
+    a->tries = 0;
+    /* The re-snapped deviation is on this line for one reason: it is the number
+     * that says whether route_rebase() did its job. A new route goes under the
+     * rider, so it starts where they are and this reads a few metres. Skip the
+     * rebase and route_snap() compares a world-frame position against a
+     * route-frame polyline, and it reads the distance between the two origins --
+     * tens of kilometres. There is no third possibility, which is what makes one
+     * grep enough. */
+    fprintf(stderr,
+            "beepy-nav: rerouted to %s -- %d points, %.2f km, %d cues, "
+            "%.0f m off\n",
+            a->rt.name, a->rt.npt, a->rt.total_m / 1000.0, a->rt.ncue,
+            a->have_pos ? a->nv.off_m : -1.0);
+}
+
+/* Where a reroute is going: the end of the route the rider is on.
+ *
+ * The DESTINATION and not the next cue, which is the question the plan left
+ * open and the geometry answers -- off route by 200 m, the next cue is very
+ * often behind you, and a route to it would turn the rider round to reach a
+ * junction they no longer need. It is also all a GPX can offer: a file names a
+ * path and an endpoint, and once the rider is 200 m off the path, the endpoint
+ * is the only part of it they still want. That a scenic GPX becomes the shortest
+ * way to its own finish is a real loss, and the honest alternative -- rejoining
+ * the line at the nearest point ahead -- is a routing problem this pack cannot
+ * pose. `off` exists for riders who would rather keep the line. */
+static void
+reroute_target(const app_t *a, double *lat, double *lon)
+{
+    *lat = a->rt.pt[a->rt.npt - 1].lat;
+    *lon = a->rt.pt[a->rt.npt - 1].lon;
+}
+
+/* Build the replacement and put it under the rider, or start a fetch that will.
+ * Offline first, exactly as FIND is (7.10): the pack answers in 0.1 ms and needs
+ * no connection, and a rider who has drifted 200 m off a route inside their own
+ * pack is the commonest case by far. */
+static void
+reroute_go(app_t *a)
+{
+    static char why[96];
+    double dlat, dlon, de, dn, se, sn;
+    int code = RC_OK;
+    route_t nr;
+
+    a->last_try = a->t;
+    a->tries++;
+    a->reroute_ask = 0;
+    /* ONE line per attempt, before anything can fail, so the log answers "how
+     * many times did it try" by counting rather than by inference. That is the
+     * question T-REROUTE asks -- both brakes are claims about a COUNT -- and the
+     * lines below it are about how each one turned out. */
+    fprintf(stderr, "beepy-nav: reroute %d of %d: %.0f m off route for %.0f s\n",
+            a->tries, REROUTE_MAX, a->nv.off_m,
+            a->off_since >= 0.0 ? a->t - a->off_since : 0.0);
+    reroute_target(a, &dlat, &dlon);
+    if (!g_roads) {
+        /* No pack and no router is not a reroute at all. Said once per attempt
+         * rather than once per fix, which is what the rate limit above buys. */
+        fprintf(stderr, "beepy-nav: %s\n",
+                g_router_url[0] ? "no road pack; asking the router"
+                                : "no road pack and no router_url: cannot "
+                                  "reroute");
+        if (!g_router_url[0])
+            return;
+    } else {
+        roads_project(g_roads, a->fx.lat, a->fx.lon, &se, &sn);
+        roads_project(g_roads, dlat, dlon, &de, &dn);
+        route_init(&nr);
+        if (router_to(g_roads, se, sn, de, dn, g_mode, a->rt.name, &nr, why,
+                      (int)sizeof why, &code) == 0) {
+            route_install(a, &nr);
+            return;
+        }
+        fprintf(stderr, "beepy-nav: reroute: %s\n", why);
+        if (code != RC_OFFMAP && code != RC_UNREACHABLE)
+            return;
+    }
+    /* Same two codes as 7.10, and the same reason: those are the only failures a
+     * wider map could fix. */
+    {
+        place_t h;
+        memset(&h, 0, sizeof h);
+        h.name = a->rt.name;
+        h.lat = dlat;
+        h.lon = dlon;
+        net_start(a, &h, 1);
+        /* The FIND page is not open, so 7.10's title bar cannot carry this.
+         * A transient can: `auto` is a thing the program is doing on its own,
+         * and 1.5 s of the bottom row is the smallest honest way to say so. */
+        if (a->net && strcmp(a->net, "FETCHING") != 0)
+            note_show(a, a->net);
+        a->net = NULL;
+    }
+}
+
+/* Once per fix. Everything here is arithmetic on off_m and the ride clock; the
+ * only thing it can start is one attempt a minute, five to an episode. */
+static void
+reroute_check(app_t *a)
+{
+    if (g_reroute == REROUTE_OFF || !a->have_route || a->rt.npt < 2)
+        return;
+    if (a->nv.seg < 0 || a->nofix)
+        return; /* nothing has been measured, so nothing is known */
+
+    if (a->nv.off_m <= REROUTE_OFF_M) {
+        /* Back on route -- or never off it. This is the one place the episode
+         * ends: the cap resets here and nowhere else. */
+        a->off_since = -1.0;
+        a->tries = 0;
+        a->reroute_ask = 0;
+        return;
+    }
+    if (a->off_since < 0.0) {
+        a->off_since = a->t;
+        return;
+    }
+    if (a->t - a->off_since < REROUTE_OFF_S)
+        return; /* off, but not yet SUSTAINED */
+    if (a->tries >= REROUTE_MAX || g_req.live)
+        return;
+    if (a->last_try >= 0.0 && a->t - a->last_try < REROUTE_MIN_S)
+        return; /* one a minute, however long the rider stays out here */
+
+    if (g_reroute == REROUTE_ASK) {
+        if (!a->reroute_ask) {
+            /* Armed, and NOTHING ELSE: ask mode spends no battery and no data
+             * until the rider says so, which is the whole difference between it
+             * and auto. The attempt is counted when ENTER is pressed, so the
+             * cap counts requests rather than questions. */
+            a->reroute_ask = 1;
+            fprintf(stderr, "beepy-nav: %.0f m off route -- ENTER to "
+                            "reroute\n", a->nv.off_m);
+        }
+        return;
+    }
+    reroute_go(a);
 }
 
 /* The FIND page owns every key. That is not an oversight: the whole surface of
@@ -2389,6 +2667,29 @@ handle_key(app_t *a, int ch)
         return find_key(a, ch);
     if (a->page == LIVE_CONFIRM)
         return confirm_key(a, ch);
+    /* ENTER answers the reroute prompt of 7.11, and answers nothing else: it is
+     * unbound on all three ride pages, which is what left it free to become the
+     * one key this question needs. Esc declines -- the prompt does not simply
+     * expire, because a rider who has not looked down yet has not declined.
+     *
+     * Both are checked BEFORE the switch, so a prompt cannot be answered by
+     * accident with a key that already means something else. */
+    if (a->reroute_ask && (ch == '\n' || ch == '\r')) {
+        reroute_go(a);
+        key_repaint(a);
+        return 1;
+    }
+    if (a->reroute_ask && ch == 27) {
+        /* Declined. It stays declined until the deviation clears and comes back,
+         * or REROUTE_MIN_S passes -- the rate limit is what stops "no" from
+         * being asked again on the next fix. */
+        a->reroute_ask = 0;
+        a->last_try = a->t;
+        a->tries++;
+        note_show(a, "NO REROUTE");
+        key_repaint(a);
+        return 1;
+    }
     switch (ch) {
     case '\t':
         /* DESIGN.md 1.5: not bound on MAP. Tab's promise is "switch page (there
@@ -3235,6 +3536,7 @@ main(int argc, char **argv)
         cfg_default_path(cfgpath, sizeof cfgpath);
         cfg_load(&cfg, cfgpath, 0);
     }
+    g_reroute = cfg.reroute;
     snprintf(g_router_url, sizeof g_router_url, "%s", cfg.router_url);
     snprintf(g_router_type, sizeof g_router_type, "%s", cfg.router_type);
     snprintf(g_fetch_cmd, sizeof g_fetch_cmd, "%s", cfg.fetch_cmd);
@@ -3254,6 +3556,8 @@ main(int argc, char **argv)
                 page = PAGE_NAV_OFF;
             else if (!strcmp(p, "nav-nofix"))
                 page = PAGE_NAV_NOFIX;
+            else if (!strcmp(p, "nav-ask"))
+                page = PAGE_NAV_ASK;
             else if (!strcmp(p, "nav-tiles"))
                 page = PAGE_NAV_TILES;
             else if (!strcmp(p, "map"))
@@ -3499,6 +3803,11 @@ main(int argc, char **argv)
      * nothing writes the file back. */
     APP.alerts = cfg.led_alerts;
     APP.alert_cue = -1;
+    /* < 0 is "never", and 0 is a real ride second: a zeroed app_t
+     * would read as "the deviation started at t=0" and "an attempt
+     * was made at t=0", which are two different wrong answers. */
+    APP.off_since = -1.0;
+    APP.last_try = -1.0;
     nav_init(&APP.rctx);
     nav_set_units(&APP.ctx, cfg.units);
     led_init(cfg.led_alerts);
@@ -3630,6 +3939,8 @@ main(int argc, char **argv)
             APP.can_pick = can_pick;
             APP.fps = fps_keep > 0.0 ? fps_keep : DR_FPS;
             APP.alert_cue = -1;
+            APP.off_since = -1.0;
+            APP.last_try = -1.0;
         }
         if (rc == RUN_FIND_ROUTE) {
             /* The destination the router built supersedes whatever file was

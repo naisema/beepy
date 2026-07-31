@@ -39,6 +39,18 @@ typedef struct {
      * and the transient. Everything on this panel derived from position is
      * frozen while it is set; the panel says so rather than pretending. */
     int nofix;
+    /* DESIGN.md 7.11: `reroute = ask` has fired and is waiting for ENTER. It
+     * takes BOTH lower rows -- the question on one and the key on the other,
+     * because a question a rider cannot see the answer to is not a question --
+     * and it takes them from the whole-route distance and the arrival time,
+     * which are the two figures on this panel least worth having while the
+     * rider is 200 m off the route they describe.
+     *
+     * It outranks the transient and is outranked by NO FIX. A transient is a
+     * confirmation of something the rider just did and they can miss it; this
+     * one is waiting on them. NO FIX wins because with no position there is
+     * nothing to reroute from, and the answer would fail anyway. */
+    int ask_reroute;
 } panel_t;
 
 /* The map on the right. Route geometry is metres east/north of any origin;
@@ -303,7 +315,7 @@ void view_arrows(cov_t *c);
 
 /* The static demo state page_nav() renders: off = 0 for the turn page,
  * metres off-route for the OFF ROUTE variant, nofix for the NO FIX one. */
-void view_nav_demo(cov_t *c, int off, int nofix);
+void view_nav_demo(cov_t *c, int off, int nofix, int ask);
 
 /* The basemap state (DESIGN.md 6.5): the real Asok / Sukhumvit route from
  * osm-asok.json, over a tile pack cut around it. `t` may be NULL, and then

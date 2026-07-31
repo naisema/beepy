@@ -81,7 +81,20 @@ typedef struct {
      * because that is what lets a test substitute `cat FIXTURE` and keeps the
      * gate off the network structurally rather than by promise. */
     char fetch_cmd[CFG_PATH_MAX];
+    /* Rerouting (DESIGN.md 7.11): REROUTE_ASK (the default), REROUTE_AUTO or
+     * REROUTE_OFF.
+     *
+     * ASK by default because this is the first thing in the program that would
+     * ACT on its own while the rider is moving, and the rider should be in that
+     * loop until they have decided otherwise. It is also the only one of the
+     * three that spends nothing until asked: ask mode fetches nothing at all
+     * until the key is pressed. */
+    int reroute;
 } navcfg_t;
+
+/* config.h and not route.h: rerouting is a policy the rider set, not a property
+ * of a route. */
+enum { REROUTE_OFF = 0, REROUTE_ASK, REROUTE_AUTO };
 
 void cfg_defaults(navcfg_t *c);
 

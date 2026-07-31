@@ -118,6 +118,88 @@ test_prepare(void)
     teardown(&r);
 }
 
+/* route_rebase(): the same route, on somebody else's tangent origin.
+ *
+ * This is what lets a reroute replace the live route without moving the world
+ * frame every dead-reckoning coordinate is already in (7.11), so what has to be
+ * true is that the route is the SAME route afterwards. Checked three ways: the
+ * distances survive, the cue list still points at the same junctions with
+ * distances that agree with the new cum[], and a snap gives the same answer in
+ * the new frame that it gave in the old one.
+ *
+ * The origin used here is 5 km away, which is further than a reroute moves the
+ * reference in practice -- the new route starts where the rider is, and the
+ * frame stays where the old route started. */
+static void
+test_rebase(void)
+{
+    /* 2 km north with a right-angle turn 1 km along, so there is a real cue to
+     * carry across rather than only a destination. */
+    static double en[2 * 201];
+    route_t r;
+    navctx_t ctx;
+    nav_t nv, nv2;
+    double total0, along0, ref_lat, ref_lon;
+    int n, i, ncue0, idx0;
+
+    /* The corner is index 100; the second leg starts one step PAST it, as
+     * test_cues_corner() does -- restarting it on the corner itself would
+     * repeat a point and leave a zero-length segment, which is a fixture bug
+     * that "cum[] is still increasing" below caught on the first run. */
+    n = line(en, 0, 0, 0, 0, 10, 101);         /* 1 km north     */
+    n = line(en, n, 10, 1000, 90, 10, 100);    /* then 1 km east */
+    build(&r, en, n);
+    route_cues_derive(&r);
+    route_cues_finish(&r);
+    total0 = r.total_m;
+    ncue0 = r.ncue;
+    check(ncue0 >= 2, "rebase: the corner and the destination are both cues");
+    idx0 = r.cue[0].idx;
+    along0 = r.cue[0].along_m;
+
+    nav_init(&ctx);
+    nav_reset(&nv);
+    route_snap(&r, &ctx, 5.0, 500.0, 0, &nv); /* 5 m off, 500 m along */
+
+    /* 5 km south-west of the route's own start, and NOT the route's first point:
+     * the whole claim is that the origin is arbitrary. */
+    ref_lat = r.pt[0].lat - 5000.0 / GEO_M_PER_DEG_LAT;
+    ref_lon = r.pt[0].lon - 5000.0 / GEO_M_PER_DEG_LON;
+    check(route_rebase(&r, ref_lat, ref_lon) == 0, "rebase: succeeds");
+    check(r.lat0 == ref_lat && r.lon0 == ref_lon,
+          "rebase: the route now says which origin it is on");
+    check(fabs(r.en[0]) > 4000.0 && fabs(r.en[1]) > 4000.0,
+          "rebase: en[0] is no longer the origin, which is the point");
+
+    /* 0.1% of 2 km is 2 m, and 6.1 quotes 0.1% at 50 km -- so this bound is
+     * two orders of magnitude looser than the geometry needs and would still
+     * catch a projection that had been dropped or applied twice. */
+    close_to(r.total_m, total0, 0.5, "rebase: the route is the same length");
+    for (i = 1; i < r.npt; i++)
+        if (!(r.cum[i] > r.cum[i - 1])) {
+            check(0, "rebase: cum[] is still increasing");
+            break;
+        }
+    eq_int(r.ncue, ncue0, "rebase: the cue list survives");
+    eq_int(r.cue[0].idx, idx0, "rebase: on the same vertex");
+    close_to(r.cue[0].along_m, along0, 0.5, "rebase: at the same distance");
+    /* The assertion that would have caught keeping the OLD along_m: the cue's
+     * distance must agree with the cum[] the route now carries, not with the one
+     * it was measured on. */
+    close_to(r.cue[0].along_m, r.cum[r.cue[0].idx], 1e-9,
+             "rebase: and it agrees with the new cum[]");
+
+    /* The same rider, in the new frame: 5 m off, 500 m along, expressed as
+     * metres from the new origin. Same segment, same distances. */
+    nav_init(&ctx);
+    nav_reset(&nv2);
+    route_snap(&r, &ctx, r.en[0] + 5.0, r.en[1] + 500.0, 0, &nv2);
+    eq_int(nv2.seg, nv.seg, "rebase: a snap lands on the same segment");
+    close_to(nv2.along, nv.along, 0.5, "rebase: at the same distance along");
+    close_to(nv2.off_m, nv.off_m, 0.05, "rebase: and the same distance off");
+    teardown(&r);
+}
+
 /* ------------------------------------------------------------------- snap */
 
 static void
@@ -666,6 +748,7 @@ int
 main(void)
 {
     test_prepare();
+    test_rebase();
     test_snap_basic();
     test_snap_window();
     test_classify();

@@ -18,6 +18,7 @@ cfg_defaults(navcfg_t *c)
     c->led_alerts = 1; /* 7.5; led.c already copes with an unwritable LED */
     c->nplace = 0;
     c->mode = NAV_MODE_BIKE;
+    c->reroute = REROUTE_ASK;
     c->router_url[0] = '\0';
     snprintf(c->router_type, sizeof c->router_type, "valhalla");
     snprintf(c->fetch_cmd, CFG_PATH_MAX, "%s",
@@ -194,6 +195,17 @@ cfg_load(navcfg_t *c, const char *path, int loud)
                     c->nplace++;
                 }
             }
+        } else if (!strcmp(key, "reroute")) {
+            lower(val);
+            if (!strcmp(val, "off") || !strcmp(val, "no"))
+                c->reroute = REROUTE_OFF;
+            else if (!strcmp(val, "ask"))
+                c->reroute = REROUTE_ASK;
+            else if (!strcmp(val, "auto"))
+                c->reroute = REROUTE_AUTO;
+            else
+                complain(path, lineno,
+                         "reroute must be ask, auto or off, not", val);
         } else if (!strcmp(key, "router_type")) {
             if (strcmp(val, "valhalla") && strcmp(val, "osrm"))
                 complain(path, lineno,

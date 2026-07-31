@@ -146,7 +146,8 @@ passed, total distance, distance and time remaining.
 
 | The panel says | What happened |
 |---|---|
-| `OFF ROUTE / 85 / M AWAY` | you left the route. The map shows your marker off the line with a dotted trail back to the nearest point on it. There is **no rerouting** — no map data on the device to route with. |
+| `OFF ROUTE / 85 / M AWAY` | you left the route. The map shows your marker off the line with a dotted trail back to the nearest point on it. Under 200 m that is all that happens — see **Rerouting** for what does beyond it. |
+| `REROUTE?` over an inverted `ENTER` | you have been over 200 m off route for ten seconds and `reroute = ask`. `ENTER` accepts, `Esc` declines. See **Rerouting**. |
 | `NO FIX` *(inverted)* | the receiver has lost the sky for 4 seconds. Everything on the screen is now frozen and stale rather than pretending: the marker stops, the countdown stops. It clears itself when fixes return. |
 
 ---
@@ -166,6 +167,8 @@ passed, total distance, distance and time remaining.
 | `H` | hold — freeze the display |
 | `E` | end the route — stop navigating, stay on the map, keep riding |
 | `Q` | quit — it asks first, and shows what you would be ending |
+| `ENTER` | accept a reroute, and nothing else — it does nothing unless the panel is asking |
+| `Esc` | decline one |
 
 ### Stopping
 
@@ -236,6 +239,7 @@ mode       = bike       # or car -- picks which roads routing will use
 router_url =            # empty: offline only. See Online routing below
 router_type = valhalla  # or osrm
 fetch_cmd  =            # how bytes are fetched; the default uses curl
+reroute    = ask        # or auto, off. See Rerouting below
 ```
 
 `place` is the one key here that **accumulates** rather than replaces: each line
@@ -310,6 +314,58 @@ timeout and a 1 MB cap.
 Nothing about a route is remembered from the network: what arrives becomes an
 ordinary route, identical to a GPX you loaded, and the ride log records it the
 same way.
+
+---
+
+## Rerouting
+
+The one thing this program does on its own initiative, so it asks first by
+default.
+
+```
+reroute = ask        # or auto, off
+```
+
+It fires when you have been **more than 200 m off the route for ten seconds** —
+not the 40 m that turns the panel to `OFF ROUTE`. That smaller number is right for
+withholding a junction distance and wrong for this: it fires for GPS wobble
+between tall buildings and for stopping at a shop twenty metres off the line, and
+neither is a reason to rebuild your route.
+
+| | |
+|---|---|
+| `ask` | the panel asks. `ENTER` accepts, `Esc` declines. Nothing is fetched, and no battery is spent, until you accept |
+| `auto` | it reroutes without asking |
+| `off` | it never does |
+
+In `ask` mode the two lower rows of the turn panel become the question:
+
+```
+ REROUTE?
+▓▓ENTER▓▓
+```
+
+They replace the remaining distance and the arrival time — the two figures worth
+least while you are 200 m off the route they are about. The question waits; it
+does not time out, because you may not have looked down yet. It goes away when you
+answer it or when you get back on route.
+
+**It reroutes to your destination**, which for a GPX is that file's last point.
+This means a scenic route becomes the shortest way to its own finish — that is a
+real loss and there is no way around it, because the file describes a path and
+nothing in it says which parts you cared about. If you would rather keep the line
+and find your own way back to it, use `off`.
+
+**Your pack is asked first**, as with any other route, so a reroute inside your
+pack costs no connection. Two brakes stop it running away: **one attempt a
+minute**, and **five per episode** — an episode ending when you are back on route.
+A bike parked 300 m off route will therefore try five times over five minutes and
+then stop, rather than retrying until the battery is flat.
+
+The new route goes under you **without interrupting the ride**: the receiver is not
+re-opened, the ride log keeps going, and the odometer and the breadcrumb carry on.
+The countdown, the off-route latch and the arrival estimate all start again,
+because they were about the route that is gone.
 
 ---
 
@@ -529,11 +585,10 @@ cannot show. For the Bangkok box that is 1 012 of 5 331 names — a quarter of t
 city — so a soi signposted only in Thai is genuinely unreachable this way, and
 you will be told so rather than left guessing.
 
-**Still no rerouting once you are riding.** Going off route gets you
-`OFF ROUTE / 85 / M AWAY` and a trail back to the line, exactly as before. The
-router on the device makes rerouting *possible* for the first time; it is not
-built, and nothing on the screen pretends it is. If you want a different route,
-`F` and ask for one.
+**Rerouting is now built** — see **Rerouting** above. It was not, when this
+section was first written, and the sentence that used to be here said so. Under
+200 m off route nothing has changed: you get `OFF ROUTE / 85 / M AWAY` and a trail
+back to the line, exactly as before.
 
 **`F` does not work from the route picker** — only from a ride. Load any GPX
 first. That is a wart, not a design.
