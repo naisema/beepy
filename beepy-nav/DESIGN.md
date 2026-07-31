@@ -909,6 +909,7 @@ quoting rule nobody would remember.
 | `rides_dir` | a path | `~/rides` | where the ride log goes (§7.6); `--no-log` turns it off entirely |
 | `basemap` | a path | none | the OSM raster pack under the map (§6.5); `--no-basemap` defeats it |
 | `roads` | a path | none | the road/name pack FIND searches (§1.4); `--no-roads` defeats it |
+| `place` | `NAME LAT,LON` | none | a saved destination (§1.4.6). **The one key here that repeats**: each line adds another, up to eight, kept in file order. No flag overrides it — a favourite is not a per-ride decision |
 
 Flags also accept `yes`/`no`, `true`/`false`, `on`/`off`. **A command-line flag
 always wins**, because it is the more specific statement of intent: the file
@@ -1765,6 +1766,7 @@ view_nav 200, view_overview 160, nav main 180 ≈ **1450 lines**.
 | **T-FIND-NOPACK** | `F` with no pack differs from an un-keyed run *only* inside the panel's bottom row, and is byte-identical two seconds later — the §7.5 transient mechanism, and the proof that the key is neither dead nor destructive |
 | **T-ROADS-POIS** | the destinations half of the indexer, over `tests/roads/pois.json` — one road and four things beside it, one per case. A school is searchable; a station prefers its `name:en`; a Thai-only market is dropped **and counted in the header**, which before destinations existed covered streets alone; an `amenity=parking` with no name is not indexed at all, because a POI key is not what makes something findable, a name is. Plus the merge: a shop sharing a street's name yields **one** place with 3 points, 2 from the road's every-third-vertex and 1 from the shop. `--no-pois` rebuilds the pack as it was, which is what makes each of these a pair rather than an assertion that everything is indexed and always was |
 | **T-ROADS-POIS-INERT** | an extract with no `node` elements builds the pack it always did. `osm-asok.json` is that extract and the committed `asok.roads` is the answer, compared byte for byte — the cheapest possible statement that a feature added to the packer moved nothing that existed before it |
+| **T-SAVED** | the saved places of §1.4.6, and the three things that make them a feature rather than a config key. The FIND page as opened differs from the same page with no places configured — which is the only comparison that isolates the list from the layout. Typing keeps a saved place that still matches *and* brings pack hits in beside it, so the frames differ; a filter that dropped `WORK` would look identical to one that never had it. And `ENTER` routes to a coordinate that is **in no pack at all** — the same off-graph snap T-FIND-POI asserts, reached by a different road. The ORDER is not asserted here: it is frozen by `goldens/nav-find-saved.fb`, because a `cmp` against a live replay frame would only be comparing distances that legitimately differ |
 | **T-FIND-POI** | routing to a destination that is **not on the graph**. Every destination before this one was: a street's candidate points are its own vertices, so `router.c`'s nearest-node snap had never been asked to travel. `THE ACADEMY` sits ~110 m off `NORTH ROAD` and belongs to no way at all, and it must still route — and be installed as the live route by the same line a GPX takes, which is what makes it a destination rather than a map label |
 | **T-NOTE-FITS** | the same claim as T-FIND-NOPACK with the **committed** pack named on the command line instead of whatever the config points at. That distinction is the whole test: the runs above inherit `beepy-nav.conf`, every config to date named a pack that did not reach this route, and under an empty map `NO ROAD PACK` spilling 8 px past the panel into the map was white on white. `tests/tiles/asok.tiles` does cover this ground and puts 154 px of street in the strip the overflow landed on. Found by merging a basemap that finally covered the ground the tests ride over — which is the third time a pair here has quietly stopped being a pair because one half read the device's config |
 | **T-FIND-CANCEL** | two runs of one ride, one of which opened FIND and pressed `Esc`. Twenty seconds later they are the same frame: the page borrowed the screen and gave it back, which is the property that lets FIND be a page inside the ride loop rather than a modal detour |
@@ -1825,6 +1827,7 @@ purpose.
 | 6 | MAP: where you are, with no route (§1.5) | four goldens, three of them in the design gate, and T-MAP — a whole replay with no `--route` at all |
 | 7 | Nationwide basemap: area cuts, a joined pack, destinations in the index (§1.4, §6.5) | T-TILES-MERGE (a joined pack draws the frozen golden), T-ROADS-POIS, and T-FIND-POI — routing to something that is not on the graph |
 | 8 | Leaving: QUIT and ending a route (§1.6) | two goldens, and T-QUIT-CONFIRM / T-QUIT-GO / T-END-ROUTE |
+| 9 | Saved places, and a map before the first fix (§1.4.6) | two goldens — neither of which `nav-find` or `nav-map-wait` can stand for — and T-SAVED |
 
 Phase 5 landed with one surprise worth carrying in this table: the reference
 route it was to be checked against **was itself illegal**, so "routed path vs a
@@ -1846,6 +1849,11 @@ graph. Both had been written for something else.
 Phase 8 came from the same place — a rider asking for a way out that was not
 "lose the ride". Two of them, as it turned out, and the program had offered
 neither.
+
+Phase 9 is the cheapest of the three and the one most likely to be used daily,
+which is worth noticing. It added no page, no key and no format: the FIND page's
+empty state was already there, going to waste, and a `place_t` already described
+everything a saved place is. The work was recognising that, not building it.
 
 ---
 
