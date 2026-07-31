@@ -172,6 +172,129 @@ map_wait(cov_t *c, const livemap_t *m)
     map_strip(c, m);
 }
 
+/* --------------------------------------------- saved places (1.4.6) ------
+ *
+ * Every shape here is drawn TWICE -- once fat in paper, then in ink -- which
+ * is the route casing's trick from 6.5 and the only reason a thin outline
+ * survives a street grid on a 1-bit screen. Without it these read as noise
+ * over anything denser than a dual carriageway; the mockup that proved this
+ * was drawn over the rider's own neighbourhood at 6 m/px.
+ */
+#define SV_HALO 1
+
+/* Each shape draws its own PAPER INTERIOR first and its ink outline second, so
+ * it reads as an object sitting on the map rather than as a wireframe with a
+ * street grid showing through it. The first attempt outlined only, over the
+ * rider's own neighbourhood, and the roads ran straight through the roof.
+ *
+ * `fill` is what distinguishes the two passes: the halo pass wants the whole
+ * shape in paper, the real pass wants a paper body and an ink edge. */
+static void
+sv_house(cov_t *c, double x, double y, int ink, int fill)
+{
+    double roof[8];
+
+    cov_fill_rect(c, x - 7, y - 2, x + 7, y + 8, fill ? ink : COV_PAPER);
+    roof[0] = x - 9; roof[1] = y - 1;
+    roof[2] = x;     roof[3] = y - 10;
+    roof[4] = x + 9; roof[5] = y - 1;
+    roof[6] = x - 9; roof[7] = y - 1;
+    cov_poly(c, roof, 4, fill ? ink : COV_PAPER);
+    if (fill)
+        return;
+    cov_polyline(c, roof, 4, 1.0, ink);
+    cov_rect_outline(c, x - 7, y - 2, x + 7, y + 8, 1.0, ink);
+}
+
+static void
+sv_case(cov_t *c, double x, double y, int ink, int fill)
+{
+    cov_fill_rect(c, x - 9, y - 3, x + 9, y + 8, fill ? ink : COV_PAPER);
+    cov_fill_rect(c, x - 4, y - 7, x + 4, y - 3, fill ? ink : COV_PAPER);
+    if (fill)
+        return;
+    cov_rect_outline(c, x - 9, y - 3, x + 9, y + 8, 1.0, ink);
+    cov_rect_outline(c, x - 4, y - 7, x + 4, y - 3, 1.0, ink);
+    /* The clasp: one stroke, and the only thing that stops a briefcase at this
+     * size reading as a plain box. */
+    cov_fill_rect(c, x - 2, y + 1, x + 2, y + 3, ink);
+}
+
+/* Anything the caller did not recognise. A filled diamond and NO letter: a
+ * character in a ring is mush at this size -- that is what killed the first
+ * candidate design -- and it is not needed, because every mark carries its
+ * name on a bar underneath. The shape only has to say "a place you saved",
+ * and which one is written directly below it. */
+static void
+sv_other(cov_t *c, double x, double y, int ink, int fill)
+{
+    double d[10];
+
+    d[0] = x;     d[1] = y - 9;
+    d[2] = x + 8; d[3] = y;
+    d[4] = x;     d[5] = y + 9;
+    d[6] = x - 8; d[7] = y;
+    d[8] = x;     d[9] = y - 9;
+    cov_poly(c, d, 5, fill ? ink : COV_PAPER);
+    if (!fill)
+        cov_polyline(c, d, 5, 1.0, ink);
+}
+
+static void
+sv_shape(cov_t *c, const savedmark_t *sm, double x, double y, int ink,
+         int fill)
+{
+    if (sm->kind == SAVED_HOME)
+        sv_house(c, x, y, ink, fill);
+    else if (sm->kind == SAVED_WORK)
+        sv_case(c, x, y, ink, fill);
+    else
+        sv_other(c, x, y, ink, fill);
+}
+
+static void
+map_saved(cov_t *c, const livemap_t *m, double mpp, double cx, double cy,
+          double theta)
+{
+    double ct = cos(theta), st = sin(theta);
+    int i, k;
+
+    if (!m->saved)
+        return;
+    for (i = 0; i < m->nsaved && i < SAVED_MARK_MAX; i++) {
+        const savedmark_t *sm = &m->saved[i];
+        double de = sm->e - m->pos_e, dn = sm->n - m->pos_n;
+        double x = cx + (de * ct - dn * st) / mpp;
+        double y = cy - (de * st + dn * ct) / mpp;
+        int nw;
+        double half;
+
+        /* Off the map: nothing. No edge tag, no arrow -- a mark is where the
+         * place is, and a symbol pinned to the frame would be a different
+         * claim in the same visual language. Zoom out and it appears. */
+        if (x < 10 || x > W - 10 || y < 14 || y > MAPP_Y1 - 24)
+            continue;
+
+        for (k = 0; k < 9; k++)
+            sv_shape(c, sm, x + (k % 3) - 1, y + (k / 3) - 1, COV_PAPER, 1);
+        sv_shape(c, sm, x, y, COV_INK, 0);
+        /* The stem, so the picture has a point: the icon sits above the spot
+         * and this is the line that says which spot. */
+        cov_stroke(c, x, y + 7, x, y + 12, 1.0, COV_PAPER);
+        cov_stroke(c, x, y + 8, x, y + 12, 1.0, COV_INK);
+
+        /* The name on a paper bar, for the reason 1.4.6 gives: with three
+         * saved places the shapes alone stop being an answer. */
+        if (!sm->name || !*sm->name)
+            continue;
+        nw = cov_text_w(sm->name, 1);
+        half = nw / 2.0;
+        cov_fill_rect(c, x - half - 2, y + 13, x + half + 1, y + 21,
+                      COV_PAPER);
+        cov_text(c, (int)(x - half), (int)(y + 15), sm->name, 1, COV_INK);
+    }
+}
+
 void
 view_map(cov_t *c, const livemap_t *m)
 {
@@ -243,6 +366,12 @@ view_map(cov_t *c, const livemap_t *m)
         mark_dashed(c, m_segs, nseg, 5, 5, 1, COV_INK);
     }
 
+    /* Saved places (DESIGN.md 1.4.6), UNDER the position marker and over
+     * everything else. Under, because the one mark a rider must never lose is
+     * the one that says where they are; a house drawn on top of the chevron
+     * would be a picture obscuring a fact. */
+    map_saved(c, m, mpp, cx, cy, theta);
+
     mark_position(c, cx, cy, 13, m->residual);
     mark_compass(c, MAPP_COMPASS_X, 27, theta, 11);
     mark_speed_badge(c, W - 33, 33, m->spd_kmh, 27, m->units);
@@ -300,6 +429,14 @@ map_demo_state(livemap_t *m)
     m->nofix = 0;
     m->note = NULL;
     m->sats = MAP_DEMO_SATS;
+    /* Explicit, and the reason is a segfault: livemap_t is a caller's local,
+     * every demo state is built by this function, and a saved-place COUNT left
+     * as whatever was on the stack sends map_saved() walking a wild pointer.
+     * It crashed --page map-nofix the moment the field existed. */
+    m->saved = NULL;
+    m->nsaved = 0;
+    m->have_home = 0;
+    m->home_e = m->home_n = 0.0;
 }
 
 void
@@ -399,3 +536,35 @@ view_map_tiles_demo(cov_t *c, struct tiles *t)
     m.tiles = t;
     view_map(c, &m);
 }
+
+/* The saved-place state (DESIGN.md 1.4.6). The basemap state's geometry, with
+ * two places put at KNOWN offsets from the fix -- one of each recognised kind,
+ * far enough apart to prove the marks do not collide and near enough to be on
+ * screen at the default rung. A third at 4 km is deliberately OFF the map: the
+ * golden's job is partly to show that it draws nothing.
+ *
+ * Offsets and not coordinates, because a golden that depended on where the
+ * rider's real home is would be a golden nobody else could regenerate. */
+static savedmark_t MAP_SAVED[] = {
+    {"HOME", MAP_TILES_POS_E - 150.0, MAP_TILES_POS_N + 120.0, SAVED_HOME},
+    {"WORK", MAP_TILES_POS_E + 130.0, MAP_TILES_POS_N - 90.0, SAVED_WORK},
+    {"GYM", MAP_TILES_POS_E + 40.0, MAP_TILES_POS_N + 210.0, SAVED_OTHER},
+    {"FAR", MAP_TILES_POS_E + 4000.0, MAP_TILES_POS_N, SAVED_HOME},
+};
+
+void
+view_map_saved_demo(cov_t *c, struct tiles *t)
+{
+    livemap_t m;
+    map_demo_state(&m);
+    m.track = MAP_TILES_TRACK;
+    m.ntrack = MAP_TILES_NTRACK;
+    m.pos_e = MAP_TILES_POS_E;
+    m.pos_n = MAP_TILES_POS_N;
+    m.have_pos = 1;
+    m.tiles = t;
+    m.saved = MAP_SAVED;
+    m.nsaved = (int)(sizeof MAP_SAVED / sizeof MAP_SAVED[0]);
+    view_map(c, &m);
+}
+

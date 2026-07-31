@@ -609,12 +609,53 @@ state was genuinely unreadable. It is 1.1's own treatment for the one thing on a
 page that must not be mistaken for content, and it is drawn *only* when there is
 a map under it — so every frozen golden of the empty state stays byte-identical.
 
-Verification is two goldens — `nav-find-saved` (the list, in file order, before
-a key is pressed) and `nav-map-wait-home` (a map drawn, no marker), neither of
-which the existing `nav-find` and `nav-map-wait` can stand for — plus
-**T-SAVED**: the opened page differs from the same page with no places
-configured, typing keeps a saved place that still matches while bringing pack
-hits in beside it, and `ENTER` routes to a coordinate that is in no pack at all.
+#### Icons
+
+A saved place is drawn on the **MAP page** as a picture: a house for `HOME`, a
+briefcase for `WORK`, a diamond for anything else — each with its name on a
+small paper bar beneath it, and a stem pointing at the spot. The same three
+pictures mark the rows on the FIND page, so one thing looks like one thing in
+both places.
+
+Four decisions, each of which the mockups settled rather than argued:
+
+- **The caller picks the picture, not the page.** `nav.c` maps a name to a
+  `SAVED_*` kind and the view draws what it is told. This section refuses to
+  give a magic name any *behaviour*; choosing a drawing is the one place where
+  recognising `HOME` is harmless, because an unrecognised name gets the diamond
+  and nothing else changes.
+- **Filled, not outlined.** Every shape lays down a paper interior before its
+  ink edge. The first version outlined only, and over a real street grid at
+  6 m/px the roads ran straight through the roof.
+- **No letter in the generic mark.** The first candidate was a ringed initial;
+  at 5×7 inside an 8 px ring it is mush, and it reads as a second position
+  marker. The name is already written underneath, so the shape only has to say
+  *a place you saved*.
+- **Off screen draws nothing** — no edge tags, no arrows. A mark is where the
+  place is; a symbol pinned to the frame would be a different claim in the same
+  visual language. Zoom out and it appears.
+
+MAP only. The NAV page already carries a route, a ridden track, cue dots, a
+turn pin and the chevron, and a sixth kind of mark on the busiest screen buys
+nothing a rider is looking for mid-corner.
+
+Verification is three goldens — `nav-find-saved` (the list as the page opens, in
+file order, with all three icons), `nav-map-saved` (the marks over real streets,
+including one 4 km away that must draw *nothing*) and `nav-map-wait-home` (a map
+drawn, no marker) — plus **T-SAVED**: the opened page differs from the same page
+with no places configured, typing keeps a saved place that still matches while
+bringing pack hits in beside it, and `ENTER` routes to a coordinate that is in no
+pack at all.
+
+**One of those goldens was worthless for a commit and it is worth recording
+why.** `nav-find-saved` was first captured from the ordinary demo FIND page with
+places configured — but that page has a query typed into it, no saved place
+matches `SOI 23`, and the frame came back byte-identical to `nav-find`. It froze
+nothing, and the `--min-px` assertions on it passed regardless, because they
+compared it against another frame that also had no places in it. The page has an
+empty-query demo state of its own now, and `check` asserts the two goldens
+**differ** — the cheapest possible guard against a golden that has quietly
+stopped being about anything.
 
 ### 1.5 MAP — where you are, with no route — `nav-map.png`
 

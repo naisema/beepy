@@ -75,6 +75,35 @@ fmt_hit_dist(char *buf, size_t n, double metres, int units)
         snprintf(buf, n, "%.1fKM", metres / 1000.0);
 }
 
+/* The row-sized twin of view_map.c's marks: the same three pictures at the
+ * size a 16 px row allows. Outline only -- there is no street grid to hide
+ * here, so the paper interior that the map versions need would only cut a hole
+ * in an inverted row. */
+static void
+find_icon(cov_t *c, double x, double y, int kind, int ink)
+{
+    double p[10];
+
+    if (kind == SAVED_HOME) {
+        p[0] = x;     p[1] = y;
+        p[2] = x + 7; p[3] = y + 6;
+        p[4] = x - 7; p[5] = y + 6;
+        p[6] = x;     p[7] = y;
+        cov_polyline(c, p, 4, 1.0, ink);
+        cov_rect_outline(c, x - 5, y + 6, x + 5, y + 13, 1.0, ink);
+    } else if (kind == SAVED_WORK) {
+        cov_rect_outline(c, x - 7, y + 3, x + 7, y + 13, 1.0, ink);
+        cov_rect_outline(c, x - 3, y, x + 3, y + 3, 1.0, ink);
+    } else {
+        p[0] = x;     p[1] = y + 1;
+        p[2] = x + 6; p[3] = y + 7;
+        p[4] = x;     p[5] = y + 13;
+        p[6] = x - 6; p[7] = y + 7;
+        p[8] = x;     p[9] = y + 1;
+        cov_polyline(c, p, 5, 1.0, ink);
+    }
+}
+
 void
 view_find(cov_t *c, const find_t *f)
 {
@@ -111,14 +140,24 @@ view_find(cov_t *c, const find_t *f)
         if (on)
             cov_fill_rect(c, 0, y - FIND_SEL_UP, W - 1, y + FIND_SEL_DN,
                           COV_INK);
-        /* A star on the rider's own places, so a list that mixes them with
-         * pack hits -- which is what typing does -- still says which is which.
-         * It costs two characters of the name, and the names people save are
-         * short by construction: they chose them. */
-        snprintf(buf, sizeof buf, "%s%.*s", i < f->nsaved ? "* " : "",
-                 i < f->nsaved ? FIND_NAME_CHARS - 2 : FIND_NAME_CHARS,
-                 f->hit[i].name ? f->hit[i].name : "");
-        cov_text(c, 8, y, buf, 2, ink);
+        /* The rider's own places carry the SAME picture the MAP page draws for
+         * them (DESIGN.md 1.4.6), so one thing looks like one thing in both
+         * places. Rows that are pack hits get no icon and no indent -- the
+         * absence is the distinction, and it costs the name no characters.
+         *
+         * Drawn in the row's own ink, which inverts with the selection: a
+         * house outlined in paper on an ink row is the same house. */
+        if (i < f->nsaved) {
+            int kind = f->savedkind ? f->savedkind[i] : SAVED_OTHER;
+            find_icon(c, 9, y + 1, kind, ink);
+            snprintf(buf, sizeof buf, "%.*s", FIND_NAME_CHARS - 2,
+                     f->hit[i].name ? f->hit[i].name : "");
+            cov_text(c, 30, y, buf, 2, ink);
+        } else {
+            snprintf(buf, sizeof buf, "%.*s", FIND_NAME_CHARS,
+                     f->hit[i].name ? f->hit[i].name : "");
+            cov_text(c, 8, y, buf, 2, ink);
+        }
         {
             char d[24];
             fmt_hit_dist(d, sizeof d, f->hit[i].dist_m, f->units);
@@ -180,7 +219,59 @@ view_find_demo(cov_t *c, roads_t *g, int zero)
     f.sel = 0;
     f.units = UNITS_METRIC; /* the frozen design state; see view_nav_demo() */
     f.ndropped = roads_ndropped(g);
+    /* Explicitly none, and not left to whatever was on the stack: find_t is a
+     * local here, nsaved indexes savedkind, and an uninitialised count is the
+     * kind of bug that renders correctly until the day it does not. */
+    f.nsaved = 0;
+    f.savedkind = NULL;
     f.nhits = search_places(g, q, 0.0, 0.0, hit, FIND_ROWS);
     f.nshown = f.nhits < FIND_ROWS ? f.nhits : FIND_ROWS;
+    view_find(c, &f);
+}
+
+/* The saved-place state (DESIGN.md 1.4.6): the page as it opens, BEFORE a key
+ * is pressed. A state of its own and not a flag on the one above, because the
+ * one above types a query -- and a golden of the typed page with places
+ * configured is byte-identical to the golden without them, since none of them
+ * match "SOI 23". That is exactly the mistake this state exists to correct: the
+ * first version of this golden froze nothing at all and no test noticed,
+ * because every assertion on it was a "the frames differ" comparison against a
+ * frame that also had no places in it.
+ *
+ * Three places, one of each kind, so the golden carries all three pictures and
+ * the file order (HOME, WORK, GYM -- not alphabetical) at once. */
+static const savedmark_t FIND_DEMO_SAVED[] = {
+    {"HOME", 0.0, 0.0, SAVED_HOME},
+    {"WORK", 1200.0, -800.0, SAVED_WORK},
+    {"GYM", -400.0, 600.0, SAVED_OTHER},
+};
+
+void
+view_find_saved_demo(cov_t *c, roads_t *g)
+{
+    place_t hit[FIND_ROWS];
+    int kind[FIND_ROWS];
+    find_t f;
+    int i, n = (int)(sizeof FIND_DEMO_SAVED / sizeof FIND_DEMO_SAVED[0]);
+
+    memset(hit, 0, sizeof hit);
+    for (i = 0; i < n && i < FIND_ROWS; i++) {
+        hit[i].name = FIND_DEMO_SAVED[i].name;
+        hit[i].e = FIND_DEMO_SAVED[i].e;
+        hit[i].n = FIND_DEMO_SAVED[i].n;
+        hit[i].dist_m = hypot(hit[i].e, hit[i].n);
+        hit[i].bearing = atan2(hit[i].e, hit[i].n);
+        hit[i].place = -1;
+        kind[i] = FIND_DEMO_SAVED[i].kind;
+    }
+    f.query = "";
+    f.hit = hit;
+    f.sel = 0;
+    f.units = UNITS_METRIC;
+    f.ndropped = roads_ndropped(g);
+    f.nsaved = n;
+    f.savedkind = kind;
+    f.nhits = 0;
+    f.nshown = n;
     view_find(c, &f);
 }

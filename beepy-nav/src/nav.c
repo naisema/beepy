@@ -146,6 +146,8 @@ enum {
     PAGE_QUIT,
     PAGE_QUIT_MAP,
     PAGE_MAP_WAIT_HOME,
+    PAGE_MAP_SAVED,
+    PAGE_FIND_SAVED,
     PAGE_CLIPTEST,
     PAGE_CLIPTEST_PANEL,
     PAGE_CHOOSER
@@ -270,6 +272,10 @@ static int g_have_odo;
  * lives on main()'s stack. */
 static cfgplace_t g_place[CFG_PLACES_MAX];
 static int g_nplace;
+/* The same places projected for the MAP page, rebuilt each frame because the
+ * world frame can change under them (a route loads, R starts another). At file
+ * scope only so the page can be handed a pointer that outlives this call. */
+static savedmark_t g_savedmark[SAVED_MARK_MAX];
 
 static ridelog_t RIDELOG;
 
@@ -387,6 +393,12 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
         break;
     case PAGE_MAP_WAIT_HOME:
         view_map_wait_home_demo(cov, g_tiles);
+        break;
+    case PAGE_MAP_SAVED:
+        view_map_saved_demo(cov, g_tiles);
+        break;
+    case PAGE_FIND_SAVED:
+        view_find_saved_demo(cov, roads);
         break;
     case PAGE_CLIPTEST:
         view_cliptest(cov);
@@ -534,6 +546,7 @@ typedef struct {
     place_t hit[FIND_ROWS];
     int nhits;  /* the TOTAL, which is what the title bar shows */
     int nsaved; /* how many of the rows above are saved places (1.4.6)  */
+    int savedkind[FIND_ROWS]; /* SAVED_* per saved row, for its icon    */
     int nshown; /* how many of them are on screen               */
     int sel;
     /* What CONFIRM is drawing: a fully prepared route_t, so the page it is
@@ -966,6 +979,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
      * there is no route to read. */
     if (a->page == LIVE_MAP) {
         livemap_t lm;
+        int i2;
         lm.have_pos = a->have_pos && a->have_dr;
         /* The last known position, which is exactly what 1.1.2 asks to keep
          * drawn through a loss: fix_t is not cleared by an epoch with no fix in
@@ -995,6 +1009,26 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
          * "the one called HOME": the file's order is the rider's order, and a
          * program that searched for a magic name would silently do nothing for
          * anyone who called theirs FLAT or MUM. */
+        /* The saved places to draw (1.4.6). Projected here rather than in the
+         * page, because this is where the world frame is known -- and the
+         * PICTURE is chosen here too, so no view file matches on a name. The
+         * split matters: 1.4.6 gives a magic name no behaviour, and this is
+         * the one place where recognising HOME is harmless, because an
+         * unrecognised name simply gets its initial. */
+        lm.nsaved = 0;
+        lm.saved = g_savedmark;
+        if (g_have_ref) {
+            for (i2 = 0; i2 < g_nplace && i2 < SAVED_MARK_MAX; i2++) {
+                savedmark_t *sm = &g_savedmark[lm.nsaved];
+                geo_project(g_ref_lat, g_ref_lon, g_place[i2].lat,
+                            g_place[i2].lon, &sm->e, &sm->n);
+                sm->name = g_place[i2].name;
+                sm->kind = !strcmp(g_place[i2].name, "HOME")   ? SAVED_HOME
+                           : !strcmp(g_place[i2].name, "WORK") ? SAVED_WORK
+                                                               : SAVED_OTHER;
+                lm.nsaved++;
+            }
+        }
         lm.have_home = 0;
         if (g_nplace > 0 && g_have_ref) {
             geo_project(g_ref_lat, g_ref_lon, g_place[0].lat, g_place[0].lon,
@@ -1015,6 +1049,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         f.units = a->ctx.units;
         f.ndropped = roads_ndropped(g_roads);
         f.nsaved = a->nsaved;
+        f.savedkind = a->savedkind;
         view_find(cov, &f);
         cov_resolve(cov, cv);
         return;
@@ -1880,6 +1915,9 @@ find_update(app_t *a)
         if (a->qn > 0 && !search_name_matches(g_place[i].name, a->query))
             continue;
         saved_as_hit(a, &g_place[i], e, n, &a->hit[ns]);
+        a->savedkind[ns] = !strcmp(g_place[i].name, "HOME")   ? SAVED_HOME
+                           : !strcmp(g_place[i].name, "WORK") ? SAVED_WORK
+                                                              : SAVED_OTHER;
         ns++;
     }
     a->nsaved = ns;
@@ -2974,6 +3012,10 @@ main(int argc, char **argv)
                 page = PAGE_QUIT_MAP;
             else if (!strcmp(p, "map-wait-home"))
                 page = PAGE_MAP_WAIT_HOME;
+            else if (!strcmp(p, "map-saved"))
+                page = PAGE_MAP_SAVED;
+            else if (!strcmp(p, "find-saved"))
+                page = PAGE_FIND_SAVED;
             else if (!strcmp(p, "cliptest"))
                 page = PAGE_CLIPTEST;
             else if (!strcmp(p, "cliptest-panel"))

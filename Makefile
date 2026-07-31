@@ -147,8 +147,10 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 #	is now the rider's own list; and the waiting screen with somewhere to
 #	centre on, whose claim is that a map IS drawn where nav-map-wait's is that
 #	one is NOT -- and that neither draws a marker.
-	./beepy-nav/beepy-nav --demo --page find --config $(SAVEDCONF) \
+	./beepy-nav/beepy-nav --demo --page find-saved \
 		--roads $(ROADPACK) --dump out-nav-find-saved.fb
+	./beepy-nav/beepy-nav --demo --page map-saved \
+		--basemap $(TILEPACK) --dump out-nav-map-saved.fb
 	./beepy-nav/beepy-nav --demo --page map-wait-home \
 		--basemap $(TILEPACK) --dump out-nav-map-wait-home.fb
 	./beepy-nav/beepy-nav --demo --page quit     --dump out-nav-quit.fb
@@ -168,6 +170,14 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	cmp goldens/nav-find-none.fb out-nav-find-none.fb
 	cmp goldens/nav-confirm.fb  out-nav-confirm.fb
 	cmp goldens/nav-find-saved.fb out-nav-find-saved.fb
+	cmp goldens/nav-map-saved.fb out-nav-map-saved.fb
+#	The saved-place golden must not be the ordinary FIND golden. It was,
+#	for one commit: the demo FIND page types a query, no saved place
+#	matches it, and the frame came back byte-identical to nav-find --
+#	freezing nothing, while a --min-px test on it passed happily. The
+#	page has its own empty-query state now, and this is the assertion
+#	that says so.
+	! cmp -s goldens/nav-find-saved.fb goldens/nav-find.fb
 	cmp goldens/nav-map-wait-home.fb out-nav-map-wait-home.fb
 	cmp goldens/nav-quit.fb     out-nav-quit.fb
 	cmp goldens/nav-quit-map.fb out-nav-quit-map.fb
@@ -258,8 +268,10 @@ endif
 	./beepy-nav/beepy-nav --demo --page find-none \
 		--roads $(ROADPACK) --dump goldens/nav-find-none.fb
 	./beepy-nav/beepy-nav --demo --page confirm --dump goldens/nav-confirm.fb
-	./beepy-nav/beepy-nav --demo --page find --config $(SAVEDCONF) \
+	./beepy-nav/beepy-nav --demo --page find-saved \
 		--roads $(ROADPACK) --dump goldens/nav-find-saved.fb
+	./beepy-nav/beepy-nav --demo --page map-saved \
+		--basemap $(TILEPACK) --dump goldens/nav-map-saved.fb
 	./beepy-nav/beepy-nav --demo --page map-wait-home \
 		--basemap $(TILEPACK) --dump goldens/nav-map-wait-home.fb
 	./beepy-nav/beepy-nav --demo --page quit     --dump goldens/nav-quit.fb
@@ -580,8 +592,19 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK)
 #	The empty page is not empty any more -- against the same page with no
 #	places configured, which is the only comparison that isolates the feature
 #	from the layout.
+#	--config /dev/null, and NOT "no --config". Without it this run reads
+#	~/.config/beepy-nav.conf, and the day the device's owner saves their own
+#	HOME and WORK -- which is the day the feature starts being used -- the
+#	control frame grows the very rows it exists to lack. That happened: this
+#	assertion passed on the Mac and failed on the device with 460 differing
+#	pixels, because the two frames were the same list at two distances.
+#
+#	It is the FOURTH time a pair here has quietly stopped being a pair by
+#	reading the device's config, and the first three are why CLAUDE.md carries
+#	the rule. An empty file is the only way to spell "no places" that cannot be
+#	overruled by what is on the machine.
 	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
-		--roads $(ROADPACK) --key 10:f \
+		--config /dev/null --roads $(ROADPACK) --key 10:f \
 		--dump-at 12:$(RDIR)/saved-none.fb 2>/dev/null
 	python3 tools/fbdiff.py $(RDIR)/saved-list.fb $(RDIR)/saved-none.fb \
 		--min-px 500
@@ -590,6 +613,12 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK)
 #	identical to one that never had it.
 	python3 tools/fbdiff.py $(RDIR)/saved-typed.fb $(RDIR)/saved-list.fb \
 		--min-px 500
+#	The icons (1.4.6): a saved row draws the picture its kind names, and the
+#	MAP page draws the same one at the same place. Asserted as "the frame
+#	changes when places are configured" here and frozen exactly by
+#	goldens/nav-find-saved.fb and nav-map-saved.fb, which is the split this
+#	suite uses everywhere: a replay says the wiring is live, a golden says the
+#	pixels are right.
 	grep -q "routed to WORK" $(RDIR)/saved.log
 	grep -q "beepy-nav: WORK -- " $(RDIR)/saved.log
 #	The ORDER -- HOME above WORK, which is the file's order and not

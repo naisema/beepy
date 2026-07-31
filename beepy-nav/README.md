@@ -401,7 +401,11 @@ place = WORK 13.7338,100.5601
 ```
 
 Press `F` and they are **already listed**, with distance and bearing, before you
-type anything — the page used to open blank. Start typing and it becomes the
+type anything — the page used to open blank. Each gets an icon: a house for
+`HOME`, a briefcase for `WORK`, a diamond for anything else — and **the same
+icons mark them on the MAP page**, with the name on a small white bar beneath,
+so a place looks like itself in both views. A mark is drawn only when it is
+actually on screen; zoom out and it appears. Start typing and it becomes the
 ordinary search, with any saved place that still matches kept at the top and
 marked `*`. Up to eight of them, and the order in the file is the order on
 screen, so put the one you use most first.

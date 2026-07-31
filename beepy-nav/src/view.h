@@ -83,6 +83,20 @@ typedef struct {
     double residual;
 } navmap_t;
 
+/* A saved place drawn on the MAP page (DESIGN.md 1.4.6). Geometry is world
+ * metres like everything else; `kind` is decided by the CALLER, so the page
+ * draws what it is told and no view file matches on a name. That split is the
+ * point: 1.4.6 refuses to give a magic name any behaviour, and choosing a
+ * picture is the one place where recognising HOME is harmless -- an
+ * unrecognised name falls back to its initial and nothing else changes. */
+enum { SAVED_OTHER, SAVED_HOME, SAVED_WORK };
+typedef struct {
+    const char *name; /* uppercase, as the config stored it */
+    double e, n;      /* world metres, the caller's frame   */
+    int kind;
+} savedmark_t;
+#define SAVED_MARK_MAX 8
+
 /* The MAP page (DESIGN.md 1.5): where you are, with no route loaded. Full
  * width -- there is no turn panel, because with no route there is no next turn
  * and an inverted empty third of the screen would be worse than none.
@@ -143,6 +157,12 @@ typedef struct {
      * frozen golden and every rider with no saved places gets. */
     int have_home;
     double home_e, home_n;
+    /* The saved places to draw (1.4.6), or none. MAP only: the NAV page
+     * already carries a route, a ridden track, cue dots and a turn pin, and a
+     * sixth kind of mark on the busiest screen buys nothing a rider is looking
+     * for mid-corner. */
+    const savedmark_t *saved;
+    int nsaved;
 } livemap_t;
 
 /* The breadcrumb's cap, and what happens when it fills: see view_map.c. It is
@@ -206,6 +226,10 @@ typedef struct {
      * they are all there is -- which is what the title bar counts, because
      * "0 HITS" over a list of two would read as a failure. */
     int nsaved;
+    /* One SAVED_* per saved row, so a row shows the same picture the map
+     * shows for the same place. NULL falls back to the plain star, which is
+     * what the pages that do not care pass. */
+    const int *savedkind;
 } find_t;
 
 /* The CONFIRM page (DESIGN.md 1.4): the OVERVIEW page's cartography fitted to
@@ -301,12 +325,14 @@ void view_overview_demo(cov_t *c, int osm);
  * `zero` types a query that matches nothing, which is the honest-coverage state
  * DESIGN.md 1.4 asks for and which the mockup has no reference for. */
 void view_find_demo(cov_t *c, roads_t *g, int zero);
+void view_find_saved_demo(cov_t *c, roads_t *g);
 
 /* mockup.py's page_confirm(): the same Asok route the basemap demo rides,
  * proposed rather than under way. */
 void view_confirm_demo(cov_t *c);
 void view_quit_demo(cov_t *c, int riding);
 void view_map_wait_home_demo(cov_t *c, struct tiles *t);
+void view_map_saved_demo(cov_t *c, struct tiles *t);
 
 /* The clipping test of DESIGN.md 10: the NAV map at a zoom where the route
  * leaves the view on all four sides. Nothing but the panel may put ink in
