@@ -276,6 +276,9 @@ static int g_nplace;
  * world frame can change under them (a route loads, R starts another). At file
  * scope only so the page can be handed a pointer that outlives this call. */
 static savedmark_t g_savedmark[SAVED_MARK_MAX];
+/* The travel mode (DESIGN.md 7.7). At file scope with the packs: it outlives
+ * every route, and both the router and the pages want it. */
+static int g_mode = NAV_MODE_BIKE;
 
 static ridelog_t RIDELOG;
 
@@ -1965,7 +1968,7 @@ find_route_selected(app_t *a)
     h = &a->hit[a->sel];
     find_origin(a, &e, &n);
     find_drop_proposed(a);
-    if (router_to(g_roads, e, n, h->e, h->n, h->name, &a->proposed, why,
+    if (router_to(g_roads, e, n, h->e, h->n, g_mode, h->name, &a->proposed, why,
                   (int)sizeof why)) {
         fprintf(stderr, "beepy-nav: %s\n", why);
         note_show(a, "NO ROUTE");
@@ -2971,6 +2974,7 @@ main(int argc, char **argv)
     }
     memcpy(g_place, cfg.place, sizeof g_place);
     g_nplace = cfg.nplace;
+    g_mode = cfg.mode;
 
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];

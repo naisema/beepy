@@ -40,6 +40,10 @@ ROADNAMES  ?= beepy-nav/tests/roads/names.roads
 ROADOSM    ?= beepy-nav/osm-asok.json
 ROADNAMESIN ?= beepy-nav/tests/roads/names.json
 ROADPOIS   ?= beepy-nav/tests/roads/pois.json
+# The travel-mode fixture (DESIGN.md 7.7): a motorway and a residential
+# dogleg between the same two points, so "the mode changed the route" is a
+# length and not a flag. Read by tests/test_search.c, which runs on the device.
+ROADMODES  ?= beepy-nav/tests/roads/modes.json
 ROADREF    ?= 13.740,100.560
 # The saved-places fixture (DESIGN.md 1.4.6). A config file and not flags,
 # because the feature IS a config file -- a test that set the places another
@@ -964,6 +968,17 @@ test-roads: $(ROADPACK) $(ROADOPEN) $(ROADNAMES)
 #	case. Asserted through --info rather than by comparing a committed pack,
 #	because what is being claimed here is WHICH NAMES ARE SEARCHABLE, and that
 #	reads better as the names themselves than as a digest.
+#	Pack v2 (DESIGN.md 7.7) put the road class in EDGES.flags. Asserted here as
+#	"the packer wrote it" and in tests/test_search.c as "the router acts on
+#	it" -- the split every pack feature here uses, because a byte written and
+#	never read is not a feature.
+	@echo "--- T-ROADS-CLASS: the pack records what kind of road each edge is"
+	python3 tools/mkpack.py --osm $(ROADMODES) --ref $(ROADREF) \
+		-o out-roads-modes.roads --quiet
+	cmp out-roads-modes.roads beepy-nav/tests/roads/modes.roads
+	python3 tools/mkpack.py --info beepy-nav/tests/roads/asok.roads | \
+		grep -q "^beepy-nav/tests/roads/asok.roads: v2"
+	rm -f out-roads-modes.roads
 	@echo "--- T-ROADS-POIS: a school is somewhere to go, an unnamed thing is not"
 	python3 tools/mkpack.py --osm $(ROADPOIS) --ref $(ROADREF) \
 		-o out-roads-pois.roads --quiet
@@ -1020,6 +1035,10 @@ endif
 		--ignore-oneway -o $(ROADOPEN)
 	python3 tools/mkpack.py --osm $(ROADNAMESIN) --ref $(ROADREF) \
 		-o $(ROADNAMES)
+	python3 tools/mkpack.py --osm $(ROADPOIS) --ref $(ROADREF) \
+		-o beepy-nav/tests/roads/pois.roads
+	python3 tools/mkpack.py --osm $(ROADMODES) --ref $(ROADREF) \
+		-o beepy-nav/tests/roads/modes.roads
 
 # Rebuilding the fixture is deliberate, like regenerating a golden.
 tiles: 

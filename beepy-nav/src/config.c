@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "route.h" /* UNITS_METRIC / UNITS_IMPERIAL */
+#include "search.h" /* NAV_MODE_BIKE / NAV_MODE_CAR */
 
 void
 cfg_defaults(navcfg_t *c)
@@ -16,6 +17,7 @@ cfg_defaults(navcfg_t *c)
     c->rate_5hz = 0;   /* 6.3 calls it "a refinement rather than a dependency" */
     c->led_alerts = 1; /* 7.5; led.c already copes with an unwritable LED */
     c->nplace = 0;
+    c->mode = NAV_MODE_BIKE;
     c->routes_dir[0] = '\0';
     c->rides_dir[0] = '\0';  /* 7.6; ridelog_default_dir() decides */
     c->basemap[0] = '\0';    /* 6.5; no pack, and no path to guess  */
@@ -130,6 +132,13 @@ cfg_load(navcfg_t *c, const char *path, int loud)
             else
                 complain(path, lineno, "units must be metric or imperial, not",
                          val);
+        } else if (!strcmp(key, "mode")) {
+            if (!strcmp(val, "bike") || !strcmp(val, "bicycle"))
+                c->mode = NAV_MODE_BIKE;
+            else if (!strcmp(val, "car") || !strcmp(val, "driving"))
+                c->mode = NAV_MODE_CAR;
+            else
+                complain(path, lineno, "mode must be bike or car, not", val);
         } else if (!strcmp(key, "place")) {
             /* `place = HOME 13.8851,100.3785`. Repeated, and accumulating
              * rather than overwriting -- the one key in this file where a

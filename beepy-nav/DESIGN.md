@@ -410,8 +410,20 @@ thing that writes it. Five decisions in there are not obvious:
   happens not to contain that edge" — which is exactly what T-ONEWAY needs.
 - **Lengths are integer millimetres.** They are the numbers Dijkstra adds up,
   they are measured once on the Mac in the pack's own frame, and an integer is
-  the only way "the same extract gives the same route" survives two compilers.
-  `u32` mm reaches 4 295 km.
+  what keeps the *sum* identical across two compilers. `u32` mm reaches
+  4 295 km.
+- **That portability stops at the sum, and the gap was measured, not
+  reasoned.** T-ONEWAY routes the same 200 seeded pairs over the same pack and
+  reports **142 on macOS and 146 on the device** — every run, and since before
+  anyone looked, which is why an assertion written as a floor never caught it.
+  Neither answer is wrong: zero oneway violations on both, every golden
+  byte-identical on both. Four pairs simply find a path on one machine and not
+  the other. The float is in `router.c`'s `snap()`, which compares candidates
+  with `hypot()` — not required to be correctly rounded, and differing in the
+  last ulp between glibc on ARM and macOS libm. That decides a near-tie, which
+  changes the candidate set, which changes reachability. Making the *router*
+  reproducible needs an integer comparison there too; until then this section
+  claims only what it can support.
 - **Every third vertex, not one representative point.** A name's distance is
   the distance to its *nearest* candidate, because ranking is by distance from
   the rider and the near end of a 2 km road is not a pack-time decision.
@@ -1689,6 +1701,64 @@ must agree exactly, and a disagreement means the replay is not a rehearsal of
 the ride and every assertion built on it would be measuring the wrong program.
 The heading columns are excluded by design — §6.1's EWMA is over a time
 constant and a live clock does not land on a replay's frame grid.
+
+---
+
+### 7.7 Travel mode, and the road class the pack used to throw away
+
+A bicycle and a car do not want the same route. Measured on the same two
+points, through FOSSGIS Valhalla:
+
+| costing | distance | time | implied |
+|---|---|---|---|
+| `bicycle` | 43.8 km | 152 min | **17 km/h** |
+| `auto` | 56.4 km | 76 min | 44 km/h |
+
+Not a refinement of the same line — 12.6 km shorter and twice as long, over
+different roads. (That 17 km/h is the `CF_EST_KMH` constant §1.4's CONFIRM page
+already assumed, arrived at independently, which is a pleasant confirmation of
+a number that was until now a guess.)
+
+```
+mode = bike        # or car; bike is the default -- this is a bicycle navigator
+```
+
+**Offline, the pack could not tell a motorway from a soi.** `mkpack.py` read
+`highway` to decide whether a way was routable and then discarded it, so every
+edge looked alike and an offline bicycle route could take an expressway. Pack
+format **`BNAVROAD` v2** stores it: `EDGES.flags` had one bit used (oneway) and
+fifteen spare, so bits 1–4 are the class, ordered coarse-to-fine — motorway 1,
+trunk 2, primary 3, and so on — which makes "avoid anything above N" a
+comparison rather than a set. Class 0 means the packer did not recognise the
+tag and is allowed by everything: refusing an unfamiliar class would make the
+pack quietly worse every time OSM invents one.
+
+BIKE excludes motorway and trunk. **Exclusion and not weighting**, deliberately:
+`len_mm` is both what Dijkstra adds up and what the route reports, and a cost
+multiplier would make those two different numbers — one for choosing and one
+for showing. A coarse profile that reports exact metres beats a good one that
+reports invented ones, and the good profile is what an online router is for.
+
+Verified by `tests/roads/modes.json` — a motorway and a longer residential
+dogleg between the same pair of points, so "the mode changed the route" is a
+**length**, not a flag: a car takes 442 m up the motorway, a bicycle 1,091 m
+around. A router ignoring class would return one number twice. Plus a
+motorway-only spur, which a bicycle is refused outright rather than sent up.
+
+#### The offline router used to lie about far destinations
+
+`snap()` ends with *"or the single nearest node when nothing is inside the
+radius"* — the fallback that carries a POI centroid the 150 m to its gate.
+Past a point that stops being a bridge: a destination outside the pack snapped
+to whatever node sat at the pack's edge and the rider got a **confident route
+to somewhere they had not asked for**. It was invisible while everything tested
+was inside the pack, and it is exactly what `place = WORK` 33 km away would
+have hit.
+
+`ROUTER_MAX_SNAP_M` is 2 km — generous for a campus centroid, far short of a
+pack edge. Beyond it the router refuses and says how far outside the map the
+destination is, which is also precisely the condition that makes asking an
+online router worth its 1.4 seconds.
 
 ---
 

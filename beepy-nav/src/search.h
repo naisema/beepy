@@ -44,6 +44,27 @@ typedef struct {
  * honours oneway" from "the pack happens not to contain that edge". */
 #define ROADEDGE_ONEWAY 1u
 
+/* Bits 1-4: the road class, coarse-to-fine, so a bicycle can be kept off a
+ * motorway offline (DESIGN.md 7.7). It arrived in pack version 2; before that
+ * the packer read `highway` to decide routability and then threw it away,
+ * which is why an offline bike route could take an expressway.
+ *
+ * Ordered, so "avoid anything above N" is a comparison and not a set. 0 means
+ * the packer did not recognise the tag -- treated as routable by everything,
+ * because refusing to route over an unfamiliar road class would make the pack
+ * less useful every time OSM invents one. */
+#define ROADEDGE_CLASS_SHIFT 1u
+#define ROADEDGE_CLASS_MASK 0x1Eu
+#define ROADEDGE_CLASS(f) (((f) & ROADEDGE_CLASS_MASK) >> ROADEDGE_CLASS_SHIFT)
+#define ROADCLASS_MOTORWAY 1
+#define ROADCLASS_TRUNK 2
+#define ROADCLASS_PRIMARY 3
+
+/* Travel modes (DESIGN.md 7.7). They pick the online costing and, offline,
+ * which road classes the router will use. */
+#define NAV_MODE_BIKE 0
+#define NAV_MODE_CAR 1
+
 #define ROADS_NAME_NONE 0xffffu
 
 /* The graph, in CSR form: node i's outgoing edges are edge[adj[i]] up to

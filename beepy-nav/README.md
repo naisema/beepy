@@ -232,6 +232,7 @@ rides_dir  = ~/rides    # where ride logs go
 basemap    =            # empty: no streets    (--basemap F / --no-basemap)
 roads      =            # empty: F does nothing (--roads F / --no-roads)
 place      =            # repeats: NAME LAT,LON -- see Saving Home and Work
+mode       = bike       # or car -- picks which roads routing will use
 ```
 
 `place` is the one key here that **accumulates** rather than replaces: each line

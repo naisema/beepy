@@ -122,9 +122,35 @@ snap(const roadgraph_t *G, double e, double n, int *node, double *cost)
     return held;
 }
 
+/* Which road classes a mode will use (DESIGN.md 7.7).
+ *
+ * Exclusion and not weighting, deliberately: `len_mm` is what Dijkstra adds up
+ * and what the route reports, and a cost multiplier would make those two
+ * different numbers -- one for choosing and one for showing. A coarse profile
+ * that reports exact metres beats a good one that reports invented ones, and
+ * a good profile is what the ONLINE router is for.
+ *
+ * Class 0 -- a `highway` tag the packer did not recognise -- is allowed by
+ * everything. Refusing an unfamiliar class would make the pack worse every
+ * time OSM invents one, and the failure would be silent. */
+static int
+mode_allows(int mode, unsigned flags)
+{
+    int cls;
+
+    if (mode != NAV_MODE_BIKE)
+        return 1;
+    cls = (int)ROADEDGE_CLASS(flags);
+    /* A bicycle is not allowed on a motorway and has no business on a Thai
+     * trunk road. If that leaves no route, the honest answer is no route --
+     * and then the online router, which has a real bicycle profile, is asked. */
+    return cls != ROADCLASS_MOTORWAY && cls != ROADCLASS_TRUNK;
+}
+
 int
 router_path(const roads_t *g, double se, double sn, double de, double dn,
-            int *nodes, int maxn, double *total_m, char *why, int nwhy)
+            int mode, int *nodes, int maxn, double *total_m, char *why,
+            int nwhy)
 {
     roadgraph_t G;
     int src[ROUTER_SNAP_MAX], tgt[ROUTER_SNAP_MAX];
@@ -159,6 +185,22 @@ router_path(const roads_t *g, double se, double sn, double de, double dn,
     if (nsrc <= 0 || ntgt <= 0) {
         if (why)
             snprintf(why, (size_t)nwhy, "no road near the start or the finish");
+        return -1;
+    }
+    /* snap() falls back to the single NEAREST node when nothing is within its
+     * radius, which is what carries a POI centroid the 150 m to its gate. Past
+     * a point that stops being a bridge and becomes a lie: a destination
+     * outside the pack snaps to whatever node sits at the pack's edge, and the
+     * rider gets a confident route to somewhere they did not ask for.
+     *
+     * So: refuse. The caller can then ask a router that HAS the ground -- and
+     * "too far" is exactly the condition that makes going online worth the
+     * 1.4 seconds. */
+    if (tgtc[0] > ROUTER_MAX_SNAP_M || srcc[0] > ROUTER_MAX_SNAP_M) {
+        if (why)
+            snprintf(why, (size_t)nwhy,
+                     "%.0f km outside this map", (tgtc[0] > srcc[0] ?
+                     tgtc[0] : srcc[0]) / 1000.0);
         return -1;
     }
 
@@ -209,7 +251,10 @@ router_path(const roads_t *g, double se, double sn, double de, double dn,
         }
         for (k = G.adj[u]; k < G.adj[u + 1]; k++) {
             int v = (int)G.edge[k].to;
-            double nd = d + G.edge[k].len_mm / 1000.0;
+            double nd;
+            if (!mode_allows(mode, G.edge[k].flags))
+                continue;
+            nd = d + G.edge[k].len_mm / 1000.0;
             if (nd < dist[v]) {
                 dist[v] = nd;
                 prev[v] = u;
@@ -252,7 +297,7 @@ done:
 
 int
 router_to(const roads_t *g, double se, double sn, double de, double dn,
-          const char *name, route_t *out, char *why, int nwhy)
+          int mode, const char *name, route_t *out, char *why, int nwhy)
 {
     static int nodes[ROUTER_MAXPT];
     roadgraph_t G;
@@ -263,7 +308,8 @@ router_to(const roads_t *g, double se, double sn, double de, double dn,
     if (!out)
         return -1;
     route_init(out);
-    n = router_path(g, se, sn, de, dn, nodes, ROUTER_MAXPT, &total, why, nwhy);
+    n = router_path(g, se, sn, de, dn, mode, nodes, ROUTER_MAXPT, &total,
+                    why, nwhy);
     if (n < 1)
         return -1;
     roads_graph(g, &G);

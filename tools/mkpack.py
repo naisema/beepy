@@ -104,9 +104,14 @@ the eight fields they have in common.
       5 STRINGS  count = bytes. NUL-terminated uppercase ASCII, in PLACES order.
 
   Lengths are millimetres, not floats: they are the numbers Dijkstra adds up,
-  they are computed once here in the pack's own frame, and an integer is the
-  only way "the same extract gives the same route" survives two compilers.
-  u32 millimetres reaches 4 295 km, which is longer than any OSM way segment.
+  they are computed once here in the pack's own frame, and an integer is what
+  keeps the SUM identical across two compilers. u32 millimetres reaches
+  4 295 km, which is longer than any OSM way segment.
+
+  The sum, and not the whole router: router.c's snap() picks the endpoints with
+  hypot(), which differs in the last ulp between platforms, so a near-tie can
+  resolve differently. T-ONEWAY measures it -- 142 routable pairs on macOS, 146
+  on the device, same pack, every run. See DESIGN.md 1.4.1.
 
   PROJECTION, exactly DESIGN.md 6.1 and exactly mktiles.py's:
 
@@ -134,7 +139,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mktiles                                                   # noqa: E402
 
 MAGIC = b"BNAVROAD"
-VERSION = 1
+VERSION = 2
 HEADER_BYTES = 64
 SECT_ENTRY = 8
 NSECT = 6
@@ -143,6 +148,25 @@ COORD_SCALE = 10000000
 NAME_NONE = 0xFFFF
 
 EDGE_ONEWAY = 1
+# EDGES.flags bits 1-4: the road class, so the DEVICE can route a bicycle
+# differently from a car (DESIGN.md 7.7). The pack has always known this and
+# always thrown it away -- `highway` was read to decide routability and then
+# discarded, which is why an offline bike route could use a motorway.
+#
+# Four bits, sixteen slots, nine used. Ordered coarse-to-fine so a future
+# "avoid anything above class N" is a comparison rather than a set.
+EDGE_CLASS_SHIFT = 1
+EDGE_CLASS_MASK = 0x1E
+ROAD_CLASS = {
+    "motorway": 1, "motorway_link": 1,
+    "trunk": 2, "trunk_link": 2,
+    "primary": 3, "primary_link": 3,
+    "secondary": 4, "secondary_link": 4,
+    "tertiary": 5, "tertiary_link": 5,
+    "unclassified": 6,
+    "residential": 7,
+    "living_street": 8,
+}
 
 # route.h's constants, so the projection is bit-for-bit the navigator's.
 M_PER_DEG_LAT = mktiles.M_PER_DEG_LAT
@@ -190,7 +214,8 @@ def read_osm(path):
         name = raw.upper() if raw.isascii() else None
         if raw and name is None:
             dropped.add(raw)
-        out.append((name or None, tags.get("oneway", ""), geom))
+        out.append((name or None, tags.get("oneway", ""), geom,
+                    ROAD_CLASS.get(hw, 0)))
     return out, dropped
 
 
@@ -266,13 +291,14 @@ class Graph:
             self.out.append([])
         return i
 
-    def add_way(self, oneway, geom, name_i):
+    def add_way(self, oneway, geom, name_i, cls=0):
         fwd = oneway not in ONEWAY_REV
         bwd = oneway not in ONEWAY_FWD
         tagged = not (fwd and bwd)
         if not self.honour:
             fwd = bwd = True
         flags = EDGE_ONEWAY if (tagged and self.honour) else 0
+        flags |= (cls << EDGE_CLASS_SHIFT) & EDGE_CLASS_MASK
         for a, b in zip(geom, geom[1:]):
             ia, ib = self._node(*a), self._node(*b)
             if ia == ib:
@@ -305,7 +331,7 @@ def build(ways, pois, frame, honour_oneway):
     # is what makes the table stable between builds and between extracts that
     # differ only in element order.
     by_name = {}
-    for name, _ow, geom in ways:
+    for name, _ow, geom, _cls in ways:
         if name:
             by_name.setdefault(name, []).append(geom)
     # A destination joins the same table as a street, carrying a single point
@@ -345,8 +371,9 @@ def build(ways, pois, frame, honour_oneway):
         places.append((off, first, len(points) - first))
 
     g = Graph(frame, honour_oneway)
-    for name, ow, geom in ways:
-        g.add_way(ow, geom, name_i.get(name, NAME_NONE) if name else NAME_NONE)
+    for name, ow, geom, cls in ways:
+        g.add_way(ow, geom, name_i.get(name, NAME_NONE) if name else NAME_NONE,
+                  cls)
     return g, places, points, strings
 
 
@@ -400,16 +427,17 @@ def repeat_ways(ways, spec):
         raise SystemExit(f"mkpack: bad --repeat {spec!r}")
     if nx < 1 or ny < 1 or nx * ny > 400:
         raise SystemExit("mkpack: --repeat out of range")
-    lats = [la for _, _, g in ways for la, _ in g]
-    lons = [lo for _, _, g in ways for _, lo in g]
+    lats = [la for _, _, g, _c in ways for la, _ in g]
+    lons = [lo for _, _, g, _c in ways for _, lo in g]
     dla = (max(lats) - min(lats)) * 1.05
     dlo = (max(lons) - min(lons)) * 1.05
     out = []
     for iy in range(ny):
         for ix in range(nx):
-            for name, ow, geom in ways:
+            for name, ow, geom, cls in ways:
                 out.append((name, ow,
-                            [(la + iy * dla, lo + ix * dlo) for la, lo in geom]))
+                            [(la + iy * dla, lo + ix * dlo) for la, lo in geom],
+                            cls))
     return out, nx, ny
 
 

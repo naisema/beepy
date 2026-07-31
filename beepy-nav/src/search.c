@@ -30,7 +30,7 @@
 #endif
 
 #define MAGIC "BNAVROAD"
-#define ROADS_VERSION 1
+#define ROADS_VERSION 2
 #define HDR_BYTES 64
 #define SECT_ENTRY 8
 #define NSECT 6

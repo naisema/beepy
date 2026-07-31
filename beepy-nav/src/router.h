@@ -56,7 +56,7 @@
  * the point that was asked for -- because that is the distance the rider will
  * cover and therefore the one CONFIRM must show. */
 int router_path(const roads_t *g, double se, double sn, double de, double dn,
-                int *nodes, int maxn, double *total_m, char *why, int nwhy);
+                int mode, int *nodes, int maxn, double *total_m, char *why, int nwhy);
 
 /* The same, as a route_t: the requested start, the path, the requested
  * destination, then route_prepare() + route_cues_derive() + route_cues_finish()
@@ -68,7 +68,13 @@ int router_path(const roads_t *g, double se, double sn, double de, double dn,
  * 0 on success. On failure `out` is left initialised-and-empty and `why`
  * carries the reason -- an unreachable destination is a message on the panel,
  * never a crash and never a half-built route. */
+/* How far a destination may be from the nearest road in the pack before the
+ * offline answer stops being about that destination (DESIGN.md 7.7). A POI
+ * centroid is 50-300 m from its gate; 2 km is generous for that and far short
+ * of the pack edge. */
+#define ROUTER_MAX_SNAP_M 2000.0
+
 int router_to(const roads_t *g, double se, double sn, double de, double dn,
-              const char *name, route_t *out, char *why, int nwhy);
+              int mode, const char *name, route_t *out, char *why, int nwhy);
 
 #endif /* BEEPY_NAV_ROUTER_H */

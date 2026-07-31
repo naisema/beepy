@@ -67,6 +67,10 @@ typedef struct {
      * worth documenting rather than enforcing. */
     cfgplace_t place[CFG_PLACES_MAX];
     int nplace;
+    /* Travel mode (DESIGN.md 7.7): NAV_MODE_BIKE (the default -- this is a
+     * bicycle navigator) or NAV_MODE_CAR. It picks the online costing and,
+     * offline, which road classes the router will use. */
+    int mode;
 } navcfg_t;
 
 void cfg_defaults(navcfg_t *c);
