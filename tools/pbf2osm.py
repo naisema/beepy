@@ -155,7 +155,8 @@ def main():
     ap.add_argument("--bbox", metavar="LAT0,LON0,LAT1,LON1",
                     help="keep only ways touching this box")
     ap.add_argument("--classes", default="all",
-                    help="'all' (every road class), 'coarse' (motorway..."
+                    help="'none' (POIs only), 'all' (every road class), "
+                         "'coarse' (motorway..."
                          "secondary, for a nationwide pack), or a "
                          "comma-separated list")
     ap.add_argument("--no-names", action="store_true",
@@ -170,7 +171,15 @@ def main():
                     help="roads only")
     a = ap.parse_args()
 
-    if a.classes == "all":
+    if a.classes == "none":
+        # POIs and nothing else. A nationwide destination index does not want a
+        # nationwide road graph beside it: mkpack.py's PLACES/POINTS/STRINGS are
+        # 5.8 MB for the whole country and the graph would be half a gigabyte of
+        # RAM on a 512 MB device (DESIGN.md 1.4.7). This is how the two are cut
+        # apart -- one pass for the ground you route over, one for the names you
+        # can search.
+        classes = ()
+    elif a.classes == "all":
         classes = ROADS
     elif a.classes == "coarse":
         classes = COARSE

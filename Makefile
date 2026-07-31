@@ -1357,7 +1357,9 @@ test-roads: $(ROADPACK) $(ROADOPEN) $(ROADNAMES)
 #	case. Asserted through --info rather than by comparing a committed pack,
 #	because what is being claimed here is WHICH NAMES ARE SEARCHABLE, and that
 #	reads better as the names themselves than as a digest.
-#	Pack v2 (DESIGN.md 7.7) put the road class in EDGES.flags. Asserted here as
+#	Pack v3 (DESIGN.md 1.4.7) widened EDGES.name to a u32; v2 (7.7) put the road
+#	class in EDGES.flags. The version is asserted because a pack the device
+#	cannot read is indistinguishable from one it can until it is opened. Asserted here as
 #	"the packer wrote it" and in tests/test_search.c as "the router acts on
 #	it" -- the split every pack feature here uses, because a byte written and
 #	never read is not a feature.
@@ -1366,7 +1368,7 @@ test-roads: $(ROADPACK) $(ROADOPEN) $(ROADNAMES)
 		-o out-roads-modes.roads --quiet
 	cmp out-roads-modes.roads beepy-nav/tests/roads/modes.roads
 	python3 tools/mkpack.py --info beepy-nav/tests/roads/asok.roads | \
-		grep -q "^beepy-nav/tests/roads/asok.roads: v2"
+		grep -q "^beepy-nav/tests/roads/asok.roads: v3"
 	rm -f out-roads-modes.roads
 	@echo "--- T-ROADS-POIS: a school is somewhere to go, an unnamed thing is not"
 	python3 tools/mkpack.py --osm $(ROADPOIS) --ref $(ROADREF) \

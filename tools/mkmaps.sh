@@ -26,9 +26,24 @@ set -e
 #
 # Where you ride. Full street detail, and the only ground that can be searched
 # or routed over -- the road pack is cut from this same extract.
-HOME_LL=13.8851,100.3785
-HOME_RADIUS=20000        # metres of detail around HOME_LL
-HOME_PAD=0.25            # degrees of extract around it; must exceed the radius
+#
+# THE MIDPOINT OF THE RIDE, not home, and that is the whole reason this variable
+# is not called HOME_LL any more. Centred on home, the box put WORK 5.7 km from
+# its eastern edge: everything past work -- which is the far half of every
+# errand that starts there -- was unsearchable and unroutable, while the
+# nationwide basemap went on drawing streets you could see and not reach.
+# Centred between the two, each end has 14.5 km of ground beyond it.
+#
+# It also buys the fine tiles for nothing. The two ends are 33.4 km apart, so
+# each is 16.7 km from the midpoint and RIDE_RADIUS of 20 km reaches BOTH with
+# 3.3 km to spare -- where from home it reached one of them and left the other
+# on the 15-250 m/px coarse rungs.
+#
+# Recompute it if the pair moves:  midpoint = ((lat1+lat2)/2, (lon1+lon2)/2)
+RIDE_LL=13.7854,100.4948          # midway between 13.8851,100.3785 (home)
+                                  #            and 13.6856,100.6111 (work)
+RIDE_RADIUS=20000        # metres of detail around RIDE_LL
+RIDE_PAD=0.25            # degrees of extract around it; must exceed the radius
 
 # The country, in coarse strokes: major roads only, for when you are 200 km out.
 COUNTRY=5.5,97.3,20.6,105.7
@@ -78,7 +93,7 @@ EOF
 # The extract box around home: the radius plus a margin, because a way is kept
 # only if some node of it falls inside, and a road clipped at the box edge ends
 # mid-street on the screen.
-REGION_BOX=$($PY - "$HOME_LL" "$HOME_PAD" <<'EOF'
+REGION_BOX=$($PY - "$RIDE_LL" "$RIDE_PAD" <<'EOF'
 import sys
 la, lo = (float(v) for v in sys.argv[1].split(","))
 p = float(sys.argv[2])
@@ -134,14 +149,24 @@ echo "mkmaps: region extract, every road class, with names and destinations"
 $OSMPY tools/pbf2osm.py "$PBF" --bbox "$REGION_BOX" --classes all \
     -o "$OUT/region.json"
 
+# Destinations for the WHOLE COUNTRY, and no roads at all. The two indexes cost
+# wildly different amounts: every ASCII-named POI in Thailand is about 5.8 MB
+# resident, while a nationwide road graph would be several hundred -- on a device
+# with 512 MB and a framebuffer in it (DESIGN.md 1.4.7). So search reaches the
+# whole country and routing reaches REGION_BOX, which is exactly the split
+# 7.10's RC_OFFMAP -> online path was built for.
+echo "mkmaps: country destinations, no roads"
+$OSMPY tools/pbf2osm.py "$PBF" --bbox "$COUNTRY" --classes none \
+    -o "$OUT/pois.json"
+
 # -------------------------------------------------------------------- tiles
 if [ "$roads_only" = 0 ]; then
     echo "mkmaps: coarse tiles"
     $PY tools/mktiles.py --osm "$OUT/country.json" --bbox "$COUNTRY" \
         --zooms "$ZOOMS_COARSE" -o "$OUT/coarse.tiles"
     echo "mkmaps: fine tiles, in the coarse frame"
-    $PY tools/mktiles.py --osm "$OUT/region.json" --ref "$HOME_LL" \
-        --radius "$HOME_RADIUS" --frame "$FRAME" --zooms "$ZOOMS_FINE" \
+    $PY tools/mktiles.py --osm "$OUT/region.json" --ref "$RIDE_LL" \
+        --radius "$RIDE_RADIUS" --frame "$FRAME" --zooms "$ZOOMS_FINE" \
         -o "$OUT/fine.tiles"
     echo "mkmaps: merging"
     $PY tools/mergetiles.py "$OUT/fine.tiles" "$OUT/coarse.tiles" \
@@ -155,8 +180,8 @@ fi
 # Its extent is the extract's, so search and routing reach exactly as far as
 # REGION_BOX -- not as far as the basemap, which is the whole country.
 echo "mkmaps: road and name pack"
-$PY tools/mkpack.py --osm "$OUT/region.json" --ref "$HOME_LL" \
-    -o "$OUT/region.roads"
+$PY tools/mkpack.py --osm "$OUT/region.json" --pois-osm "$OUT/pois.json" \
+    --ref "$RIDE_LL" -o "$OUT/region.roads"
 
 echo "mkmaps: built"
 if [ "$roads_only" = 1 ]; then

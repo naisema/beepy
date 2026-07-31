@@ -88,12 +88,16 @@ the eight fields they have in common.
                  edge table is therefore already sorted by source node and the
                  source index is implied -- one indirection per node expansion
                  instead of a search.
-      2 EDGES    count = directed edges. 12 bytes each:
+      2 EDGES    count = directed edges. 14 bytes each (12 before v3):
                      0  4  u32  to, destination node index
                      4  4  u32  len_mm, segment length in millimetres
                      8  2  u16  flags; bit 0 = the parent way is oneway, so
                                 the reverse edge is deliberately ABSENT
-                    10  2  u16  name, index into PLACES, 0xffff = unnamed
+                    10  4  u32  name, index into PLACES, 0xffffffff = unnamed.
+                                WIDENED IN v3: it was a u16, which capped the
+                                PLACES table at 65 534 and stopped a nationwide
+                                destination index dead at 123 731 names. Four
+                                bytes an edge is the whole price.
       3 PLACES   count = distinct searchable names. 12 bytes each:
                      0  4  u32  name_off, byte offset into STRINGS
                      4  4  u32  point_first, index into POINTS
@@ -139,13 +143,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mktiles                                                   # noqa: E402
 
 MAGIC = b"BNAVROAD"
-VERSION = 2
+VERSION = 3
 HEADER_BYTES = 64
 SECT_ENTRY = 8
 NSECT = 6
 FLAG_ONEWAY = 1
 COORD_SCALE = 10000000
-NAME_NONE = 0xFFFF
+NAME_NONE = 0xFFFFFFFF   # v3: was 0xFFFF, a u16
+# One EDGES record on disk. 12 before v3 widened `name` from u16 to u32 -- and it
+# is a NAME here because the section-offset table below computed it separately
+# from the writer, so a literal 12 in one place and a `<IIHI` in the other put
+# every section after EDGES two bytes per edge too early. --info found it.
+EDGE_BYTES = 14
 
 EDGE_ONEWAY = 1
 # EDGES.flags bits 1-4: the road class, so the DEVICE can route a bicycle
@@ -347,16 +356,16 @@ def build(ways, pois, frame, honour_oneway):
         by_name.setdefault(name, []).append([(la, lo)])
     order = sorted(by_name)
     name_i = {n: i for i, n in enumerate(order)}
-    # EDGES carries the place index as u16 with 0xffff meaning unnamed, so the
-    # table cannot exceed 65 534 entries. Streets alone never came close;
-    # destinations move it within sight (28 832 for Greater Bangkok), and a
-    # silent wrap here would rename roads at random rather than fail. Refuse.
+    # EDGES carries the place index as u32 since v3, so the ceiling is four
+    # billion and this check is a formality. It stays because the failure it
+    # guards is a SILENT WRAP that renames roads at random -- and because the
+    # u16 it replaced hit its 65 534 limit for real, at 123 731 names, the first
+    # time a nationwide destination index was tried.
     if len(order) > NAME_NONE - 1:
         raise SystemExit(
             f"mkpack: {len(order)} names, but EDGES stores a place index as "
-            f"u16 and {NAME_NONE} means 'unnamed', so {NAME_NONE - 1} is the "
-            f"limit.\n  Cut a smaller extract, or widen the field -- which is "
-            f"a pack format version bump, not a tweak.")
+            f"u32 and {NAME_NONE} means 'unnamed', so {NAME_NONE - 1} is the "
+            f"limit.")
 
     strings = bytearray()
     points = []
@@ -384,7 +393,7 @@ def write_pack(path, frame, g, places, points, strings, nway, ndropped,
     sections = [
         (8 * nnode, nnode),
         (4 * len(adj), len(adj)),
-        (12 * len(edges), len(edges)),
+        (EDGE_BYTES * len(edges), len(edges)),
         (12 * len(places), len(places)),
         (8 * len(points), len(points)),
         (len(strings), len(strings)),
@@ -406,7 +415,7 @@ def write_pack(path, frame, g, places, points, strings, nway, ndropped,
             f.write(struct.pack("<ii", la, lo))
         f.write(struct.pack(f"<{len(adj)}I", *adj))
         for to, mm, flags, nm in edges:
-            f.write(struct.pack("<IIHH", to, mm, flags, nm))
+            f.write(struct.pack("<IIHI", to, mm, flags, nm))
         for o, first, count in places:
             f.write(struct.pack("<III", o, first, count))
         for la, lo in points:
@@ -490,6 +499,15 @@ def main(argv=None):
     ap.add_argument("--repeat", metavar="NxM",
                     help="tile the extract into an NxM grid: a synthetic "
                          "scale fixture, never a real city")
+    ap.add_argument("--pois-osm", metavar="FILE",
+                    help="take destinations from THIS extract instead of "
+                         "--osm's. The graph and the destination index do not "
+                         "have to cover the same ground: a nationwide name "
+                         "index is 5.8 MB resident and a nationwide graph would "
+                         "be half a gigabyte, so the two are cut separately and "
+                         "joined here (DESIGN.md 1.4.7). Road names still come "
+                         "from --osm, because a road name is a property of a "
+                         "way in the graph.")
     ap.add_argument("--no-pois", action="store_true",
                     help="index street names only, ignoring the destinations "
                          "in the extract -- the pack as it was before they "
@@ -505,7 +523,8 @@ def main(argv=None):
         ap.error("--osm and -o are both required")
 
     ways, dropped = read_osm(a.osm)
-    pois, poi_dropped = ([], set()) if a.no_pois else read_pois(a.osm)
+    pois, poi_dropped = ([], set()) if a.no_pois \
+        else read_pois(a.pois_osm or a.osm)
     # One count, covering both, because the header's promise (DESIGN.md
     # 1.4) is 'how much of this pack you cannot be shown' -- and a
     # destination named only in Thai is exactly as invisible as a street

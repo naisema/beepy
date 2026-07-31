@@ -674,6 +674,47 @@ empty-query demo state of its own now, and `check` asserts the two goldens
 **differ** — the cheapest possible guard against a golden that has quietly
 stopped being about anything.
 
+#### 1.4.7 Search reaches the country; routing reaches the pack
+
+The two indexes in a `BNAVROAD` pack cost wildly different amounts, and measuring
+that is what split them apart. `search.c` reads a pack **into RAM** — nothing is
+mmap'd — so what matters is resident size, on a device with 512 MB and a
+framebuffer in it:
+
+| | region pack, 55 × 54 km | all Thailand |
+|---|---|---|
+| the graph (`nll`, `en`, `adj`, `edge`) | **42.6 MB** | several hundred MB |
+| the destinations (`PLACES`, `POINTS`, `STRINGS`) | 2.6 MB | **5.8 MB** |
+
+**Nationwide destinations are 2.3× the region's, for 173× the area** — 110 556
+distinct names against 18 453 — because Bangkok already dominates the country's
+POI density. Nationwide *routing* is not affordable at all: the graph scales with
+road length, and 830 k nodes becoming ten or twenty million is the difference
+between 45 MB and half a gigabyte. It would fail at `roads_open()`, not degrade.
+
+So the two are cut separately. `pbf2osm.py --classes none` takes destinations and
+no roads at all; `mkpack.py --pois-osm` joins that country-wide index to a
+regional graph. Road names still come from the graph's own extract, because a road
+name is a property of a way that is in it.
+
+What the rider gets is **search anywhere in Thailand, offline routing inside the
+pack, and §7.10's online router beyond it** — which is precisely the split
+`RC_OFFMAP` → online was built for, and the first thing that makes `router_url`
+worth setting.
+
+**17% of the country's destinations are invisible** — 32 223 of them have no ASCII
+name, against 17% in the region box. That fraction is almost certainly worse
+outside Bangkok, where English names cluster in the tourist and commercial
+districts, so "search anywhere" will feel patchy in the provinces. §1.4.2's dropped
+count on the `NOT IN THIS PACK` line is what admits it.
+
+**Still to measure:** §1.4's budget is 50 ms keystroke-to-frame, and
+`search_places()` is a linear pass over the name table. 29 548 names benched at
+0.81 ms a frame on a Mac; 110 556 is 3.7× the work on a machine 10–20× slower, so
+the honest estimate is 30–60 ms and it needs measuring **on the device**. If it is
+over, the fix is a prefix index — `PLACES` is already sorted by name, which is why
+§1.4.1 said it was.
+
 ### 1.5 MAP — where you are, with no route — `nav-map.png`
 
 **The product owner's words: "I want current location in map screen after open

@@ -30,7 +30,11 @@
 #endif
 
 #define MAGIC "BNAVROAD"
-#define ROADS_VERSION 2
+#define ROADS_VERSION 3
+/* One EDGES record on disk: to, len_mm, flags, name. 12 before v3 widened the
+ * name to a u32 -- named here rather than repeated four times, because the last
+ * time this stride was a literal it appeared in four expressions on four lines. */
+#define EDGE_BYTES 14
 #define HDR_BYTES 64
 #define SECT_ENTRY 8
 #define NSECT 6
@@ -203,10 +207,15 @@ roads_open(const char *path, char *why, int nwhy)
     if (rd_u16(hdr + 8) != ROADS_VERSION) {
         /* Which version, which is wanted, and what to run. This message is the
          * one a rider actually meets after a version bump -- 7.7's road class
-         * took BNAVROAD to v2 and every pack built before it reads as v1 -- and
-         * "unsupported pack version" on its own sent them to the source to find
-         * out what to do about it. The tile format did not move, which is why the
-         * command named here rebuilds only this pack. */
+         * took BNAVROAD to v2 and 1.4.7's nationwide destination index took it to
+         * v3 -- and "unsupported pack version" on its own sent them to the source
+         * to find out what to do about it. The tile format has never moved, which
+         * is why the command named here rebuilds only this pack.
+         *
+         * A BUMP IS TWO INSTALLS. The pack and the binary have to travel
+         * together: v2 arrived while a v1 pack was on the device and F went dead
+         * until the binary caught up. Nothing here can enforce that -- this line
+         * is the next best thing. */
         char msg[96];
         snprintf(msg, sizeof msg,
                  "road pack is v%u, need v%u: tools/mkmaps.sh --roads-only",
@@ -314,7 +323,8 @@ roads_open(const char *path, char *why, int nwhy)
         }
 
     /* --- edges */
-    raw = sect_read(f, fsize, soff[S_EDGES], scount[S_EDGES], 12, why, nwhy);
+    raw = sect_read(f, fsize, soff[S_EDGES], scount[S_EDGES], EDGE_BYTES, why,
+                    nwhy);
     if (!raw)
         goto bad;
     g->edge = (roadedge_t *)malloc((size_t)(g->nedge + 1) * sizeof *g->edge);
@@ -324,10 +334,10 @@ roads_open(const char *path, char *why, int nwhy)
     }
     memset(&g->edge[g->nedge], 0, sizeof g->edge[0]);
     for (i = 0; i < g->nedge; i++) {
-        g->edge[i].to = rd_u32(raw + 12 * i);
-        g->edge[i].len_mm = rd_u32(raw + 12 * i + 4);
-        g->edge[i].flags = rd_u16(raw + 12 * i + 8);
-        g->edge[i].name = rd_u16(raw + 12 * i + 10);
+        g->edge[i].to = rd_u32(raw + EDGE_BYTES * i);
+        g->edge[i].len_mm = rd_u32(raw + EDGE_BYTES * i + 4);
+        g->edge[i].flags = rd_u16(raw + EDGE_BYTES * i + 8);
+        g->edge[i].name = rd_u32(raw + EDGE_BYTES * i + 10);
         if (g->edge[i].to >= (unsigned int)g->nnode) {
             fail(why, nwhy, "an edge points outside the node table");
             goto bad;

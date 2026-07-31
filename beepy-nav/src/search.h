@@ -34,7 +34,13 @@ typedef struct {
     unsigned int to;
     unsigned int len_mm;
     unsigned short flags;
-    unsigned short name;
+    /* WIDENED IN PACK v3. It was a u16, which capped the PLACES table at 65 534
+     * and is where a nationwide destination index stopped: 123 731 names for
+     * Thailand against a ceiling of 65 534 (DESIGN.md 1.4.7). Four bytes an edge
+     * on disk, and on this device the in-memory struct was already padded to
+     * eight-byte alignment, so the resident cost of the wider field is smaller
+     * than the file's. */
+    unsigned int name;
 } roadedge_t;
 
 /* EDGE flags. ROADEDGE_ONEWAY says the parent way is oneway, so the REVERSE of
@@ -65,7 +71,7 @@ typedef struct {
 #define NAV_MODE_BIKE 0
 #define NAV_MODE_CAR 1
 
-#define ROADS_NAME_NONE 0xffffu
+#define ROADS_NAME_NONE 0xffffffffu  /* v3: was 0xffffu */
 
 /* The graph, in CSR form: node i's outgoing edges are edge[adj[i]] up to
  * edge[adj[i+1]-1]. Borrowed pointers into the open pack, valid until
