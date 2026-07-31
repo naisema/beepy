@@ -31,6 +31,12 @@ sim-anim.bin
 # Generated GPX fixture (1.2 MB, regenerable via gen_oversize.py)
 /beepy-nav/tests/gpx/oversize.gpx
 
+# tools/mkmaps.sh's work area: a 310 MB Geofabrik extract, the JSON cut from it,
+# the packs built from that, and a pyosmium venv. Hundreds of megabytes of pure
+# build output, and the packs themselves are the ones DESIGN.md says never to
+# commit -- the device gets them by scp, not by clone.
+/maps/
+
 # Generated replay rides and their traces (regenerable via mknmea.py; the
 # seeds and options live in the Makefile, which is the actual fixture).
 # beepy-nav/tests/rides/ is deliberately NOT here: those are RECORDINGS off

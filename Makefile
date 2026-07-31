@@ -767,6 +767,38 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
 #	And installed as the live route by the same line a GPX takes, which is what
 #	makes it a destination rather than a map label.
 	grep -q "beepy-nav: THE ACADEMY -- " $(RDIR)/find-poi.log
+	@echo "--- T-MODE-KEY: M on CONFIRM rebuilds the route, it does not relabel it"
+#	DESIGN.md 7.7. That bike and car return DIFFERENT routes is already gated by
+#	test_search.c on tests/roads/modes.roads -- 442 m up the motorway against
+#	1,091 m around it. What is new here is the KEY, and the thing that can go
+#	wrong with it is drawing "CAR" on the strip while the route on the screen is
+#	still the bicycle's.
+#	STATIONARY, and that is what makes the byte comparison below mean anything:
+#	each press re-routes from where the rider IS, so on a moving fixture the three
+#	routes legitimately start three places apart and no two frames can be equal.
+#	The first version used asok.nmea and was measuring the bike rolling forward.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still.nmea --headless $(FPS8) \
+		--roads $(ROADPACK) --config /dev/null \
+		--key 10:f --key 11:s --key 12:o --key 13:i \
+		--key 14:space --key 15:2 --key 16:3 --key 18:enter \
+		--dump-at 19:$(RDIR)/mode-bike.fb \
+		--key 20:m --dump-at 22:$(RDIR)/mode-car.fb \
+		--key 24:m --dump-at 26:$(RDIR)/mode-back.fb \
+		2> $(RDIR)/mode.log
+#	THREE routes built for one destination, one per press, each naming the profile
+#	that built it. A build where M only changed the strip would show one line.
+	test `grep -c "routed to SOI SUKHUMVIT 23" $(RDIR)/mode.log` -eq 3
+	grep -q "routed to SOI SUKHUMVIT 23 -- 51 points, 2.08 km, 10 cues, bike" \
+		$(RDIR)/mode.log
+	grep -q "routed to SOI SUKHUMVIT 23 -- 51 points, 2.08 km, 10 cues, car" \
+		$(RDIR)/mode.log
+#	The two frames differ -- the strip reads M BIKE then M CAR -- and the third is
+#	back to the first BYTE FOR BYTE, which is the assertion that says the toggle
+#	is a toggle and not a one-way door. It also says the rebuilt route is the same
+#	route: this destination is reachable identically by both profiles in this pack,
+#	so any difference in the drawn line would be the rebuild going wrong.
+	! python3 tools/fbdiff.py $(RDIR)/mode-bike.fb $(RDIR)/mode-car.fb --max-px 0
+	python3 tools/fbdiff.py $(RDIR)/mode-bike.fb $(RDIR)/mode-back.fb --max-px 0
 	@echo "--- T-REROUTE: 200 m and sustained, once a minute, five to an episode"
 #	DESIGN.md 7.11. Rerouting is the first thing in this program that ACTS on its
 #	own while the rider is moving, so every assertion here is about a COUNT: how
@@ -830,7 +862,7 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
 #	is, so a re-snap reads a few metres. Skip the rebase and route_snap() compares
 #	a world-frame position against a route-frame polyline and reads the distance
 #	between the two origins -- kilometres.
-	grep -q "rerouted to Sukhumvit Loop -- 59 points, 1.67 km, 11 cues, 0 m off" \
+	grep -q "rerouted to Sukhumvit Loop -- 59 points, 1.67 km, 11 cues, 0 m off, bike" \
 		$(RDIR)/reroute-live.log
 #	ONE ride, not two. This is what says the route was swapped IN PLACE rather
 #	than through CONFIRM's hand-off, which leaves run_live() and comes back --
@@ -885,7 +917,7 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
 #	OFFLINE FIRST: WORK is in the pack, so it is routed by the pack. The absence
 #	of "(online)" on that line is the assertion -- a build that went online for
 #	everything would produce the route and pass every other check here.
-	grep -q "routed to WORK -- 30 points, 0.80 km, 4 cues$$" \
+	grep -q "routed to WORK -- 30 points, 0.80 km, 4 cues, bike$$" \
 		$(RDIR)/find-online.log
 #	HOME is not, and the reason is the one router.c refuses on rather than a
 #	sentence this test matched: RC_OFFMAP is what sends it online.
@@ -893,7 +925,7 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
 	grep -q "asking valhalla for a route to HOME" $(RDIR)/find-online.log
 #	And what came back is N2's fixture, parsed to the point, so the request, the
 #	fetch, both adapters' worth of parsing and the install are one live path.
-	grep -q "routed to HOME -- 177 points, 4.95 km, 9 cues (online)" \
+	grep -q "routed to HOME -- 177 points, 4.95 km, 9 cues, bike (online)" \
 		$(RDIR)/find-online.log
 #	Installed by the line a GPX takes, printed by the route-loading loop and by
 #	nothing else -- which is the gate's own wording and the claim of 1.4 that

@@ -201,7 +201,17 @@ roads_open(const char *path, char *why, int nwhy)
         goto bad;
     }
     if (rd_u16(hdr + 8) != ROADS_VERSION) {
-        fail(why, nwhy, "unsupported pack version");
+        /* Which version, which is wanted, and what to run. This message is the
+         * one a rider actually meets after a version bump -- 7.7's road class
+         * took BNAVROAD to v2 and every pack built before it reads as v1 -- and
+         * "unsupported pack version" on its own sent them to the source to find
+         * out what to do about it. The tile format did not move, which is why the
+         * command named here rebuilds only this pack. */
+        char msg[96];
+        snprintf(msg, sizeof msg,
+                 "road pack is v%u, need v%u: tools/mkmaps.sh --roads-only",
+                 rd_u16(hdr + 8), (unsigned)ROADS_VERSION);
+        fail(why, nwhy, msg);
         goto bad;
     }
     if (rd_u16(hdr + 10) != HDR_BYTES) {

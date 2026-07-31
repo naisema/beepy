@@ -1047,11 +1047,19 @@ def render_search(query, pos, sel=0, nhits=None):
     return resolve(c.img)
 
 
-def render_confirm(rt, est_kmh=17.0):
+def render_confirm(rt, est_kmh=17.0, mode="BIKE"):
     """
     Route overview + the one decision: GO or not. Same cartography as the
     OVERVIEW page -- this IS the overview, fitted to the planned route, with
     the strip swapped for distance / time / the confirm keys.
+
+    `mode` is DESIGN.md 7.7's travel mode, and it is on this page because this is
+    where a rider commits to a route the mode SHAPED: bike and car do not return
+    a refinement of the same line, they return 43.8 km and 56.4 km over different
+    roads. It shares row two's right column with the cancel key, because a key
+    the page does not advertise is a key the rider has no way to know about
+    (DESIGN.md 2) -- and the mode has to be togglable HERE, where changing it
+    rebuilds the route and the change is visible in the figures on the left.
     """
     c = Canvas()
     pts = rt["pts"]
@@ -1084,7 +1092,7 @@ def render_confirm(rt, est_kmh=17.0):
     text(c, 6, H - strip + 5, f"{dtxt}  EST {mins} MIN", 2, PAPER)
     text(c, 6, H - strip + 23, f"{len(rt['cues']) - 1} TURNS", 2, PAPER)
     rtext(c, W - 6, H - strip + 5, "ENTER = GO", 2, PAPER)
-    rtext(c, W - 6, H - strip + 23, "Q = CANCEL", 2, PAPER)
+    rtext(c, W - 6, H - strip + 23, f"M {mode}  Q CANCEL", 2, PAPER)
     return resolve(c.img)
 
 

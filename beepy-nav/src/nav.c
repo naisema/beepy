@@ -283,6 +283,16 @@ static savedmark_t g_savedmark[SAVED_MARK_MAX];
 /* The travel mode (DESIGN.md 7.7). At file scope with the packs: it outlives
  * every route, and both the router and the pages want it. */
 static int g_mode = NAV_MODE_BIKE;
+
+/* The travel mode as the log spells it. On every line that reports a built
+ * route, because 7.7's two profiles return 43.8 km and 56.4 km over different
+ * roads -- a route length with no profile beside it is half a fact, and it is the
+ * half that makes the mode toggle assertable rather than merely visible. */
+static const char *
+mode_name(void)
+{
+    return g_mode == NAV_MODE_CAR ? "car" : "bike";
+}
 /* Online routing (DESIGN.md 7.8). One fetch at a time, at file scope with the
  * packs because it outlives a route and because the signal handler that owns
  * the panel must be able to kill the child on the way out -- an orphaned curl
@@ -1159,6 +1169,8 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         cf.ncues = k;
         cf.dest = pr->name;
         cf.units = a->ctx.units;
+        cf.mode = g_mode;
+        cf.note = a->note && a->frame_t < a->note_until ? a->note : NULL;
         view_confirm(cov, &cf);
         cov_resolve(cov, cv);
         return;
@@ -2224,9 +2236,9 @@ net_arrived(app_t *a)
     }
     a->net = NULL;
     fprintf(stderr, "beepy-nav: routed to %s -- %d points, %.2f km, %d cues"
-                    " (online)\n",
+                    ", %s (online)\n",
             a->proposed.name, a->proposed.npt, a->proposed.total_m / 1000.0,
-            a->proposed.ncue);
+            a->proposed.ncue, mode_name());
     if (g_req.reroute) {
         /* Already agreed to -- by the config in `auto`, by ENTER in `ask` -- so
          * there is nothing left to confirm. It goes under the rider. */
@@ -2255,6 +2267,7 @@ find_route_selected(app_t *a)
     double e, n;
     int code = RC_OK;
     const place_t *h;
+    route_t nr;
 
     if (a->sel < 0 || a->sel >= a->nshown)
         return;
@@ -2262,9 +2275,14 @@ find_route_selected(app_t *a)
         return; /* one request at a time; ENTER during a fetch is not a queue */
     h = &a->hit[a->sel];
     find_origin(a, &e, &n);
-    find_drop_proposed(a);
     a->net = NULL;
-    if (router_to(g_roads, e, n, h->e, h->n, g_mode, h->name, &a->proposed, why,
+    /* Into a LOCAL, and the old proposal is not dropped until this one exists.
+     * A failed attempt must leave the rider looking at the route they already
+     * had -- which is netroute_parse()'s rule from 7.9 applied one level up, and
+     * it is what makes 7.7's mode toggle on CONFIRM safe: a bicycle refused up a
+     * motorway-only spur puts the mode back and the route is still there. */
+    route_init(&nr);
+    if (router_to(g_roads, e, n, h->e, h->n, g_mode, h->name, &nr, why,
                   (int)sizeof why, &code)) {
         fprintf(stderr, "beepy-nav: %s\n", why);
         if (code == RC_OFFMAP || code == RC_UNREACHABLE) {
@@ -2274,11 +2292,14 @@ find_route_selected(app_t *a)
         note_show(a, "NO ROUTE");
         return;
     }
+    find_drop_proposed(a);
+    a->proposed = nr;
     a->have_proposed = 1;
     a->page = LIVE_CONFIRM;
-    fprintf(stderr, "beepy-nav: routed to %s -- %d points, %.2f km, %d cues\n",
+    fprintf(stderr,
+            "beepy-nav: routed to %s -- %d points, %.2f km, %d cues, %s\n",
             a->proposed.name, a->proposed.npt, a->proposed.total_m / 1000.0,
-            a->proposed.ncue);
+            a->proposed.ncue, mode_name());
 }
 
 /* ---------------------------------------------------- rerouting (7.11)
@@ -2370,9 +2391,9 @@ route_install(app_t *a, route_t *nr)
      * grep enough. */
     fprintf(stderr,
             "beepy-nav: rerouted to %s -- %d points, %.2f km, %d cues, "
-            "%.0f m off\n",
+            "%.0f m off, %s\n",
             a->rt.name, a->rt.npt, a->rt.total_m / 1000.0, a->rt.ncue,
-            a->have_pos ? a->nv.off_m : -1.0);
+            a->have_pos ? a->nv.off_m : -1.0, mode_name());
 }
 
 /* Where a reroute is going: the end of the route the rider is on.
@@ -2578,11 +2599,40 @@ find_key(app_t *a, int ch)
     return 1;
 }
 
-/* CONFIRM has exactly the two keys its own strip advertises. */
+/* CONFIRM has exactly the three keys its own strip advertises. */
 static int
 confirm_key(app_t *a, int ch)
 {
     switch (ch) {
+    /* DESIGN.md 7.7's travel mode, on the page where changing it has a visible
+     * consequence: the route is rebuilt for the same destination, so the
+     * distance, the estimate, the turn count and the drawn line all change. That
+     * is why the toggle is here and not only in the config file -- 43.8 km by
+     * bicycle and 56.4 km by car are not a refinement of the same line. */
+    case 'm':
+    case 'M': {
+        int was = g_mode;
+        if (!a->have_proposed || g_req.live)
+            return 0; /* nothing to rebuild, or one already in flight */
+        g_mode = g_mode == NAV_MODE_CAR ? NAV_MODE_BIKE : NAV_MODE_CAR;
+        find_route_selected(a);
+        if (!a->have_proposed) {
+            /* Cannot happen: find_route_selected() only drops the proposal once
+             * a replacement exists. Belt and braces, because the alternative is
+             * a CONFIRM page with no route on it. */
+            g_mode = was;
+            note_show(a, "NO ROUTE");
+        } else if (g_req.live) {
+            /* The pack could not answer and the router was asked. The strip
+             * already reads the new mode; the route on it is still the old one
+             * for about 1.4 s, and this row says something is happening rather
+             * than leaving the page apparently inert. */
+            note_show(a, "FETCHING");
+        } else {
+            note_show(a, g_mode == NAV_MODE_CAR ? "CAR" : "BIKE");
+        }
+        break;
+    }
     case '\n':
     case '\r':
         if (!a->have_proposed)
@@ -2780,6 +2830,16 @@ handle_key(app_t *a, int ch)
         a->alerts = !a->alerts;
         led_enable(a->alerts);
         note_show(a, a->alerts ? "ALERTS ON" : "ALERTS OFF");
+        break;
+    /* The same key as CONFIRM's, and 7.5's argument for L applies to it word for
+     * word: the effect is invisible in the direction that matters. Here there is
+     * no route to rebuild -- the one being ridden was already built -- so what it
+     * changes is the NEXT one: a reroute (7.11) or the next thing F finds. The
+     * transient is the only way a rider can tell they pressed it. */
+    case 'm':
+    case 'M':
+        g_mode = g_mode == NAV_MODE_CAR ? NAV_MODE_BIKE : NAV_MODE_CAR;
+        note_show(a, g_mode == NAV_MODE_CAR ? "CAR" : "BIKE");
         break;
     /* DESIGN.md 2 promises F opens FIND "from any page", and 1.4 says nothing
      * is searchable that is not in the pack. With no pack there is nothing to

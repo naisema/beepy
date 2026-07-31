@@ -367,8 +367,13 @@ labelled as such — that part is **still not built** (§1.4.6).
 
 CONFIRM is the OVERVIEW page's cartography fitted to the *proposed* route —
 start marker, cue dots, destination flag — with the strip carrying the one
-decision: `827M · EST 3 MIN · 2 TURNS` against `ENTER = GO / Q = CANCEL`. ETA
-assumes 17 km/h city riding until there is ride history to do better.
+decision: `827M · EST 3 MIN · 2 TURNS` against `ENTER = GO / M BIKE  Q CANCEL`.
+ETA assumes 17 km/h city riding until there is ride history to do better.
+
+The strip grew `M BIKE` when §7.7's travel mode became togglable, and it grew it
+*here* because this is the page where changing the mode changes what you are
+looking at: the same destination comes back as a different route. Everything else
+on the strip is unmoved, and the design gate is exact on the page.
 
 A GPX file remains the other entry: FIND builds a route, a GPX *is* one, and
 everything downstream is identical. `router_to()` leaves a `route_t` that
@@ -866,6 +871,7 @@ not a rehearsal of anything:
 | `H` | hold — freeze the display |
 | `E` | end the route and drop to MAP — stop navigating without stopping the program (§1.6) |
 | `Q` | open QUIT, which asks before it exits (§1.6) |
+| `M` | travel mode: bike ↔ car (§7.7). On a ride it steers the NEXT route and says so with a transient; there is nothing here to rebuild |
 | `ENTER` | **only** while `REROUTE?` is on the panel — accept it (§7.11). Unbound otherwise, which is what left it free to be this |
 | `Esc` | **only** while `REROUTE?` is on the panel — decline it |
 
@@ -1751,6 +1757,69 @@ dogleg between the same pair of points, so "the mode changed the route" is a
 **length**, not a flag: a car takes 442 m up the motorway, a bicycle 1,091 m
 around. A router ignoring class would return one number twice. Plus a
 motorway-only spur, which a bicycle is refused outright rather than sent up.
+
+#### Choosing it on the page where it changes something
+
+`mode` is a config key, and a config key alone is the wrong place for it: a rider
+who set `bike` in January and wants to drive somewhere in March should not have to
+edit a file on a device with no text editor. So `M` toggles it, and where it is
+toggled decides what the toggle can honestly promise.
+
+**On CONFIRM it rebuilds the route.** That is the whole reason the key belongs
+there: the same destination comes back as a different route, and the distance, the
+estimate, the turn count and the drawn line all change with it. The strip carries
+the mode **and the key** — `M BIKE  Q CANCEL` — because a key the page does not
+advertise is one the rider has no way to know about (§2), and a bare label with no
+way to act on it would only raise the question.
+
+The rebuild goes into a **local** `route_t` and replaces the proposal only once it
+exists. Without that, a mode the pack cannot honour — a bicycle refused up §7.7's
+motorway-only spur — would leave the rider on a CONFIRM page with no route on it.
+This also fixed a latent wart: a failed `ENTER` on FIND used to discard the
+proposal that was already there.
+
+**On the ride pages it changes the NEXT route**, and §7.5's argument for `L`
+applies word for word: the effect is invisible in the direction that matters, so a
+transient is the only way a rider can tell they pressed the key. There is no
+route to rebuild — the one being ridden was built already — so what it steers is a
+reroute (§7.11) or the next thing `F` finds.
+
+**Every line that reports a built route now names the profile that built it**
+(`… 3 cues, bike`). A route length with no profile beside it is half a fact, and
+it is the half that makes the toggle assertable rather than merely visible: a
+build where `M` relabelled the strip without re-routing produces one log line
+where three are expected.
+
+`mockup.py`'s `render_confirm()` and `goldens/nav-confirm.fb` moved with this, and
+that is the sanctioned kind of golden change rather than the forbidden one: the
+design changed, the reference changed with it, and the design gate is **exact**
+(0 px) on the page rather than merely inside its 480 px budget. The frame differs
+from its predecessor in rows 221–234 and columns 202–307 — one row of the strip,
+nothing else — and the frame the device generates is byte-identical to the Mac's.
+
+#### Measured against a real routing engine, on the real pack
+
+The nationwide road pack rebuilt for §7.7's v2 format is 829 644 nodes and
+1 614 938 edges. On the device, from the rider's own HOME to their own WORK:
+
+| | |
+|---|---|
+| this router, offline, `bike` | **43.48 km**, 1 261 points, 42 cues |
+| FOSSGIS Valhalla, `bicycle` (the phase 11 plan's measurement) | 43.8 km |
+| whole run on a Pi Zero 2 W: pack load, search, Dijkstra over 1.6 M edges | **1.9 s** |
+
+Within 0.7% of a real routing engine's answer for the same two points, which is
+the first independent check this router has ever had — every earlier measurement
+compared it against itself on a fixture pack.
+
+`bike` and `car` return the **identical** route for that pair, because nothing on
+it is a motorway or a trunk road, and exclusion is all the mode does (above). The
+difference is demonstrated on `tests/roads/modes.json`, which was built to contain
+a motorway precisely so the claim is a length rather than a flag.
+
+Dijkstra's own cost and the length the route reports agree to 0.1 m on that
+43 km route (43 483.4 m both ways), which is what the paragraph above means by
+`len_mm` being both what is added up and what is shown.
 
 #### The offline router used to lie about far destinations
 

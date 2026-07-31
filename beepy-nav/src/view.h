@@ -267,6 +267,21 @@ typedef struct {
     int ncues;          /* how many -- also the "N TURNS" figure */
     const char *dest;   /* uppercase; the title reads "TO <dest>" */
     int units;
+    /* DESIGN.md 7.7's travel mode, NAV_MODE_BIKE or NAV_MODE_CAR, shown on the
+     * strip beside the key that toggles it.
+     *
+     * It is on THIS page because this is where a rider commits to a route the
+     * mode shaped -- bike and car do not return a refinement of the same line,
+     * they return 43.8 km and 56.4 km over different roads (7.7's measurement).
+     * And it is shown with its KEY rather than as a bare label, because a key the
+     * page does not advertise is one the rider has no way to know about (2), and
+     * a label with no way to act on it would only raise the question. */
+    int mode;
+    /* A transient confirmation, or NULL -- the mechanism of 7.5, on the row that
+     * carries the turn count. Toggling the mode rebuilds the route, so the
+     * figures on the left change on their own; this says which of the two
+     * profiles produced them, once, for the rider who pressed the key. */
+    const char *note;
 } confirm_t;
 
 /* The QUIT page (DESIGN.md 1.6): the one modal question in the program.

@@ -201,11 +201,24 @@ view_confirm(cov_t *c, const confirm_t *cf)
     fmt_total(dtxt, sizeof dtxt, total, cf->units);
     snprintf(buf, sizeof buf, "%s  EST %d MIN", dtxt, mins);
     cov_text(c, 6, H - CF_STRIP + 5, buf, 2, COV_PAPER);
-    snprintf(buf, sizeof buf, "%d TURN%s", cf->ncues,
-             cf->ncues == 1 ? "" : "S");
+    /* The transient of 7.5 takes the turn count, which is the figure on this
+     * strip that can most afford a second and a half away: it is the one the
+     * rider has already read by the time they are reaching for a key. */
+    if (cf->note && *cf->note)
+        snprintf(buf, sizeof buf, "%s", cf->note);
+    else
+        snprintf(buf, sizeof buf, "%d TURN%s", cf->ncues,
+                 cf->ncues == 1 ? "" : "S");
     cov_text(c, 6, H - CF_STRIP + 23, buf, 2, COV_PAPER);
     rtext(c, W - 6, H - CF_STRIP + 5, "ENTER = GO", 2, COV_PAPER);
-    rtext(c, W - 6, H - CF_STRIP + 23, "Q = CANCEL", 2, COV_PAPER);
+    /* The mode and the key that changes it, sharing row two's right column with
+     * the cancel key. Right-aligned, so it sits clear of the turn count on the
+     * left and entirely outside the x < 130 region the design gate holds
+     * byte-exact -- but mockup.py draws the identical string, so the gate is
+     * exact here too rather than merely within budget. */
+    snprintf(buf, sizeof buf, "M %s  Q CANCEL",
+             cf->mode == NAV_MODE_CAR ? "CAR" : "BIKE");
+    rtext(c, W - 6, H - CF_STRIP + 23, buf, 2, COV_PAPER);
 }
 
 /* ------------------------------------------------------------ the demo */
@@ -240,5 +253,9 @@ view_confirm_demo(cov_t *c)
     cf.ncues = (int)(sizeof CF_CUES / sizeof CF_CUES[0]);
     cf.dest = "SOI SUKHUMVIT 23";
     cf.units = UNITS_METRIC; /* the frozen design state; see view_nav_demo() */
+    /* BIKE, because that is the default and this is a bicycle navigator -- and
+     * explicitly, because the strip reads it. */
+    cf.mode = NAV_MODE_BIKE;
+    cf.note = NULL;
     view_confirm(c, &cf);
 }

@@ -167,6 +167,7 @@ passed, total distance, distance and time remaining.
 | `H` | hold — freeze the display |
 | `E` | end the route — stop navigating, stay on the map, keep riding |
 | `Q` | quit — it asks first, and shows what you would be ending |
+| `M` | bike ↔ car. On `CONFIRM` it rebuilds the route in front of you; on a ride it steers the next one |
 | `ENTER` | accept a reroute, and nothing else — it does nothing unless the panel is asking |
 | `Esc` | decline one |
 
@@ -317,6 +318,32 @@ same way.
 
 ---
 
+## Bike or car
+
+```
+mode = bike        # or car
+```
+
+It changes the route, not a preference about it: bike refuses motorways and trunk
+roads outright, so the same two points come back as **43.8 km by bicycle and
+56.4 km by car** over different roads. Offline it decides which road classes the
+router will use; online it picks the profile the router is asked for.
+
+**`M` toggles it**, and the useful place to press it is `CONFIRM`, where the strip
+reads `M BIKE` and pressing it rebuilds the route for the same destination — the
+distance, the estimate, the turn count and the line on the map all change in front
+of you. If the mode you switch to cannot reach the destination at all (a bicycle
+and a motorway-only spur), the mode goes back and the route you had stays.
+
+On a ride `M` still works, but there is nothing to rebuild — the route you are on
+was already built — so what it changes is the *next* one: a reroute, or the next
+thing `F` finds. A transient says `BIKE` or `CAR` so you know the key landed.
+
+Every line the log writes about a built route names the profile that built it, so
+`~/rides/*.tsv` and a terminal both tell you which one you were on.
+
+---
+
 ## Rerouting
 
 The one thing this program does on its own initiative, so it asks first by
@@ -413,6 +440,8 @@ one command on the Mac:
 tools/mkmaps.sh                 # download, rebuild everything, install
 tools/mkmaps.sh --no-download   # reuse the .osm.pbf already downloaded
 tools/mkmaps.sh --no-install    # build only, touch nothing on the device
+tools/mkmaps.sh --roads-only    # the road pack alone -- 31 MB to the device
+                                # instead of 380, for when only IT is out of date
 ```
 
 About 25 minutes, and nearly all of it is the 310 MB download — the rendering

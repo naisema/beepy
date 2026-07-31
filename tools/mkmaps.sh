@@ -6,6 +6,8 @@
 #     tools/mkmaps.sh                 # everything, from download to device
 #     tools/mkmaps.sh --no-download   # reuse the .osm.pbf already here
 #     tools/mkmaps.sh --no-install    # build only, touch nothing remote
+#     tools/mkmaps.sh --roads-only    # the road pack alone: no tiles built,
+#                                     # and 31 MB over the wire instead of 380
 #
 # Why a script and not three commands in the README: the three builds are not
 # independent. The fine tiles must be cut in the SAME projection frame as the
@@ -43,11 +45,17 @@ SSHKEY=${SSHKEY:-$HOME/.ssh/id_rsa}
 OUT=${OUT:-$PWD/maps}
 PY=${PY:-python3}
 
-download=1 install=1
+# --roads-only exists because the two packs version INDEPENDENTLY. `BNAVROAD`
+# went to v2 for DESIGN.md 7.7's road class and the tile format did not move, so
+# a device whose roads pack is too old needs one 31 MB file rebuilt and not a
+# 380 MB one re-sent over wifi. It still needs the extract, and therefore still
+# needs the download -- there is no road graph without one.
+download=1 install=1 roads_only=0
 for a in "$@"; do
     case $a in
     --no-download) download=0 ;;
     --no-install)  install=0 ;;
+    --roads-only)  roads_only=1 ;;
     -h|--help)     sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "mkmaps: unknown option $a" >&2; exit 2 ;;
     esac
@@ -117,24 +125,28 @@ fi
 # Two conversions, because the two builds want genuinely different data.
 # Coarse drops names -- a basemap never draws them and for a country they are
 # most of the JSON. The region keeps them: they are what F searches.
-echo "mkmaps: country extract, major roads, no names"
-$OSMPY tools/pbf2osm.py "$PBF" --bbox "$COUNTRY" --classes coarse --no-names \
-    -o "$OUT/country.json"
+if [ "$roads_only" = 0 ]; then
+    echo "mkmaps: country extract, major roads, no names"
+    $OSMPY tools/pbf2osm.py "$PBF" --bbox "$COUNTRY" --classes coarse \
+        --no-names -o "$OUT/country.json"
+fi
 echo "mkmaps: region extract, every road class, with names and destinations"
 $OSMPY tools/pbf2osm.py "$PBF" --bbox "$REGION_BOX" --classes all \
     -o "$OUT/region.json"
 
 # -------------------------------------------------------------------- tiles
-echo "mkmaps: coarse tiles"
-$PY tools/mktiles.py --osm "$OUT/country.json" --bbox "$COUNTRY" \
-    --zooms "$ZOOMS_COARSE" -o "$OUT/coarse.tiles"
-echo "mkmaps: fine tiles, in the coarse frame"
-$PY tools/mktiles.py --osm "$OUT/region.json" --ref "$HOME_LL" \
-    --radius "$HOME_RADIUS" --frame "$FRAME" --zooms "$ZOOMS_FINE" \
-    -o "$OUT/fine.tiles"
-echo "mkmaps: merging"
-$PY tools/mergetiles.py "$OUT/fine.tiles" "$OUT/coarse.tiles" \
-    -o "$OUT/thailand-nav.tiles"
+if [ "$roads_only" = 0 ]; then
+    echo "mkmaps: coarse tiles"
+    $PY tools/mktiles.py --osm "$OUT/country.json" --bbox "$COUNTRY" \
+        --zooms "$ZOOMS_COARSE" -o "$OUT/coarse.tiles"
+    echo "mkmaps: fine tiles, in the coarse frame"
+    $PY tools/mktiles.py --osm "$OUT/region.json" --ref "$HOME_LL" \
+        --radius "$HOME_RADIUS" --frame "$FRAME" --zooms "$ZOOMS_FINE" \
+        -o "$OUT/fine.tiles"
+    echo "mkmaps: merging"
+    $PY tools/mergetiles.py "$OUT/fine.tiles" "$OUT/coarse.tiles" \
+        -o "$OUT/thailand-nav.tiles"
+fi
 
 # --------------------------------------------------------------- road graph
 #
@@ -147,7 +159,11 @@ $PY tools/mkpack.py --osm "$OUT/region.json" --ref "$HOME_LL" \
     -o "$OUT/region.roads"
 
 echo "mkmaps: built"
-ls -l "$OUT/thailand-nav.tiles" "$OUT/region.roads"
+if [ "$roads_only" = 1 ]; then
+    ls -l "$OUT/region.roads"
+else
+    ls -l "$OUT/thailand-nav.tiles" "$OUT/region.roads"
+fi
 
 [ "$install" = 1 ] || exit 0
 
@@ -158,7 +174,12 @@ ls -l "$OUT/thailand-nav.tiles" "$OUT/region.roads"
 # truncation over wifi looks exactly like a pack with no tiles out there.
 echo "mkmaps: installing on $DEVICE"
 ssh -i "$SSHKEY" "$DEVICE" 'mkdir -p ~/packs'
-for f in thailand-nav.tiles region.roads; do
+if [ "$roads_only" = 1 ]; then
+    files="region.roads"
+else
+    files="thailand-nav.tiles region.roads"
+fi
+for f in $files; do
     scp -i "$SSHKEY" "$OUT/$f" "$DEVICE:packs/$f.new"
     here=$(shasum -a 256 "$OUT/$f" | cut -d' ' -f1)
     there=$(ssh -i "$SSHKEY" "$DEVICE" "sha256sum packs/$f.new" | cut -d' ' -f1)
