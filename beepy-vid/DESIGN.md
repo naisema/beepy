@@ -717,6 +717,26 @@ and `btuart` are installed, the PulseAudio user daemon is already running with
 `module-bluez5-discover` loaded. **No PulseAudio configuration is needed at
 all** — a `bluez_sink.*.a2dp_sink` appears automatically.
 
+**7. Check `bluetoothd`'s plugin set — this device had it crippled.**
+`/lib/systemd/system/bluetooth.service` was found locally modified (`dpkg -V`
+reports `??5??????`) to run `bluetoothd --plugin=a2dp`, which loads *only* the
+a2dp plugin and therefore disables two others that matter here:
+
+- **`avrcp`** — without it there is no absolute volume control, so
+  `pactl set-sink-volume` is software attenuation the speaker never sees, and
+  §6.5's `C`/`V` keys could not change the speaker's actual volume. Symptom:
+  `org.bluez.MediaTransport1` has **no `Volume` property** on any device, which
+  reads as a limitation of the speaker and is not.
+- **`policy`** — the plugin that auto-reconnects audio profiles for trusted
+  devices.
+
+Fixed on 2026-08-01 with a drop-in at
+`/etc/systemd/system/bluetooth.service.d/10-restore-plugins.conf` — an empty
+`ExecStart=` to clear the inherited value (it is otherwise additive) followed
+by the plain binary. Verified: `MediaTransport1.Volume` returns `uint16 127`
+and `MediaControl1`/`MediaPlayer1` appear. A drop-in rather than an edit to
+`/lib`, so an apt upgrade of `bluez` cannot silently revert it.
+
 Risks: losing the serial console removes the recovery path on a device whose
 only other output is this panel — the escape hatch is that `/boot` is FAT and
 editable from any PC, and that should be written down *before* step 2. The
