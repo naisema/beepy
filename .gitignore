@@ -15,6 +15,7 @@ out-*.fb
 /gps-monitor/gps-monitor
 /beepy-nav/beepy-nav
 /beepy-nav/fbplay
+/libbeepyfb/tests/test_expand
 /beepy-nav/tests/test_map
 /beepy-nav/tests/test_gpx
 /beepy-nav/tests/test_route

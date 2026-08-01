@@ -98,17 +98,8 @@ void fb_release(fb_t *f)
     (void)rc; /* best effort: the panel repaints on the next tty write anyway */
 }
 
-/* 1bpp -> XRGB8888. The two words match the device's own shutdownimage.fb:
- * black = 00 00 00 ff, white = ff ff ff ff. */
-void expand(const canvas_t *c, unsigned char *frame, size_t line_len, int h, int w)
-{
-    for (int y = 0; y < h; y++) {
-        uint32_t *row = (uint32_t *)(frame + (size_t)y * line_len);
-        const unsigned char *src = &c->bits[(size_t)y * c->stride];
-        for (int x = 0; x < w; x++)
-            row[x] = (src[x / 8] & (0x80u >> (x % 8))) ? 0xFF000000u : 0xFFFFFFFFu;
-    }
-}
+/* expand() moved to expand.c (M0) so it can be compiled -- and compared
+ * against canvas_dump() -- on the Mac. fbdev.h includes expand.h. */
 
 int write_all(int fd, const void *buf, size_t n)
 {

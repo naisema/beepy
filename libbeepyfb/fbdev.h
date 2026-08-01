@@ -9,6 +9,9 @@
 #include <sys/types.h>
 
 #include "canvas.h"
+/* expand() lives in expand.c now (it is portable; this file is not), but is
+ * still reached through this header so callers did not have to change. */
+#include "expand.h"
 
 typedef struct {
     int fd;
@@ -24,7 +27,6 @@ void fb_take(fb_t *f);
 void fb_release(fb_t *f);
 int fb_present(fb_t *f, const canvas_t *c);
 int fb_dump(const canvas_t *c, const char *path);
-void expand(const canvas_t *c, unsigned char *frame, size_t line_len, int h, int w);
 int write_all(int fd, const void *buf, size_t n);
 
 #endif /* BEEPYFB_FBDEV_H */

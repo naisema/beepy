@@ -65,7 +65,8 @@ REMOTE_DIR ?= beepy-src
 # gps-monitor — thin app: main loop, keymap, and the two page renderers
 
 FB_OBJS   = libbeepyfb/canvas.o libbeepyfb/font.o libbeepyfb/cover.o \
-            libbeepyfb/dump.o libbeepyfb/fbdev.o libbeepyfb/input.o
+            libbeepyfb/dump.o libbeepyfb/expand.o libbeepyfb/fbdev.o \
+            libbeepyfb/input.o
 NMEA_OBJS = libnmea/nmea.o libnmea/gps.o libnmea/serial.o
 GM_OBJS   = gps-monitor/main.o gps-monitor/view_bars.o gps-monitor/view_sky.o
 NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
@@ -1206,6 +1207,7 @@ bench: beepy-nav/beepy-nav
 # warning pass without a device round-trip. fbdev/input/serial are device-only.
 
 HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
+            host/expand.o \
             host/nmea.o host/gps.o \
             host/seg.o host/arrows.o host/map.o host/gpx.o host/route.o \
             host/view_nav.o host/view_overview.o host/fix.o host/chooser.o \
@@ -1235,13 +1237,19 @@ host/beepy-nav: $(HOST_NAV)
 # map.c, gpx.c and route.c are the beepy-nav modules with no pixels in them,
 # so they are the ones that can be checked by assertion instead of by frame
 # comparison. Runs in either lane; `check` runs it on the device.
-UNIT_TESTS = beepy-nav/tests/test_map beepy-nav/tests/test_gpx \
+UNIT_TESTS = libbeepyfb/tests/test_expand \
+             beepy-nav/tests/test_map beepy-nav/tests/test_gpx \
              beepy-nav/tests/test_route beepy-nav/tests/test_tile \
              beepy-nav/tests/test_search \
              beepy-nav/tests/test_netroute \
              beepy-nav/tests/test_netfetch
 
 test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
+#	T-EXPAND. First, because it is the only test here that guards a function
+#	the OTHER tests depend on: every golden compared below and in `check` is
+#	written by canvas_dump(), while the panel is driven by expand(). Nothing
+#	compared the two until this existed.
+	./libbeepyfb/tests/test_expand
 	./beepy-nav/tests/test_map
 	./beepy-nav/tests/test_gpx
 	./beepy-nav/tests/test_route
@@ -1254,6 +1262,16 @@ test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
 #	seconds of it, waiting for a deadline that is the sole defence against a
 #	server which accepts a connection and then says nothing (DESIGN.md 7.8).
 	./beepy-nav/tests/test_netfetch
+
+# The panel's XRGB writers. Links canvas.c, dump.c and expand.c and nothing
+# else -- expand.c was split out of fbdev.c precisely so this runs in the Mac
+# lane, where fbdev.c (linux/fb.h) cannot be built.
+libbeepyfb/tests/test_expand: libbeepyfb/tests/test_expand.c \
+                              libbeepyfb/expand.c libbeepyfb/canvas.c \
+                              libbeepyfb/dump.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -o $@ \
+		libbeepyfb/tests/test_expand.c libbeepyfb/expand.c \
+		libbeepyfb/canvas.c libbeepyfb/dump.c $(LDLIBS)
 
 beepy-nav/tests/test_map: beepy-nav/tests/test_map.c beepy-nav/src/map.c $(HDRS)
 	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
