@@ -91,6 +91,10 @@ audio_open(audio_t *a, const char *cmd, int rate, int ch, int bits)
     a->rate = rate;
     a->ch = ch;
     a->bits = bits ? bits : 16;
+    /* AFTER the memset, which would otherwise leave vol at 0 -- and 0 is mute,
+     * not unity. A caller wanting a different level sets it once this returns;
+     * audio_reprime() does not memset, so the level survives pause/resume. */
+    a->vol = AUDIO_VOL_MAX;
     if (!cmd || !*cmd || rate <= 0 || ch <= 0)
         return 0; /* silent film: not an error */
     return spawn(a, cmd);
@@ -100,6 +104,80 @@ int
 audio_ok(const audio_t *a)
 {
     return a->fd >= 0 && !a->dead;
+}
+
+/* ------------------------------------------------------------- volume */
+
+/* Q15 multipliers, one per level. The ladder is in DECIBELS and not in
+ * percent, because loudness is logarithmic and evenly spaced percentages are
+ * not evenly spaced steps: 100->90% is barely audible while 20->10% halves the
+ * apparent volume. Ten steps over 40 dB is a little under 4 dB each, which is
+ * a clear but not violent change per press.
+ *
+ * -40 dB rather than a smaller floor for level 1: below roughly that the
+ * remaining 9 bits of a 16-bit sample carry audible quantisation hiss, and a
+ * level that sounds broken is worse than one fewer level. Level 0 is exactly
+ * zero, so mute is silence and not -60 dB of hiss.
+ *
+ * 32768 is unity and the product cannot overflow: 32767 * 32768 is 2^30, well
+ * inside int32. Nothing here can clip, because no entry exceeds unity. */
+static const int VOL_Q15[AUDIO_VOL_MAX + 1] = {
+    0,     /*  0   mute        */
+    328,   /*  1   -40 dB      */
+    823,   /*  2   -32 dB      */
+    1642,  /*  3   -26 dB      */
+    2920,  /*  4   -21 dB      */
+    4629,  /*  5   -17 dB      */
+    7336,  /*  6   -13 dB      */
+    11627, /*  7    -9 dB      */
+    16423, /*  8    -6 dB      */
+    23198, /*  9    -3 dB      */
+    32768, /* 10     0 dB, unity and the default */
+};
+
+int
+audio_set_vol(audio_t *a, int level)
+{
+    if (level < 0)
+        level = 0;
+    if (level > AUDIO_VOL_MAX)
+        level = AUDIO_VOL_MAX;
+    a->vol = level;
+    return level;
+}
+
+int
+audio_vol(const audio_t *a)
+{
+    return a->vol;
+}
+
+void
+audio_apply_vol(const audio_t *a, unsigned char *buf, size_t n)
+{
+    int g;
+    /* Unity is the common case and must cost nothing: a player whose volume
+     * was never touched writes the pack's bytes through unmodified, which is
+     * also what keeps every existing assertion about the fed bytes true. */
+    if (a->vol >= AUDIO_VOL_MAX || a->bits != 16)
+        return;
+    g = VOL_Q15[a->vol < 0 ? 0 : a->vol];
+    if (g == 0) {
+        memset(buf, 0, n & ~(size_t)1);
+        return;
+    }
+    for (size_t i = 0; i + 1 < n; i += 2) {
+        /* Assemble, scale, write back -- all little-endian by hand. The
+         * divide is not a shift: >> on a negative int is implementation
+         * defined, and / truncates toward zero symmetrically for both signs,
+         * so the waveform stays centred. gcc emits the shift-and-fix anyway. */
+        int s = (int)buf[i] | ((int)buf[i + 1] << 8);
+        if (s >= 32768)
+            s -= 65536; /* sign extend by hand; short is not 16 bits by rule */
+        s = s * g / 32768;
+        buf[i] = (unsigned char)(s & 0xff);
+        buf[i + 1] = (unsigned char)((s >> 8) & 0xff);
+    }
 }
 
 long

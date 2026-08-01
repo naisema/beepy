@@ -1664,6 +1664,57 @@ test-vidsync: host/beepy-vid $(VIDLONG)
 		out-vid-long.gray8 out-vid-long.s16 $(VIDLONG)
 	@echo "test-vidsync: PASS"
 
+# Volume is arithmetic on the samples, so it is assertable without a speaker:
+# point audio_cmd at a FILE and the sink becomes evidence. This is the same
+# property DESIGN.md 7.3 bought for the clock tests, spent again.
+#
+# --volume exists partly for this. Keys cannot be injected into a headless run,
+# so a key-only volume control would be a feature the gate could not reach --
+# and beepy-vid has been here before: a9105eb shipped a player whose device
+# path had no audio at all because the only tested loop was the headless one.
+test-vidvol: host/beepy-vid $(VIDLONG)
+	@echo "--- T-VID-VOL-CLOCK: volume changes values, never byte counts"
+#	The whole reason this is safe. audio.h derives the clock from bytes
+#	ACCEPTED, so a volume control that resampled or requantised would silently
+#	become a speed control. Four levels, one byte count.
+	@set -e; \
+	 for v in 10 8 5 0; do \
+	   ./host/beepy-vid $(VIDLONG) --headless --volume $$v \
+	     --audio-cmd "cat > out-vid-vol$$v.raw" >/dev/null 2>&1; \
+	 done; \
+	 n=$$(wc -c < out-vid-vol10.raw); \
+	 for v in 8 5 0; do \
+	   m=$$(wc -c < out-vid-vol$$v.raw); \
+	   [ "$$n" = "$$m" ] || { echo "  FAIL level $$v wrote $$m, level 10 wrote $$n"; exit 1; }; \
+	 done; \
+	 echo "  PASS  all four levels wrote $$n bytes"
+	@echo "--- T-VID-VOL-UNITY: the default is bit-identical passthrough"
+#	Not "close enough". A player nobody touched the volume on must put the
+#	pack's own bytes on the wire, or every existing assertion about what the
+#	sink received is measuring the volume control instead.
+	cmp out-vid-vol10.raw out-vid-long.s16
+	@echo "--- T-VID-VOL-MUTE: level 0 is silence, not -60 dB of hiss"
+#	cmp against /dev/zero over exactly the file's length, and not `tr -d '\0' |
+#	read`: read returns failure at EOF whether or not it consumed anything, so
+#	the obvious pipeline reports "all zeros" for a file that is nothing of the
+#	sort. Checked against a file of \001\002\003, which it passed.
+	@set -e; \
+	 n=$$(wc -c < out-vid-vol0.raw); \
+	 cmp -n $$n out-vid-vol0.raw /dev/zero; \
+	 echo "  PASS  level 0 is $$n zero bytes"
+	@echo "--- T-VID-VOL-DB: the ladder is the decibels it claims"
+	@python3 -c "import sys, math, array; \
+	  rms=lambda p:(lambda a:math.sqrt(sum(float(x)*x for x in a)/len(a)))(array.array('h',open(p,'rb').read())); \
+	  ref=rms('out-vid-vol10.raw'); \
+	  bad=[]; \
+	  [bad.append((v,t,20*math.log10(rms('out-vid-vol%d.raw'%v)/ref))) \
+	     for v,t in ((8,-6.0),(5,-17.0)) if abs(20*math.log10(rms('out-vid-vol%d.raw'%v)/ref)-t)>0.2]; \
+	  print('  FAIL '+repr(bad)) if bad else print('  PASS  level 8 is -6 dB and level 5 is -17 dB'); \
+	  sys.exit(1 if bad else 0)"
+	rm -f out-vid-vol10.raw out-vid-vol8.raw out-vid-vol5.raw out-vid-vol0.raw \
+		out-vid-long.gray8 out-vid-long.s16 $(VIDLONG)
+	@echo "test-vidvol: PASS"
+
 # Deliberate, like tiles: and it regenerates a committed file.
 vidpack: $(VIDGRAY) $(VIDPCM)
 ifndef VID_OK
@@ -1895,6 +1946,6 @@ clean:
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
-.PHONY: all check goldens host test-unit test-replay test-frames test-find test-panel test-vid test-vidpace test-vidsync vidpack \
+.PHONY: all check goldens host test-unit test-replay test-frames test-find test-panel test-vid test-vidpace test-vidsync test-vidvol vidpack \
 	host-replay tables design-gate test-tiles tiles test-roads roads \
 	bench sync clean netfix

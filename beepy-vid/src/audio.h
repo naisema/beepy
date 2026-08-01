@@ -33,6 +33,37 @@
 #include <sys/types.h>
 #include <stddef.h>
 
+/* VOLUME. Attenuation applied to the samples HERE, before they reach the
+ * pipe -- not `pactl set-sink-volume` and not a linked mixer API.
+ *
+ * Three reasons, in descending order of how much they bind:
+ *
+ * 1. The sink is opaque by construction. audio_cmd may be `cat >/dev/null`,
+ *    a fakesink, or an ssh pipeline, and 7.3 chose that precisely so the gate
+ *    never needs a sound card. A player that shelled out to pactl would work
+ *    only when the sink happened to be PulseAudio, and would put a mixer call
+ *    inside `make check`. Scaling the bytes we already hold works for every
+ *    sink and is testable by pointing audio_cmd at a file.
+ * 2. It is what the hardware leaves us anyway. README records that a speaker
+ *    with no AVRCP absolute volume -- the VOX-DC is one -- cannot be turned up
+ *    from the Beepy at all, so `set-sink-volume` there IS only software
+ *    attenuation. Doing it ourselves is the same operation, minus the
+ *    dependency, and it behaves identically across speakers that differ.
+ * 3. libc only, so the Buildroot packaging goal survives.
+ *
+ * ATTENUATION ONLY, and that is a deliberate ceiling rather than a missing
+ * feature: gain above unity would have to clip or limit, and no amount of it
+ * makes a speaker louder than its own amplifier. Level 10 is unity and is the
+ * default, so a player that never touches the volume writes the pack's bytes
+ * through byte for byte.
+ *
+ * THE CLOCK IS UNAFFECTED, which is the property that makes this safe at all.
+ * Scaling rewrites sample values in place and changes no byte count, and the
+ * clock in this file is bytes-accepted -- so volume cannot move the film. A
+ * resampling or format-converting volume control would not have that property.
+ */
+#define AUDIO_VOL_MAX 10
+
 typedef struct {
     pid_t pid;
     int fd;          /* write end of the pipe, non-blocking */
@@ -41,6 +72,7 @@ typedef struct {
     int prefilled;
     int rate, ch, bits;
     int dead;
+    int vol;         /* 0..AUDIO_VOL_MAX; 10 is unity */
     /* Slew-limited clock state. See audio_clock(). */
     double clk, clk_wall;
     int clk_started;
@@ -65,6 +97,26 @@ int audio_ok(const audio_t *a);
  * limiter was tried and made it worse in the other direction (half speed
  * against the fake sink), so it was removed rather than shipped. */
 long audio_feed(audio_t *a, const unsigned char *buf, size_t n);
+
+/* Clamp to 0..AUDIO_VOL_MAX and store. Returns the level actually set, so a
+ * caller can show what happened rather than what it asked for. */
+int audio_set_vol(audio_t *a, int level);
+int audio_vol(const audio_t *a);
+
+/* Scale n bytes of S16LE in place by the current level, to be called on the
+ * buffer between pack_audio() and audio_feed().
+ *
+ * In place and on freshly-read bytes both matter. audio_feed() is free to
+ * accept only part of the buffer, and the remainder is re-read from the pack
+ * next iteration -- unscaled again -- so scaling is never applied twice to the
+ * same sample, and a level changed mid-buffer takes effect on the very next
+ * read rather than at some flush boundary.
+ *
+ * Bytes are assembled explicitly rather than cast to int16_t*: the buffer
+ * comes off a pack whose format is defined as little-endian regardless of the
+ * host, and a cast would also be an alignment and aliasing bet for nothing.
+ * A partial trailing sample (odd n) is left alone rather than half-scaled. */
+void audio_apply_vol(const audio_t *a, unsigned char *buf, size_t n);
 
 /* Playback position in seconds, plus the A/V offset. Before the pipe has
  * filled once this is still rising with the prefill, so callers should not

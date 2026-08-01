@@ -838,6 +838,76 @@ it buys an estimate, not a measurement, at the cost of violating
 packaging goal that rule protects. The calibration screen is the source of
 truth either way.
 
+### 7.4 Volume is arithmetic on the samples, not a mixer call
+
+`-` and `+` step an 11-entry ladder and the samples are scaled in the player,
+between `pack_audio()` and `audio_feed()`. The alternative — shelling out to
+`pactl set-sink-volume` — was rejected on three grounds, in descending order of
+how much they bind:
+
+1. **The sink is opaque by construction.** §7.3 made `audio_cmd` a child
+   process precisely so the gate never needs a sound card, and it may be
+   `cat >/dev/null`, `fakesink.py`, or a pipeline. A mixer call works only when
+   the sink happens to be PulseAudio, and puts a device call inside
+   `make check`.
+2. **It is what the hardware leaves us anyway.** §7.1's speaker has no AVRCP
+   absolute volume, so `set-sink-volume` against it *is already* software
+   attenuation. Doing it here is the same operation minus the dependency, and
+   it behaves identically across speakers that differ from each other.
+3. **libc only** (`beepy-nav/DESIGN.md:4`), which the Buildroot packaging goal
+   depends on.
+
+**The clock is why this is safe, and it is not a free lunch elsewhere.**
+`audio.h` derives playback position from bytes *accepted*. Scaling rewrites
+sample values in place and changes no byte count, so volume cannot move the
+film. A volume control that resampled, requantised or re-primed the sink would
+not have that property — it would be a speed control with a volume knob on it.
+`test-vidvol`'s first assertion is that byte count, at four levels, for exactly
+this reason.
+
+**Decibels, not percent.** Ten steps over 40 dB, roughly 3.7 dB each. Percent
+is the obvious ladder and the wrong one: loudness is logarithmic, so 100→90%
+is inaudible while 20→10% halves it. Level 0 is exactly zero rather than
+−60 dB, because a floor low enough to sound broken is worse than one fewer
+level; level 1 stops at −40 dB, below which the surviving 9 bits of a 16-bit
+sample carry audible quantisation hiss.
+
+**Attenuation only, deliberately.** Level 10 is unity and the default, so a
+player nobody touched writes the pack's bytes through byte for byte — which is
+what keeps every other assertion about the fed bytes true, and is gated by
+`cmp` in `test-vidvol`. Above unity the code would have to clip or limit, and
+no amount of digital gain makes a speaker louder than its own amplifier.
+
+**`--volume N` exists for the gate as much as for the user.** Keys cannot be
+injected into a headless run, so a key-only control would be a feature the gate
+structurally could not reach — the exact shape of the defect in `a9105eb`,
+where the only tested loop was the headless one and the device path had no
+audio at all.
+
+**The alt layer does not send the keycode it prints, and this shipped broken
+once.** There is no `-` or `+` key on the Beepy; both are legends on the
+physical alt layer (`I` and `O`). Binding `KEY_MINUS` and `KEY_EQUAL` was the
+obvious reading and produced a control that did nothing at all, silently,
+because those codes are never emitted by this keyboard.
+`beepy-kbd`'s `map_phys_alt_keycode()` is, in full, `keycode += 119`, and
+`beepy-kbd.map` then assigns `142 = minus` and `143 = plus`. That file is a
+**console** keymap applied by the tty layer; a player that `EVIOCGRAB`s the
+device reads evdev underneath it and receives the bare 142 and 143. So those
+are the binding, and `KEY_MINUS`/`KEY_EQUAL` are kept only as a USB-keyboard
+fallback.
+
+The general lesson is the one §7.3 keeps paying for: **what a layer prints,
+what it maps, and what it emits are three different things**, and only the
+third reaches a program that grabs the device. The capability bitmap in
+`/proc/bus/input/devices` does not settle it either — it advertises
+`KEY_MINUS` on this keyboard, which is exactly the false confirmation that made
+the first binding look verified.
+
+**Not the arrow keys**, tempting as they were: they are dedicated physical keys
+where `-` and `+` need the symbol layer, but §6's help page has already spent
+`LEFT`/`RIGHT` on seek 10 s and `DOWN`/`UP` on seek 60 s. That page is a
+specification this player has not caught up with, not a description of it.
+
 ---
 
 ## 8. Testing

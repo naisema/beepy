@@ -94,7 +94,11 @@ static const char USAGE[] =
 "                substitute a fake sink and the gate never touches a\n"
 "                speaker (see audio.h)\n"
 "  --no-audio    silent, and the clock falls back to CLOCK_MONOTONIC\n"
-"  --av-offset MS     A2DP lag; positive delays the video to match\n";
+"  --av-offset MS     A2DP lag; positive delays the video to match\n"
+"  --volume N    0..10, 10 is unity and the default. Attenuation only:\n"
+"                above unity would clip, and cannot make a speaker louder\n"
+"                than its own amplifier. While playing, the - and + keys\n"
+"                (symbol layer) do the same thing\n";
 
 /* ------------------------------------------------------------- signals */
 
@@ -195,6 +199,11 @@ typedef struct {
     int stall_at;          /* frame index, -1 for none */
     double stall_s;
     const char *transient;
+    /* A transient the LOOP owns, as opposed to the one --demo is handed. It
+     * needs storage that outlives the keypress and a deadline, because unlike
+     * the paused band it has nothing to hold it on screen. */
+    char osd_msg[24];
+    double osd_until;      /* mono seconds; 0 means no loop-owned transient */
 
     /* audio */
     audio_t au;
@@ -282,6 +291,69 @@ compose(player_t *p, canvas_t *cv)
     view_play(cv, &o);
 }
 
+/* WHAT THE ALT LAYER ACTUALLY SENDS, which is not what it prints.
+ *
+ * There is no - or + key on this keyboard; both are on the physical alt layer.
+ * beepy-kbd does NOT emit KEY_MINUS for alt+key. Its
+ * map_phys_alt_keycode() (input_modifiers.c) does, in full:
+ *
+ *     keycode += 119; // See map file for result keys
+ *
+ * and beepy-kbd.map then assigns the shifted codes under "# Physical Alt key":
+ *
+ *     keycode 142 = minus
+ *     keycode 143 = plus
+ *
+ * That map is a CONSOLE keymap, applied by the tty layer. A player that
+ * EVIOCGRABs the device -- which this one must, see the grab argument in the
+ * device path -- reads evdev directly and the translation never runs, so what
+ * arrives is the bare 142 and 143.
+ *
+ * This shipped broken once: bound to KEY_MINUS and KEY_EQUAL, alt+key produced
+ * no volume change and no error, because those codes are simply never sent by
+ * this keyboard. KEY_MINUS is kept below for a USB keyboard, but it is the
+ * fallback and these two are the real binding.
+ *
+ * Deliberately not spelled KEY_SLEEP and KEY_WAKEUP, which is what 142 and 143
+ * are in input-event-codes.h. The names would be accurate about the constant
+ * and a lie about the key: nothing here is asking the device to sleep. */
+#define BEEPY_ALT_MINUS 142
+#define BEEPY_ALT_PLUS  143
+
+/* Keys exist only where there is a keyboard, and the host lane builds with
+ * -Wall -Wextra: unguarded, this is an unused static there. */
+#if defined(VID_DEVICE)
+/* A volume change and the OSD that reports it.
+ *
+ * The report is not decoration. On this keyboard - and + are on the symbol
+ * layer, so a press that produced nothing audible has two indistinguishable
+ * explanations -- the key never arrived, or it arrived and the speaker ignores
+ * the level -- and the second is a documented property of the VOX-DC here.
+ * Naming the level on the panel separates them, and it is the only feedback
+ * available: the band has no room for a permanent readout.
+ *
+ * A sink that is not open reports that instead of silently counting a level
+ * nothing will ever apply. --no-audio and a missing speaker both land here.
+ */
+static void
+volume_step(player_t *p, int delta, double now)
+{
+    if (!audio_ok(&p->au))
+        snprintf(p->osd_msg, sizeof p->osd_msg, "NO AUDIO");
+    else {
+        int v = audio_set_vol(&p->au, audio_vol(&p->au) + delta);
+        if (v == 0)
+            snprintf(p->osd_msg, sizeof p->osd_msg, "MUTE");
+        else
+            snprintf(p->osd_msg, sizeof p->osd_msg, "VOLUME %d", v);
+    }
+    p->transient = p->osd_msg;
+    /* Long enough to read after a burst of presses, short enough not to sit
+     * over the film. The paused panel outranks it either way (view_play.c). */
+    p->osd_until = now + 1.2;
+}
+#endif /* VID_DEVICE */
+
 /* ----------------------------------------------------------------- main */
 
 int
@@ -290,6 +362,9 @@ main(int argc, char **argv)
     player_t P;
     const char *path = NULL, *dump = NULL, *page = "play";
     int demo = 0, nopack = 0, at = 0, paused = 0, headless = 0;
+    /* Held here rather than written straight into P.au, because audio_open()
+     * memsets the struct and would discard a --volume parsed before it. */
+    int vol = AUDIO_VOL_MAX;
     const char *transient = NULL;
     int noaudio = 0;
     double start = 0, fps_override = 0;
@@ -332,6 +407,8 @@ main(int argc, char **argv)
             P.audio_cmd = NULL, noaudio = 1;
         else if (!strcmp(a, "--av-offset") && i + 1 < argc)
             P.av_offset = atof(argv[++i]) / 1000.0;
+        else if (!strcmp(a, "--volume") && i + 1 < argc)
+            vol = atoi(argv[++i]);
         else if (!strcmp(a, "--trace-frames") && i + 1 < argc)
             tracepath = argv[++i];
         else if (!strcmp(a, "--stall-at") && i + 1 < argc) {
@@ -487,6 +564,7 @@ main(int argc, char **argv)
             audio_open(&P.au, P.audio_cmd, (int)P.pack.audio_rate,
                        P.pack.audio_ch, P.pack.audio_bits) != 0)
             return 1;
+        audio_set_vol(&P.au, vol);
 
         for (;;) {
             double now = mono_now(), clock;
@@ -501,7 +579,9 @@ main(int argc, char **argv)
                 long got = pack_audio(&P.pack, P.audio_pos, P.abuf,
                                       sizeof P.abuf);
                 if (got > 0) {
-                    long w = audio_feed(&P.au, P.abuf, (size_t)got);
+                    long w;
+                    audio_apply_vol(&P.au, P.abuf, (size_t)got);
+                    w = audio_feed(&P.au, P.abuf, (size_t)got);
                     if (w < 0) {
                         fprintf(stderr, "beepy-vid: the audio sink went away\n");
                         return 1;
@@ -657,6 +737,7 @@ main(int argc, char **argv)
             evdev_close();
             return 1;
         }
+        audio_set_vol(&P.au, vol);
 
         P.frame = (uint32_t)(start / frame_seconds(&P));
         if (P.frame >= P.pack.nframe)
@@ -669,13 +750,26 @@ main(int argc, char **argv)
             double now = mono_now();
             uint32_t due;
 
+            /* Retire the loop-owned transient. Clearing last_shown is what
+             * actually removes it: the panel only changes when a frame is
+             * recomposed, so an expired message with no redraw behind it would
+             * stay on screen until the next frame happened to differ -- which,
+             * paused, is never. */
+            if (P.osd_until > 0.0 && now >= P.osd_until) {
+                P.osd_until = 0.0;
+                P.transient = NULL;
+                last_shown = (uint32_t)-1;
+            }
+
             /* Hand the sink whatever it will take. In the steady state this
              * accepts nothing, which IS the back-pressure the clock reads. */
             if (audio_ok(&P.au) && !P.audio_done && !P.paused) {
                 long got = pack_audio(&P.pack, P.audio_pos, P.abuf,
                                       sizeof P.abuf);
                 if (got > 0) {
-                    long w = audio_feed(&P.au, P.abuf, (size_t)got);
+                    long w;
+                    audio_apply_vol(&P.au, P.abuf, (size_t)got);
+                    w = audio_feed(&P.au, P.abuf, (size_t)got);
                     if (w > 0)
                         P.audio_pos += (uint32_t)w;
                 } else {
@@ -807,6 +901,36 @@ main(int argc, char **argv)
                                     }
                                 }
                                 last_shown = (uint32_t)-1; /* redraw the band */
+                                break;
+                            /* - and + only, and NOT the arrows.
+                             *
+                             * The arrows were the tempting second binding:
+                             * they are dedicated physical keys, where - and +
+                             * sit on this keyboard's symbol layer. But
+                             * view_pages.c's help page already allocates DOWN
+                             * and UP to SEEK 60 SEC and LEFT and RIGHT to SEEK
+                             * 10 SEC. That page is a specification the player
+                             * has not caught up with yet, not a description of
+                             * it -- and taking a key the spec has spent, in a
+                             * player that will grow seeking, buys convenience
+                             * now against a collision later.
+                             *
+                             * KEY_VOLUME{UP,DOWN} cost nothing to accept: the
+                             * beepy-kbd bitmap carries them and nothing else
+                             * here wants them. */
+                            case BEEPY_ALT_MINUS:
+                            case KEY_MINUS:
+                            case KEY_KPMINUS:
+                            case KEY_VOLUMEDOWN:
+                                volume_step(&P, -1, mono_now());
+                                last_shown = (uint32_t)-1;
+                                break;
+                            case BEEPY_ALT_PLUS:
+                            case KEY_EQUAL:
+                            case KEY_KPPLUS:
+                            case KEY_VOLUMEUP:
+                                volume_step(&P, +1, mono_now());
+                                last_shown = (uint32_t)-1;
                                 break;
                             default:
                                 break;
