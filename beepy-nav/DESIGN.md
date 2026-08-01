@@ -1502,10 +1502,41 @@ because the smoothness budget would then have been spent on an assumption.
 ### 6.4 Cost, and why 8 Hz fits
 
 Measured from the live device tree: the panel's `spi-max-frequency` is
-**4 MHz**. A full-screen update is 240 lines × ~52 bytes ≈ 12.5 KB ≈ 100 kbit,
-so **25 ms of SPI time, a ~40 Hz hardware ceiling**. At 8 Hz that is 200 ms of
-SPI per second — 20% of the bus, with the DRM damage tracking likely sending
-less.
+**4 MHz**. A full-screen update is 240 lines × (2 + 50) + 2 = **12 482 bytes**
+≈ 100 kbit, so **25 ms of SPI time**.
+
+**Corrected 2026-08-01: the ceiling this paragraph used to quote — "~40 Hz" —
+was wrong by 20%, and the error was in the step from bus time to frame rate.**
+Measured by counting SPI messages in
+`/sys/class/spi_master/spi0/spi0.0/statistics/messages` with `fbterm`
+SIGSTOPped, the real full-screen rate is **33.1 fps**, a 30.2 ms period. The
+missing 5.3 ms is the kernel's own `drm_fb_xrgb8888_to_gray8()` and
+`sharp_memory_gray8_to_mono_tagged()` over 96 000 pixels, which the arithmetic
+above does not account for. The panel is bandwidth-limited at a measured
+**~420 000 bytes/sec**, and because the cost is per line the rate is a function
+of how many rows are written:
+
+```
+panel_fps(rows) ≈ 420000 / (52 × rows + 2)
+```
+
+which fits the measurements within 2% from 60 rows (135.4 fps) to 240
+(33.1 fps). At 8 Hz that is **242 ms of panel time per second, 24% of the
+bus** — not the 20% claimed before.
+
+The old sentence also said the DRM damage tracking was "likely sending less".
+It is not, and the reason is on our side rather than the driver's:
+`sharp_memory_fb_dirty()` clips `x1=0, x2=width` but passes the row range
+through untouched, so **damage is row-banded and a partial write really does
+shorten the transfer** — but `fb_present()` (`libbeepyfb/fbdev.c:129`) writes
+all 384 000 bytes every time, so nav claims the full 240 lines on every frame
+it presents. The saving is available and unclaimed. A `fb_present_rows()` that
+wrote only the changed band would cost nav nothing to adopt; the countdown
+digits changing are perhaps 30 rows, which is 4.5 ms instead of 30.2.
+
+None of this moves the 8 Hz decision — 8 Hz against 33.1 is 4× headroom rather
+than 5× — but the number was quoted elsewhere as a hardware fact, and
+`beepy-nav/fbplay.c:37` rejects `fps > 40` on the strength of it.
 
 On our side of the write: expand the 12 000-byte 1-bit backbuffer to the
 384 000-byte XRGB frame and `write()` it. At 8 Hz that is 3.2 MB/s of
