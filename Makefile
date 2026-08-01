@@ -79,7 +79,8 @@ NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
             beepy-nav/src/view_confirm.o beepy-nav/src/view_map.o \
             beepy-nav/src/view_quit.o beepy-nav/src/netfetch.o \
             beepy-nav/src/netroute.o
-HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h beepy-nav/src/*.h)
+HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h \
+                       beepy-nav/src/*.h beepy-vid/src/*.h)
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav
 
@@ -1238,6 +1239,7 @@ host/beepy-nav: $(HOST_NAV)
 # so they are the ones that can be checked by assertion instead of by frame
 # comparison. Runs in either lane; `check` runs it on the device.
 UNIT_TESTS = libbeepyfb/tests/test_expand \
+             beepy-vid/tests/test_codec beepy-vid/tests/test_pack \
              beepy-nav/tests/test_map beepy-nav/tests/test_gpx \
              beepy-nav/tests/test_route beepy-nav/tests/test_tile \
              beepy-nav/tests/test_search \
@@ -1250,6 +1252,10 @@ test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
 #	written by canvas_dump(), while the panel is driven by expand(). Nothing
 #	compared the two until this existed.
 	./libbeepyfb/tests/test_expand
+#	T-CODEC / T-PACK. The .vid reader is linkable on its own, so these build
+#	packs byte by byte in C and gate the format before tools/mkvid.py exists.
+	./beepy-vid/tests/test_codec
+	./beepy-vid/tests/test_pack
 	./beepy-nav/tests/test_map
 	./beepy-nav/tests/test_gpx
 	./beepy-nav/tests/test_route
@@ -1286,6 +1292,16 @@ libbeepyfb/tests/test_present_rows: libbeepyfb/tests/test_present_rows.c \
 	$(CC) $(CFLAGS) $(INC) -o $@ \
 		libbeepyfb/tests/test_present_rows.c libbeepyfb/expand.c \
 		libbeepyfb/canvas.c libbeepyfb/fbdev.c $(LDLIBS)
+
+beepy-vid/tests/test_codec: beepy-vid/tests/test_codec.c beepy-vid/src/codec.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-vid/src -o $@ \
+		beepy-vid/tests/test_codec.c beepy-vid/src/codec.c $(LDLIBS)
+
+beepy-vid/tests/test_pack: beepy-vid/tests/test_pack.c beepy-vid/src/pack.c \
+                           beepy-vid/src/codec.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-vid/src -o $@ \
+		beepy-vid/tests/test_pack.c beepy-vid/src/pack.c \
+		beepy-vid/src/codec.c $(LDLIBS) -lz
 
 # The panel's XRGB writers. Links canvas.c, dump.c and expand.c and nothing
 # else -- expand.c was split out of fbdev.c precisely so this runs in the Mac
