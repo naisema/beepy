@@ -19,6 +19,7 @@ out-*.fb
 /libbeepyfb/tests/test_present_rows
 /beepy-vid/tests/test_codec
 /beepy-vid/tests/test_pack
+/beepy-vid/beepy-vid
 /beepy-vid/tests/viddecode
 /beepy-vid/tests/vid/clip.gray8
 /beepy-vid/tests/vid/clip.s16

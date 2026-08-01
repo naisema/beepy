@@ -94,12 +94,22 @@ NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
 HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h \
                        beepy-nav/src/*.h beepy-vid/src/*.h)
 
-all: gps-monitor/gps-monitor beepy-nav/beepy-nav
+VID_OBJS  = beepy-vid/src/vid.o beepy-vid/src/pack.o beepy-vid/src/codec.o \
+            beepy-vid/src/view_play.o
+VIDLIBS   = -lz
+
+all: gps-monitor/gps-monitor beepy-nav/beepy-nav beepy-vid/beepy-vid
 
 %.o: %.c
 	$(CC) $(CFLAGS) $(INC) -c -o $@ $<
 
 $(FB_OBJS) $(NMEA_OBJS) $(GM_OBJS) $(NAV_OBJS): $(HDRS)
+
+beepy-vid/beepy-vid: $(VID_OBJS) libbeepyfb/libbeepyfb.a
+	$(CC) $(CFLAGS) -o $@ $(VID_OBJS) libbeepyfb/libbeepyfb.a \
+		$(LDLIBS) $(VIDLIBS)
+
+$(VID_OBJS): $(HDRS)
 
 libbeepyfb/libbeepyfb.a: $(FB_OBJS)
 	ar rcs $@ $(FB_OBJS)
@@ -115,7 +125,8 @@ beepy-nav/beepy-nav: $(NAV_OBJS) libnmea/libnmea.a libbeepyfb/libbeepyfb.a
 	$(CC) $(CFLAGS) -o $@ $(NAV_OBJS) libnmea/libnmea.a \
 		libbeepyfb/libbeepyfb.a $(LDLIBS)
 
-check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
+check: gps-monitor/gps-monitor beepy-nav/beepy-nav beepy-vid/beepy-vid \
+       test-unit test-replay
 	./gps-monitor/gps-monitor --demo --page bars --dump out-bars.fb
 	./gps-monitor/gps-monitor --demo --page sky  --dump out-sky.fb
 	cmp goldens/gm-bars.fb out-bars.fb
@@ -235,6 +246,29 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	cmp goldens/nav-map-wait-home.fb out-nav-map-wait-home.fb
 	cmp goldens/nav-quit.fb     out-nav-quit.fb
 	cmp goldens/nav-quit-map.fb out-nav-quit-map.fb
+#	beepy-vid's pages. The player is portable, so these frames are rendered
+#	identically by host/beepy-vid on the Mac and by the device binary here --
+#	which is itself the assertion that the two renderers have not diverged.
+	./beepy-vid/beepy-vid --demo --page play --pack $(VIDPACK) --at 12 \
+		--dump out-vid-play.fb
+	./beepy-vid/beepy-vid --demo --page play --pack $(VIDPACK) --at 12 \
+		--paused --dump out-vid-paused.fb
+	./beepy-vid/beepy-vid --demo --page play --no-pack --dump out-vid-nopack.fb
+	cmp goldens/vid-play.fb   out-vid-play.fb
+	cmp goldens/vid-paused.fb out-vid-paused.fb
+	cmp goldens/vid-nopack.fb out-vid-nopack.fb
+#	Not the same frame with nothing added: a build whose band drew no state
+#	would pass both cmps above and freeze nothing at all.
+	! cmp -s goldens/vid-play.fb goldens/vid-paused.fb
+#	T-VID-OPTIONAL, the shape T-BASEMAP-OPTIONAL argues for at line 240: an
+#	unreadable pack and an absent one must be the SAME frame, and --no-pack is
+#	an explicit fixture rather than the absence of a flag, because "no flag"
+#	would one day read whatever a config file names.
+	@echo "--- T-VID-OPTIONAL: absent and unreadable are the same frame"
+	./beepy-vid/beepy-vid --demo --page play --pack no-such.vid \
+		--dump out-vid-badpack.fb
+	cmp out-vid-nopack.fb out-vid-badpack.fb
+	! cmp -s out-vid-play.fb out-vid-nopack.fb
 #	The five goldens above nav-tiles are rendered with NO pack, and that is
 #	the standing proof that the tile layer is optional: a basemap that is
 #	absent must render exactly what rendered before basemaps existed. The two
@@ -294,7 +328,7 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav test-unit test-replay
 	! cmp -s out-nav-find.fb out-nav-find-nopack.fb
 	@echo "check: PASS - demo dumps byte-identical to goldens"
 
-goldens: gps-monitor/gps-monitor beepy-nav/beepy-nav
+goldens: gps-monitor/gps-monitor beepy-nav/beepy-nav beepy-vid/beepy-vid
 ifndef GOLDEN_OK
 	$(error refusing to regenerate goldens without GOLDEN_OK=1)
 endif
@@ -336,6 +370,12 @@ endif
 		--basemap $(TILEPACK) --dump goldens/nav-map-wait-home.fb
 	./beepy-nav/beepy-nav --demo --page quit     --dump goldens/nav-quit.fb
 	./beepy-nav/beepy-nav --demo --page quit-map --dump goldens/nav-quit-map.fb
+	./beepy-vid/beepy-vid --demo --page play --pack $(VIDPACK) --at 12 \
+		--dump goldens/vid-play.fb
+	./beepy-vid/beepy-vid --demo --page play --pack $(VIDPACK) --at 12 \
+		--paused --dump goldens/vid-paused.fb
+	./beepy-vid/beepy-vid --demo --page play --no-pack \
+		--dump goldens/vid-nopack.fb
 	@echo "goldens regenerated - review the diff before committing"
 
 # ----------------------------------------------------------- replay tests
@@ -1241,7 +1281,14 @@ HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/nmea.o host/gps.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
 
-host: $(HOST_OBJS) host/beepy-nav
+HOST_VID = host/vid-vid.o host/vid-pack.o host/vid-codec.o \
+           host/vid-view_play.o \
+           host/canvas.o host/font.o host/cover.o host/dump.o host/expand.o
+
+host/beepy-vid: $(HOST_VID)
+	$(CC) $(CFLAGS) -o $@ $(HOST_VID) $(LDLIBS) $(VIDLIBS)
+
+host: $(HOST_OBJS) $(HOST_VID) host/beepy-nav host/beepy-vid
 	@echo "host: portable objects compile clean"
 
 host/beepy-nav: $(HOST_NAV)
@@ -1396,6 +1443,10 @@ host/%.o: libbeepyfb/%.c $(HDRS)
 host/%.o: libnmea/%.c $(HDRS)
 	@mkdir -p host
 	$(CC) $(CFLAGS) $(INC) -c -o $@ $<
+
+host/vid-%.o: beepy-vid/src/%.c $(HDRS)
+	@mkdir -p host
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-vid/src -c -o $@ $<
 
 host/%.o: beepy-nav/src/%.c $(HDRS)
 	@mkdir -p host
