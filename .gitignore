@@ -19,6 +19,11 @@ out-*.fb
 /libbeepyfb/tests/test_present_rows
 /beepy-vid/tests/test_codec
 /beepy-vid/tests/test_pack
+/beepy-vid/tests/viddecode
+/beepy-vid/tests/vid/clip.gray8
+/beepy-vid/tests/vid/clip.s16
+out-vid-*.vid
+out-vid-*.planes
 out-test-pack.vid
 /beepy-nav/tests/test_map
 /beepy-nav/tests/test_gpx
@@ -55,3 +60,9 @@ sim-anim.bin
 .DS_Store
 __pycache__/
 *.pyc
+
+# Source video is never committed. A 529 MB mp4 reached a commit once
+# because `git add -A beepy-vid` swept up a file nobody had looked for.
+*.mp4
+*.mov
+*.mkv

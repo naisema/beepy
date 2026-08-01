@@ -64,6 +64,18 @@ REMOTE_DIR ?= beepy-src
 # libnmea    — NMEA parsing, gps state, serial port
 # gps-monitor — thin app: main loop, keymap, and the two page renderers
 
+# beepy-vid fixtures. The gray8 and the PCM are GENERATED (tools/mkvidfix.py,
+# pure stdlib, deterministic from a seed) and gitignored, following the .nmea
+# replays at line 349 rather than the committed tile pack. The .vid itself IS
+# committed: mkvid.py needs numpy, the device has none, and `check` will want
+# this pack for the player's demo pages.
+VIDFIX   = beepy-vid/tests/vid
+VIDGRAY  = $(VIDFIX)/clip.gray8
+VIDPCM   = $(VIDFIX)/clip.s16
+VIDPACK  = $(VIDFIX)/clip.vid
+VIDOPTS  = --size 400x225 --fps 24 --gop 24 --hysteresis 8 --dither bayer4 \
+           --no-deflate
+
 FB_OBJS   = libbeepyfb/canvas.o libbeepyfb/font.o libbeepyfb/cover.o \
             libbeepyfb/dump.o libbeepyfb/expand.o libbeepyfb/fbdev.o \
             libbeepyfb/input.o
@@ -1418,6 +1430,71 @@ design-gate: host/beepy-nav
 # would silently move a golden. It is asserted the only way it can be: build
 # twice into different files and compare, then compare against the committed
 # fixture, which is the same claim across machines and across months.
+$(VIDGRAY) $(VIDPCM):
+	python3 tools/mkvidfix.py --gray8 $(VIDGRAY) --pcm $(VIDPCM) --quiet
+
+beepy-vid/tests/viddecode: beepy-vid/tests/viddecode.c beepy-vid/src/pack.c \
+                           beepy-vid/src/codec.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-vid/src -o $@ \
+		beepy-vid/tests/viddecode.c beepy-vid/src/pack.c \
+		beepy-vid/src/codec.c $(LDLIBS) -lz
+
+# Mac lane: mkvid.py needs numpy, which the device does not have.
+test-vid: beepy-vid/tests/viddecode $(VIDGRAY) $(VIDPCM) $(VIDPACK)
+	@echo "--- T-VID-DETERMINISM: same gray8, same bytes, twice"
+	python3 tools/mkvid.py --gray8 $(VIDGRAY) --pcm $(VIDPCM) $(VIDOPTS) \
+		-o out-vid-1.vid --quiet
+	python3 tools/mkvid.py --gray8 $(VIDGRAY) --pcm $(VIDPCM) $(VIDOPTS) \
+		-o out-vid-2.vid --quiet
+	cmp out-vid-1.vid out-vid-2.vid
+#	Two builds in ONE environment cannot see an unsorted set -- the existing
+#	tile and road determinism gates have that hole. Vary the hash seed.
+	PYTHONHASHSEED=0 python3 tools/mkvid.py --gray8 $(VIDGRAY) --pcm $(VIDPCM) \
+		$(VIDOPTS) -o out-vid-h0.vid --quiet
+	PYTHONHASHSEED=1 python3 tools/mkvid.py --gray8 $(VIDGRAY) --pcm $(VIDPCM) \
+		$(VIDOPTS) -o out-vid-h1.vid --quiet
+	cmp out-vid-h0.vid out-vid-h1.vid
+	cmp out-vid-1.vid $(VIDPACK)
+	@echo "--- T-VID-ROUNDTRIP: the C reader agrees with the Python dither"
+#	Decodes EVERY frame with pack.c and compares against mkvid.py's own
+#	dither of the same gray8. A per-frame golden would freeze frame 0 and say
+#	nothing about frame 23, which is the only frame a broken XOR chain gets
+#	wrong. --verify also refuses a fixture with fewer than two distinct
+#	frames, so a decoder stuck on frame 0 cannot pass.
+	./beepy-vid/tests/viddecode out-vid-1.vid out-vid-1.planes
+	python3 tools/mkvid.py --gray8 $(VIDGRAY) $(VIDOPTS) -o /dev/null \
+		--verify out-vid-1.planes
+	@echo "--- T-VID-DEFLATE: compression changes bytes, never pixels"
+	python3 tools/mkvid.py --gray8 $(VIDGRAY) --pcm $(VIDPCM) \
+		$(filter-out --no-deflate,$(VIDOPTS)) -o out-vid-z.vid --quiet
+	! cmp -s out-vid-z.vid out-vid-1.vid
+	./beepy-vid/tests/viddecode out-vid-z.vid out-vid-z.planes
+	cmp out-vid-1.planes out-vid-z.planes
+	@echo "--- T-VID-INFO: the header round-trips through --info"
+	python3 tools/mkvid.py --info $(VIDPACK) | grep -q "frames     24"
+	python3 tools/mkvid.py --info $(VIDPACK) | grep -q "image rect 0,7 400x225"
+	python3 tools/mkvid.py --info $(VIDPACK) | grep -q "hysteresis 8"
+	@echo "--- T-VID-REFUSE: settings that cannot be reproduced are refused"
+#	A float rate would round differently between builds, and a zero gop leaves
+#	every seek unbounded. Both must fail loudly at build time rather than
+#	produce a pack that only mostly works.
+	! python3 tools/mkvid.py --gray8 $(VIDGRAY) --size 400x225 --fps 23.976 \
+		-o out-vid-bad.vid --quiet 2>/dev/null
+	! python3 tools/mkvid.py --gray8 $(VIDGRAY) --size 400x225 --gop 0 \
+		-o out-vid-bad.vid --quiet 2>/dev/null
+	test ! -f out-vid-bad.vid
+	rm -f out-vid-1.vid out-vid-2.vid out-vid-h0.vid out-vid-h1.vid \
+		out-vid-z.vid out-vid-1.planes out-vid-z.planes
+	@echo "test-vid: PASS"
+
+# Deliberate, like tiles: and it regenerates a committed file.
+vidpack: $(VIDGRAY) $(VIDPCM)
+ifndef VID_OK
+	$(error refusing to rebuild the committed $(VIDPACK) without VID_OK=1)
+endif
+	python3 tools/mkvid.py --gray8 $(VIDGRAY) --pcm $(VIDPCM) $(VIDOPTS) \
+		-o $(VIDPACK)
+
 test-tiles: host/beepy-nav $(TILEPACK)
 	@echo "--- T-TILES-DETERMINISM: same inputs, same bytes, twice"
 	python3 tools/mktiles.py --osm $(TILEOSM) --route $(TILEROUTE) \
@@ -1641,6 +1718,6 @@ clean:
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
-.PHONY: all check goldens host test-unit test-replay test-frames test-find test-panel \
+.PHONY: all check goldens host test-unit test-replay test-frames test-find test-panel test-vid vidpack \
 	host-replay tables design-gate test-tiles tiles test-roads roads \
 	bench sync clean netfix
