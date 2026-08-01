@@ -307,15 +307,22 @@ model reasoned from the Shannon entropy of a 45%-dense XOR and never accounted
 for hysteresis, which makes the XOR sparse in the first place. Caveat in
 §3.7.1.
 
-Bayer 4×4 with hysteresis 8, bytes per frame:
+**Re-measured on real footage 2026-08-01** — a 1280×720 animated short and two
+scenes from a 1920×1080 live-action music video, 8 s each at native rate,
+extracted with the §4 ffmpeg invocation (`flags=area`, `sws_dither=none`,
+bitexact). Bayer 4×4, hysteresis 8, bytes per frame:
 
-| clip | RAW | DEFLATE | XOR_SPANS | **XOR_DEFLATE** | best-of-4 | saving |
-|---|---|---|---|---|---|---|
-| locked-off | 7007 | 2234 | 1432 | **265** | 298 | **97%** |
-| slow pan | 11217 | 1851 | 1532 | **702** | 736 | **93%** |
-| cut-heavy | 11243 | 1759 | 2283 | **934** | 959 | **91%** |
+| clip | RAW | DEFLATE | XOR_SPANS | **XOR_DEFLATE** | best-of-4 | saving | churn | dirty rows | MB/min @24 |
+|---|---|---|---|---|---|---|---|---|---|
+| animation | 6446 | 4080 | 1619 | **1042** | 958 | **91%** | 2.7% | 129 | 1.4 |
+| live-action | 7770 | 2359 | 732 | **403** | 407 | **96%** | 0.3% | 155 | 0.6 |
+| live-action 2 | 10562 | 1545 | 1792 | **949** | 960 | **91%** | 0.9% | 211 | 1.4 |
 
-Without hysteresis the same clips cost 1180 / 2192 / 2164 B — still 80–90%.
+The synthetic clips this replaced gave 298 / 736 / 959 B — **the same order,
+and in one case real footage compressed better.** See §3.7.1.
+
+**A 90-minute film is 54–126 MB.** At 24 fps the pack costs 0.6–1.4 MB/min
+against 52 GB free. Storage has stopped being a consideration of any kind.
 
 **Three conclusions, each of which reverses an earlier position.**
 
@@ -335,16 +342,33 @@ Without hysteresis the same clips cost 1180 / 2192 / 2164 B — still 80–90%.
 for a static camera and does not survive a moving one — a pan pays the full
 SPI cost no matter how few bytes it took to store.
 
-### 3.7.1 The honest caveat on these numbers
+### 3.7.1 The synthetic caveat was itself wrong
 
-**The clips are synthetic** — smooth gradients plus sinusoidal texture and
-±2 levels of noise. Real photographic detail is far less compressible, so
-treat 91–97% as an **upper bound** and expect real footage to land materially
-worse. What the synthetic result establishes with confidence is the *ordering*
-of the four modes and the size of the hysteresis effect, both of which are
-large enough to survive a big absolute error. Re-measure on real footage once
-`brew install ffmpeg` has happened; the absolute figures quoted here should be
-corrected in that commit.
+This section previously warned that the synthetic figures were an **upper
+bound** and that real photographic detail "will compress worse". **That was
+wrong, and the reason is worth keeping.**
+
+Real footage measured 958 / 407 / 960 B against synthetic's 298 / 736 / 959 —
+the same order throughout, and the live-action scene compressed *better* than
+the synthetic pan. The intuition behind the warning was that photographic
+detail is less compressible than a sinusoid, which is true of the *source* and
+irrelevant to the *pack*: **dithering to one bit at 400×225 discards almost all
+of that detail before the encoder ever sees it.** What reaches the delta coder
+is dominated by the dither structure, and with hysteresis the frame-to-frame
+XOR is sparse regardless of how busy the source was. Source complexity barely
+survives the 1-bit bottleneck.
+
+The remaining caveat is narrower and honest: three 8-second clips are not a
+corpus. Dark scenes, film grain and heavy noise are all under-represented, and
+grain in particular defeats hysteresis by construction. Expect a bad clip to be
+several times worse than these; expect the *ordering of the modes* to hold.
+
+**One number is now in question rather than settled.** `h=16` beat `h=8` on
+every clip (915 / 326 / 695 B), suggesting a higher default. It is not adopted,
+because **these measurements score size and cannot see smearing**: hysteresis
+works by making a pixel reluctant to change, which is exactly what trails a
+moving edge. Choosing between 8 and 16 needs eyes on the panel, not another
+table. `--hysteresis` stays at 8 until someone looks.
 
 ### 3.8 Keyframes and seeking
 
@@ -944,9 +968,10 @@ magnitude (§3.7). What remains:
    slow-mo — which quantises to 4.2 ms, and after calibrating out the phone's
    own fixed capture offset gives **±5–10 ms**, an order of magnitude inside
    the budget.
-2. **The §3.7 figures are from synthetic clips and are an upper bound.**
-   Re-measure on real footage (§3.7.1). This is now the largest quantitative
-   unknown left, and it needs `brew install ffmpeg` first.
+2. **`--hysteresis` 8 vs 16 cannot be settled by measurement.** 16 is smaller
+   on every clip, but hysteresis smears moving edges and no byte count can see
+   that. It needs a person looking at the panel (§3.7.1). Everything else about
+   the codec is now measured on real footage.
 3. **`expand()` divergence** — three XRGB writers, none compared (§5.2).
 4. **The panel left dead after a crash or SSH HUP** (§8.6).
 5. **Dither crawl on panned content** — only `checker1-shift` sees it.
