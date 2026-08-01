@@ -78,6 +78,8 @@ spawn(audio_t *a, const char *cmd)
     a->prefill = 0;
     a->prefilled = 0;
     a->dead = 0;
+    a->clk_started = 0;
+    a->t_start = mono_now();
     return 0;
 }
 

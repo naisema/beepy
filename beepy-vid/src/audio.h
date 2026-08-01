@@ -44,6 +44,7 @@ typedef struct {
     /* Slew-limited clock state. See audio_clock(). */
     double clk, clk_wall;
     int clk_started;
+    double t_start;
 } audio_t;
 
 /* cmd may contain %r (rate) and %c (channels). Returns 0, or -1 with the
@@ -55,7 +56,14 @@ int audio_ok(const audio_t *a);
 
 /* Write what the sink will take right now; never blocks. Returns bytes
  * accepted (0 is normal and means the sink is full, which is the steady
- * state), or -1 if the child has gone. */
+ * state), or -1 if the child has gone.
+ *
+ * KNOWN DEFECT, see beepy-vid/DESIGN.md 7.6: with a greedy consumer -- pacat
+ * has its own buffer and PulseAudio another behind it -- acceptance races
+ * ahead of playback and the derived clock runs fast. Measured against a real
+ * A2DP sink: frames every 27.6 ms instead of 41.7, roughly 1.5x. A feed rate
+ * limiter was tried and made it worse in the other direction (half speed
+ * against the fake sink), so it was removed rather than shipped. */
 long audio_feed(audio_t *a, const unsigned char *buf, size_t n);
 
 /* Playback position in seconds, plus the A/V offset. Before the pipe has
@@ -81,7 +89,12 @@ double audio_time(const audio_t *a, double offset_s);
  *
  * Stateful, so it must be called once per loop iteration and takes a
  * non-const audio_t. */
-#define AUDIO_MAX_SLEW 1.5
+/* 1.05, not 1.5. A sink playing at its nominal rate CANNOT advance faster
+ * than real time, so anything above 1.0 is pure headroom for jitter; 1.5 let
+ * the film run half again too fast against a real A2DP sink. The slow
+ * direction stays unlimited, so audio-is-master is unaffected -- a 20% slow
+ * sink still stretches playback by 23%, gated in test-vidsync. */
+#define AUDIO_MAX_SLEW 1.05
 double audio_clock(audio_t *a, double offset_s, double now);
 int audio_primed(const audio_t *a);
 

@@ -778,6 +778,49 @@ after the first seek — the failure that reads as *"calibration doesn't work"*;
 and seek is **audibly gapped by design**, because a quarter-second of silence
 beats a quarter-second of the wrong audio.
 
+### 7.2.1 A pipe clock measures the wrong thing, and this is what it cost
+
+**Measured 2026-08-01, and it is the hardest thing in this project so far.**
+
+`bytes accepted by the pipe` is not `bytes played by the speaker`. A pipe
+drains and refills in gulps; a greedy consumer — `pacat` has its own buffer and
+PulseAudio another behind it — takes far more than it has played. So the
+derived clock has an accurate long-term **rate** and a violently noisy
+instantaneous **value**.
+
+What that did, in order, each found by measurement and not by reading:
+
+| symptom | measured | cause |
+|---|---|---|
+| frames in bursts 2.5 ms apart, then 520 ms of nothing; **99 of 240 dropped** | fake sink at the *correct* rate | acceptance is bursty |
+| film ran **1.5× fast**, 27.6 ms/frame instead of 41.7 | real A2DP sink | slew cap of 1.5 was the cap, so it ran at the cap |
+| clock stepped **two frames backwards** | real A2DP sink | hand-over from the monotonic clock to the audio clock is a discontinuity |
+| **125 of 240** presented at the right total duration | real A2DP sink | the poll deadline was computed on the *monotonic* schedule while the clock was the *sink's* |
+
+Four fixes, three of which stuck:
+
+1. **Slew-limit the clock** — it may not advance faster than `AUDIO_MAX_SLEW`
+   × real time. The slow direction is unlimited, so audio-is-master survives.
+2. **1.05, not 1.5.** A sink playing at its nominal rate cannot advance faster
+   than real time, so anything above 1.0 is jitter headroom.
+3. **The clock never runs backwards.** Time in a film goes one way.
+4. **Rejected: rate-limiting the feed.** It made the fake sink run at *half*
+   speed — an error in the opposite direction — so it was removed rather than
+   shipped. Two speculative fixes in opposite directions is a sign of not
+   having a model, and the honest move was to stop.
+
+Result: **208 of 240 frames** presented at 9.65 s against 10.00 s expected,
+with audio audible. That is a **14% frame loss that remains unexplained** and
+is recorded here as an open defect rather than rounded off. The likely
+suspects, in order: the 5 ms poll cadence is still coarse against a 41.7 ms
+frame; the loop competes with `pacat` for two cores; and the panel is being
+handed whole 240-row frames where §5.1's row range would cost a third of the
+SPI time.
+
+**What would settle it** is the flash-and-click measurement of §7.3 — it turns
+"the picture looks about right" into a number, and no amount of tracing
+substitutes for it.
+
 ### 7.3 `audio_cmd`, not linked libpulse
 
 The audio sink is a **child process fed over a pipe**, configured as

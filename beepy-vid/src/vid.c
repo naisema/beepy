@@ -203,6 +203,7 @@ typedef struct {
     uint32_t audio_pos;    /* byte offset into the AUDIO section */
     int audio_done;        /* the track is fully fed; the sink is draining */
     double audio_end_t, audio_end_wall;
+    double last_el;        /* the clock never runs backwards */
     unsigned char abuf[8192];
 } player_t;
 
@@ -534,6 +535,9 @@ main(int argc, char **argv)
                 clock = audio_clock(&P.au, P.av_offset, now);
             else
                 clock = now - t0;
+            if (clock < P.last_el)
+                clock = P.last_el;
+            P.last_el = clock;
 
             d = (long)(clock * P.fps);
             if (d < 0)
@@ -640,6 +644,20 @@ main(int argc, char **argv)
         signal(SIGILL, on_fatal);
         signal(SIGABRT, on_fatal);
 
+        /* The sink, on the device path too. This was missing until a listener
+         * pointed out that the film was silent: audio was wired into the
+         * headless loop only, so test-vidsync -- which runs headless by
+         * construction -- passed against a player that had no audio at all on
+         * the panel. A gate that exercises a different loop from the one that
+         * ships is not a gate for the one that ships. */
+        if (!noaudio && P.audio_cmd && P.pack.audio_bytes &&
+            audio_open(&P.au, P.audio_cmd, (int)P.pack.audio_rate,
+                       P.pack.audio_ch, P.pack.audio_bits) != 0) {
+            fb_release(&fb);
+            evdev_close();
+            return 1;
+        }
+
         P.frame = (uint32_t)(start / frame_seconds(&P));
         if (P.frame >= P.pack.nframe)
             P.frame = 0;
@@ -651,11 +669,41 @@ main(int argc, char **argv)
             double now = mono_now();
             uint32_t due;
 
+            /* Hand the sink whatever it will take. In the steady state this
+             * accepts nothing, which IS the back-pressure the clock reads. */
+            if (audio_ok(&P.au) && !P.audio_done && !P.paused) {
+                long got = pack_audio(&P.pack, P.audio_pos, P.abuf,
+                                      sizeof P.abuf);
+                if (got > 0) {
+                    long w = audio_feed(&P.au, P.abuf, (size_t)got);
+                    if (w > 0)
+                        P.audio_pos += (uint32_t)w;
+                } else {
+                    P.audio_done = 1;
+                    P.audio_end_t = audio_clock(&P.au, P.av_offset, now);
+                    P.audio_end_wall = now;
+                }
+            }
+
             if (P.paused || P.ended)
                 due = P.frame;
             else {
-                double el = now - t0;
-                long d = (long)(el * P.fps);
+                double el;
+                long d;
+                /* Audio is master wherever there is audio. */
+                if (P.audio_done)
+                    el = P.audio_end_t + (now - P.audio_end_wall);
+                else if (audio_ok(&P.au) && audio_primed(&P.au))
+                    el = audio_clock(&P.au, P.av_offset, now);
+                else
+                    el = now - t0;
+                /* The hand-over from the monotonic clock to the audio clock is
+                 * a discontinuity, and it was measured stepping the film two
+                 * frames BACKWARDS. Time in a film only goes forwards. */
+                if (el < P.last_el)
+                    el = P.last_el;
+                P.last_el = el;
+                d = (long)(el * P.fps);
                 if (d < 0)
                     d = 0;
                 due = (uint32_t)d;
@@ -711,6 +759,15 @@ main(int argc, char **argv)
                     ms = 0;
                 if (ms > 100)
                     ms = 100;
+                /* That deadline is on the MONOTONIC schedule, and with audio
+                 * the clock is the sink's instead -- so sleeping to it walks
+                 * straight past frame boundaries the audio clock has not
+                 * reached yet, and the loop then finds itself two frames late
+                 * and drops one. Measured: 125 of 240 frames presented, at the
+                 * right total duration. There is no way to ask a pipe when it
+                 * will next accept, so the answer is to sample often. */
+                if (audio_ok(&P.au) && !P.audio_done && ms > 5)
+                    ms = 5;
                 for (int i = 0; i < n; i++) {
                     pfd[i].fd = evdev_fd(i);
                     pfd[i].events = POLLIN;
@@ -733,8 +790,22 @@ main(int argc, char **argv)
                                 if (P.ended)
                                     break;
                                 P.paused = !P.paused;
-                                if (!P.paused)
+                                if (!P.paused) {
                                     t0 = mono_now() - P.frame / P.fps;
+                                    /* Re-prime: the sink still holds audio
+                                     * from before the pause and would play it
+                                     * after the picture moved. */
+                                    if (audio_ok(&P.au)) {
+                                        audio_reprime(&P.au, P.audio_cmd);
+                                        P.audio_pos = (uint32_t)
+                                            (P.frame * frame_seconds(&P) *
+                                             P.pack.audio_rate) *
+                                            P.pack.audio_ch * 2;
+                                        if (P.audio_pos > P.pack.audio_bytes)
+                                            P.audio_pos = P.pack.audio_bytes;
+                                        P.audio_done = 0;
+                                    }
+                                }
                                 last_shown = (uint32_t)-1; /* redraw the band */
                                 break;
                             default:
@@ -746,8 +817,11 @@ main(int argc, char **argv)
             }
         }
 
+        audio_close(&P.au);
         fb_release(&fb);
         evdev_close();
+        if (P.trace)
+            fclose(P.trace);
         pack_close(&P.pack);
         return rc;
     }
