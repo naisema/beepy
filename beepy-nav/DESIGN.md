@@ -464,6 +464,27 @@ prints `NOT IN THIS PACK` and, when the pack dropped anything, how many names it
 cannot show. A rider who searches for a soi that is only signposted in Thai
 gets told the pack cannot see it, rather than concluding it does not exist.
 
+##### An accent is not a shaping problem
+
+The rule above was applied too widely for a long time. `CAFÉ AMAZON` is not
+Thai — it is a Latin name with one accent, and `isascii()` rejected the whole
+string, so the country's commonest coffee chain had **234** searchable branches
+instead of **1 406**, with the nearest reading 18.94 km away when one stood
+3.41 km off. `É` is a **spelling** difference a rider can be expected to type
+past; `ซ` is a shaping problem the panel genuinely cannot draw. Collapsing the
+two threw away names for the wrong reason.
+
+So `mkpack.py` and `pbf2osm.py` NFKD-decompose and strip combining marks
+**before** the ASCII test (`ascii_form()`). `Café` becomes `CAFE`; `ซอย` still has
+no ASCII form and is still dropped and still counted. The nationwide pack
+recovered **865** names by this alone.
+
+**T-ROADS-FOLD** gates it on `tests/roads/fold.json`, four features chosen so each
+leg fails independently: a plain ASCII name, an acute accent, a macron, and Thai.
+The Thai one is the half that matters most — a fold aggressive enough to
+transliterate it would "recover" a name the font cannot draw, which is worse than
+dropping it, so the test asserts it is still *absent* and still counted.
+
 #### 1.4.3 `oneway`, and the 824 m that was a wrong-way route
 
 The previous draft of this section listed "the mockup router ignores `oneway`
@@ -1942,6 +1963,17 @@ reroute (§7.11) or the next thing `F` finds.
 it is the half that makes the toggle assertable rather than merely visible: a
 build where `M` relabelled the strip without re-routing produces one log line
 where three are expected.
+
+**T-MODE-KEY** gates the key rather than the modes — that bike and car return
+*different* routes is already gated by `test_search.c` on `tests/roads/modes.roads`
+(442 m up the motorway against 1 091 m around it). What can go wrong with the
+**key** is drawing `CAR` on the strip while the line on the screen is still the
+bicycle's, so the test presses `M` and byte-compares the frames.
+
+It rides `still.nmea`, and that is what makes the comparison mean anything: each
+press re-routes from where the rider **is**, so on a moving fixture the three
+routes legitimately start three places apart and no two frames can be equal. The
+first version used `asok.nmea` and was measuring the bike rolling forward.
 
 `mockup.py`'s `render_confirm()` and `goldens/nav-confirm.fb` moved with this, and
 that is the sanctioned kind of golden change rather than the forbidden one: the
