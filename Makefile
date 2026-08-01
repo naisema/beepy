@@ -95,7 +95,7 @@ HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h \
                        beepy-nav/src/*.h beepy-vid/src/*.h)
 
 VID_OBJS  = beepy-vid/src/vid.o beepy-vid/src/pack.o beepy-vid/src/codec.o \
-            beepy-vid/src/view_play.o beepy-vid/src/view_pages.o
+            beepy-vid/src/view_play.o beepy-vid/src/view_pages.o beepy-vid/src/audio.o
 VIDLIBS   = -lz
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav beepy-vid/beepy-vid
@@ -277,12 +277,14 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav beepy-vid/beepy-vid \
 		--dump out-vid-library-empty.fb
 	./beepy-vid/beepy-vid --demo --page end  --dump out-vid-end.fb
 	./beepy-vid/beepy-vid --demo --page help --dump out-vid-help.fb
+	./beepy-vid/beepy-vid --demo --page sync --dump out-vid-sync.fb
 	./beepy-vid/beepy-vid --demo --page play --pack $(VIDPACK) --at 12 \
 		--transient "-30S -> 0:04" --dump out-vid-transient.fb
 	cmp goldens/vid-library.fb       out-vid-library.fb
 	cmp goldens/vid-library-empty.fb out-vid-library-empty.fb
 	cmp goldens/vid-end.fb           out-vid-end.fb
 	cmp goldens/vid-help.fb          out-vid-help.fb
+	cmp goldens/vid-sync.fb          out-vid-sync.fb
 	cmp goldens/vid-transient.fb     out-vid-transient.fb
 #	Each of these would pass as a frozen blank if the page drew nothing.
 	! cmp -s goldens/vid-library.fb goldens/vid-library-empty.fb
@@ -401,6 +403,7 @@ endif
 		--dump goldens/vid-library-empty.fb
 	./beepy-vid/beepy-vid --demo --page end  --dump goldens/vid-end.fb
 	./beepy-vid/beepy-vid --demo --page help --dump goldens/vid-help.fb
+	./beepy-vid/beepy-vid --demo --page sync --dump goldens/vid-sync.fb
 	./beepy-vid/beepy-vid --demo --page play --pack $(VIDPACK) --at 12 \
 		--transient "-30S -> 0:04" --dump goldens/vid-transient.fb
 	@echo "goldens regenerated - review the diff before committing"
@@ -1309,7 +1312,7 @@ HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
 
 HOST_VID = host/vid-vid.o host/vid-pack.o host/vid-codec.o \
-           host/vid-view_play.o host/vid-view_pages.o \
+           host/vid-view_play.o host/vid-view_pages.o host/vid-audio.o \
            host/canvas.o host/font.o host/cover.o host/dump.o host/expand.o
 
 host/beepy-vid: $(HOST_VID)
@@ -1575,8 +1578,13 @@ test-vidpace: host/beepy-vid $(VIDPACK)
 	@echo "--- T-VID-PACE: an unstalled run drops nothing and holds cadence"
 	./host/beepy-vid $(VIDPACK) --headless --fps 8 \
 		--trace-frames out-vid-pace.tsv
+#	0.100 against a 125 ms period, not 0.112. The sprint this must catch is
+#	4 ms, so the margin is 25x either way, but the tighter threshold flaked
+#	once in about ten runs on a loaded machine -- and a gate that fails
+#	occasionally for no reason teaches people to re-run it, which is worse
+#	than not having it.
 	python3 tools/assert_trace.py out-vid-pace.tsv --finite \
-		--dropped 0 --min-frame-gap 0.112 --max-frame-gap 0.200
+		--dropped 0 --min-frame-gap 0.100 --max-frame-gap 0.200
 	@echo "--- T-VID-STALL: 500 ms at 8 fps drops exactly 3, by arithmetic"
 #	A stall of D seconds at F fps consumes floor(D*F) frame periods, one of
 #	which belongs to the frame already on screen: 0.5 * 8 - 1 = 3. Stable
@@ -1585,7 +1593,7 @@ test-vidpace: host/beepy-vid $(VIDPACK)
 	./host/beepy-vid $(VIDPACK) --headless --fps 8 --stall-at 4:500 \
 		--trace-frames out-vid-stall.tsv
 	python3 tools/assert_trace.py out-vid-stall.tsv \
-		--dropped 3 --min-frame-gap 0.112 --max-frame-gap 0.70
+		--dropped 3 --min-frame-gap 0.100 --max-frame-gap 0.70
 	@echo "--- T-VID-CONSERVED: every frame is either shown or counted dropped"
 #	The machine-independent half of the same claim, and the one that would
 #	survive a port: presented + dropped must equal the frame count exactly.
@@ -1603,10 +1611,58 @@ test-vidpace: host/beepy-vid $(VIDPACK)
 	python3 tools/mkpacefix.py --sprint out-vid-sprint.tsv
 	python3 tools/assert_trace.py out-vid-sprint.tsv --finite \
 		--dropped 0 --max-frame-gap 0.70
-	! python3 tools/assert_trace.py out-vid-sprint.tsv --min-frame-gap 0.112 \
+	! python3 tools/assert_trace.py out-vid-sprint.tsv --min-frame-gap 0.100 \
 		> /dev/null 2>&1
 	rm -f out-vid-pace.tsv out-vid-stall.tsv out-vid-sprint.tsv
 	@echo "test-vidpace: PASS"
+
+# Mac lane. A/V sync against a FAKE SINK, so the gate never touches a speaker
+# and never needs one to be paired: audio_cmd is a command precisely so a test
+# can substitute one (audio.h, and config.h:80-83 for the original argument).
+#
+# The fixture is generated, not committed: a clock test needs audio LONGER
+# than the pipe buffer plus the sink buffer, or acceptance never blocks and
+# the test measures nothing. 240 frames is 10 s and 960 KB.
+VIDLONG = out-vid-long.vid
+
+$(VIDLONG): host/beepy-vid
+	python3 tools/mkvidfix.py --gray8 out-vid-long.gray8 \
+		--pcm out-vid-long.s16 --frames 240 --quiet
+	python3 tools/mkvid.py --gray8 out-vid-long.gray8 --size 400x225 \
+		--pcm out-vid-long.s16 -o $@ --fps 24 --gop 24 --quiet
+
+test-vidsync: host/beepy-vid $(VIDLONG)
+	@echo "--- T-VID-AVCLOCK: video follows the sink, in both directions"
+#	The clip is 10.00 s. A player scheduling from CLOCK_MONOTONIC takes 10 s
+#	whatever the sink does; a player slaved to the audio takes 1/factor times
+#	as long. That ratio is the entire assertion, and it is a ratio, so it does
+#	not depend on how fast the machine is.
+	@set -e; \
+	 t1=$$(./host/beepy-vid $(VIDLONG) --headless --trace-frames out-vid-s1.tsv \
+	   --audio-cmd "python3 tools/fakesink.py --rate 96000 --factor 1.0 --buffer 8000" \
+	   >/dev/null 2>&1; tail -1 out-vid-s1.tsv | cut -f1); \
+	 t2=$$(./host/beepy-vid $(VIDLONG) --headless --trace-frames out-vid-s2.tsv \
+	   --audio-cmd "python3 tools/fakesink.py --rate 96000 --factor 0.8 --buffer 8000" \
+	   >/dev/null 2>&1; tail -1 out-vid-s2.tsv | cut -f1); \
+	 t3=$$(./host/beepy-vid $(VIDLONG) --headless --no-audio \
+	   --trace-frames out-vid-s3.tsv >/dev/null 2>&1; \
+	   tail -1 out-vid-s3.tsv | cut -f1); \
+	 echo "    true rate $$t1 s   20% slow $$t2 s   no audio $$t3 s"; \
+	 python3 -c "import sys; a,b,c=float('$$t1'),float('$$t2'),float('$$t3'); \
+	   ok = b > a*1.15 and abs(c-10.0) < 0.5 and abs(a-10.0) < 1.5; \
+	   print('  PASS  a 20%% slow sink stretches playback by %.0f%%' % (100*(b/a-1)) if ok \
+	     else '  FAIL  slow=%.2f true=%.2f noaudio=%.2f' % (b,a,c)); \
+	   sys.exit(0 if ok else 1)"
+	@echo "--- T-VID-AVCONSERVED: nothing is lost when the clock is audio"
+	awk -F'\t' 'BEGIN{p=0} /^#/{next} $$4==1{p++} END{d=$$6+0; \
+		if (p+d != 240) { printf "FAIL presented %d + dropped %d != 240\n", p, d; \
+		exit 1 } printf "  PASS  presented %d + dropped %d == 240\n", p, d }' \
+		out-vid-s2.tsv
+	@echo "--- T-VID-SILENT: --no-audio is the monotonic clock, unstretched"
+	python3 tools/assert_trace.py out-vid-s3.tsv --finite --dropped 0
+	rm -f out-vid-s1.tsv out-vid-s2.tsv out-vid-s3.tsv \
+		out-vid-long.gray8 out-vid-long.s16 $(VIDLONG)
+	@echo "test-vidsync: PASS"
 
 # Deliberate, like tiles: and it regenerates a committed file.
 vidpack: $(VIDGRAY) $(VIDPCM)
@@ -1839,6 +1895,6 @@ clean:
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
-.PHONY: all check goldens host test-unit test-replay test-frames test-find test-panel test-vid test-vidpace vidpack \
+.PHONY: all check goldens host test-unit test-replay test-frames test-find test-panel test-vid test-vidpace test-vidsync vidpack \
 	host-replay tables design-gate test-tiles tiles test-roads roads \
 	bench sync clean netfix

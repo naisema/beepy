@@ -48,6 +48,7 @@
 #include "libbeepyfb/dump.h"
 #include "libbeepyfb/tick.h"
 
+#include "audio.h"
 #include "pack.h"
 #include "view_pages.h"
 #include "view_play.h"
@@ -75,7 +76,8 @@ static const char USAGE[] =
 "       beepy-vid FILM.vid --headless [--trace-frames T] [--stall-at N:MS]\n"
 "       beepy-vid --demo --page play [--pack FILE | --no-pack] [--at N]\n"
 "                 [--paused] [--transient TEXT] --dump FILE\n"
-"       beepy-vid --demo --page library|library-empty|end|help --dump FILE\n"
+"       beepy-vid --demo --page library|library-empty|end|help|sync\n"
+"                 --dump FILE\n"
 "\n"
 "  --demo        render one frame and dump it; no panel, no keyboard\n"
 "  --at N        which frame the demo renders\n"
@@ -86,7 +88,13 @@ static const char USAGE[] =
 "  --headless    schedule and decode, present nothing; runs to the end\n"
 "  --trace-frames T   one TSV row per scheduling decision\n"
 "  --stall-at N:MS    inject a stall before frame N, so the drop count is\n"
-"                arithmetic rather than a measurement of the machine\n";
+"                arithmetic rather than a measurement of the machine\n"
+"  --audio-cmd CMD    sink to feed; %r and %c become rate and channels.\n"
+"                A command and not a linked library, so a test can\n"
+"                substitute a fake sink and the gate never touches a\n"
+"                speaker (see audio.h)\n"
+"  --no-audio    silent, and the clock falls back to CLOCK_MONOTONIC\n"
+"  --av-offset MS     A2DP lag; positive delays the video to match\n";
 
 /* ------------------------------------------------------------- signals */
 
@@ -187,6 +195,15 @@ typedef struct {
     int stall_at;          /* frame index, -1 for none */
     double stall_s;
     const char *transient;
+
+    /* audio */
+    audio_t au;
+    const char *audio_cmd;
+    double av_offset;      /* seconds; A2DP lag, positive delays the video */
+    uint32_t audio_pos;    /* byte offset into the AUDIO section */
+    int audio_done;        /* the track is fully fed; the sink is draining */
+    double audio_end_t, audio_end_wall;
+    unsigned char abuf[8192];
 } player_t;
 
 /* One row per scheduling decision, whether or not a frame was shown.
@@ -273,11 +290,16 @@ main(int argc, char **argv)
     const char *path = NULL, *dump = NULL, *page = "play";
     int demo = 0, nopack = 0, at = 0, paused = 0, headless = 0;
     const char *transient = NULL;
+    int noaudio = 0;
     double start = 0, fps_override = 0;
     const char *tracepath = NULL;
 
     memset(&P, 0, sizeof P);
     P.stall_at = -1;
+    /* Not zero. audio_ok() tests fd >= 0, and a zeroed struct claims fd 0 --
+     * standard input -- so a player started with --no-audio would feed the
+     * sink through its own stdin and report that the sink went away. */
+    P.au.fd = -1;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -303,6 +325,12 @@ main(int argc, char **argv)
             start = atof(argv[++i]);
         else if (!strcmp(a, "--headless"))
             headless = 1;
+        else if (!strcmp(a, "--audio-cmd") && i + 1 < argc)
+            P.audio_cmd = argv[++i];
+        else if (!strcmp(a, "--no-audio"))
+            P.audio_cmd = NULL, noaudio = 1;
+        else if (!strcmp(a, "--av-offset") && i + 1 < argc)
+            P.av_offset = atof(argv[++i]) / 1000.0;
         else if (!strcmp(a, "--trace-frames") && i + 1 < argc)
             tracepath = argv[++i];
         else if (!strcmp(a, "--stall-at") && i + 1 < argc) {
@@ -347,6 +375,10 @@ main(int argc, char **argv)
             view_end(cv, "THE RED BALLOON", 2052.0, 1, 5);
         } else if (!strcmp(page, "help")) {
             view_help(cv);
+        } else if (!strcmp(page, "sync")) {
+            /* An explicit fixture again: a real sink name and a real reported
+             * latency would make the golden a photograph of one speaker. */
+            view_sync(cv, "SPOTLESS D1", 210, 42, 1);
         } else {
             fprintf(stderr, "beepy-vid: unknown page %s\n", page);
             return 2;
@@ -449,12 +481,61 @@ main(int argc, char **argv)
     if (headless) {
         double t0 = mono_now() - P.frame / P.fps;
         uint32_t last_shown = (uint32_t)-1;
+
+        if (!noaudio && P.audio_cmd && P.pack.audio_bytes &&
+            audio_open(&P.au, P.audio_cmd, (int)P.pack.audio_rate,
+                       P.pack.audio_ch, P.pack.audio_bits) != 0)
+            return 1;
+
         for (;;) {
-            double now = mono_now();
-            long d = (long)((now - t0) * P.fps);
+            double now = mono_now(), clock;
+            long d;
             uint32_t due;
             int written = 0;
 
+            /* Feed whatever the sink will take. In the steady state this
+             * accepts nothing at all, which is the back-pressure the clock is
+             * read from -- not a failure. */
+            if (audio_ok(&P.au) && !P.audio_done) {
+                long got = pack_audio(&P.pack, P.audio_pos, P.abuf,
+                                      sizeof P.abuf);
+                if (got > 0) {
+                    long w = audio_feed(&P.au, P.abuf, (size_t)got);
+                    if (w < 0) {
+                        fprintf(stderr, "beepy-vid: the audio sink went away\n");
+                        return 1;
+                    }
+                    P.audio_pos += (uint32_t)w;
+                } else {
+                    /* The track is fully handed over. From here the sink is
+                     * draining what it already holds and accepts nothing more,
+                     * so bytes-accepted STOPS ADVANCING -- and a clock derived
+                     * from it stops with it. Freezing the picture on the last
+                     * frame while the sink still has 150-250 ms to play is
+                     * wrong, and looping on a clock that will never reach the
+                     * end is worse: it hangs. Latch the audio position and run
+                     * the remainder on the monotonic clock, which is exactly
+                     * as accurate as the sink's remaining buffer is long. */
+                    P.audio_done = 1;
+                    P.audio_end_t = audio_time(&P.au, P.av_offset);
+                    P.audio_end_wall = now;
+                }
+            }
+
+            /* AUDIO IS MASTER. Video is scheduled from the sink's own
+             * consumption, never from a free-running timer: the two drift by
+             * seconds over a feature film, and the drift is the failure that
+             * ships because a 30-second test cannot see it. With no audio the
+             * fallback is the monotonic clock and the arithmetic below is
+             * unchanged. */
+            if (P.audio_done)
+                clock = P.audio_end_t + (now - P.audio_end_wall);
+            else if (audio_ok(&P.au) && audio_primed(&P.au))
+                clock = audio_clock(&P.au, P.av_offset, now);
+            else
+                clock = now - t0;
+
+            d = (long)(clock * P.fps);
             if (d < 0)
                 d = 0;
             if ((uint32_t)d >= P.pack.nframe) {
@@ -492,8 +573,14 @@ main(int argc, char **argv)
                 sleep_s(P.stall_s);
                 P.stall_at = -1;
             }
-            sleep_until(t0 + (due + 1) / P.fps);
+            if (audio_ok(&P.au) && !P.audio_done)
+                sleep_s(0.002); /* the sink sets the pace; just do not spin */
+            else if (P.audio_done)
+                sleep_until(P.audio_end_wall + ((due + 1) / P.fps - P.audio_end_t));
+            else
+                sleep_until(t0 + (due + 1) / P.fps);
         }
+        audio_close(&P.au);
         if (P.trace)
             fclose(P.trace);
         pack_close(&P.pack);

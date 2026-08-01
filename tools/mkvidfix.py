@@ -22,12 +22,13 @@ import math
 import struct
 
 W, H = 400, 225          # the 16:9 image rect, before letterboxing to 400x240
-NFRAME = 24
+NFRAME = 24              # --frames overrides, for fixtures that need length
 RATE, CHANNELS = 24000, 2
-# A quarter second: enough for the reader's audio section to be exercised and
-# for pack_audio() to be gated, short enough that the committed .vid stays
-# small. `make sync` rsyncs the whole tree on every device run.
-AUDIO_SECONDS = 0.25
+# Exactly the video's own length: 24 frames at 24 fps is 1.0 s. A fixture
+# whose audio is shorter than its video cannot exercise the A/V clock, because
+# the sink runs dry partway and the clock stops being the thing under test.
+# 96000 bytes, which keeps the committed .vid around 170 KB.
+AUDIO_SECONDS = 1.0
 
 
 def lcg(seed):
@@ -53,10 +54,10 @@ def background():
     return rows
 
 
-def frames():
+def frames(n=None):
     bg = background()
     out = []
-    for k in range(NFRAME):
+    for k in range(n or NFRAME):
         # frame 13 repeats frame 12 exactly, so the packer must emit size == 0
         src = 12 if k == 13 else k
         flash = (src % 8) == 7          # a hard cut every 8 frames
@@ -80,8 +81,8 @@ def frames():
     return out
 
 
-def audio():
-    n = int(RATE * AUDIO_SECONDS)
+def audio(seconds=None):
+    n = int(RATE * (seconds if seconds is not None else AUDIO_SECONDS))
     out = bytearray()
     for i in range(n):
         t = i / RATE
@@ -94,21 +95,27 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gray8", required=True)
     ap.add_argument("--pcm")
+    ap.add_argument("--frames", type=int,
+                    help="how many frames; the audio length follows at 24 fps. "
+                         "A clock test needs audio LONGER than the pipe buffer "
+                         "plus the sink buffer, or back-pressure never governs "
+                         "and the test measures nothing.")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args()
 
-    fr = frames()
+    fr = frames(a.frames)
     with open(a.gray8, "wb") as f:
         for x in fr:
             f.write(x)
     if a.pcm:
         with open(a.pcm, "wb") as f:
-            f.write(audio())
+            f.write(audio(len(fr) / 24.0 if a.frames else None))
     if not a.quiet:
         print("mkvidfix: %d frames %dx%d -> %s" % (len(fr), W, H, a.gray8))
         if a.pcm:
+            secs = len(fr) / 24.0 if a.frames else AUDIO_SECONDS
             print("mkvidfix: %.1f s %d Hz %d ch -> %s"
-                  % (AUDIO_SECONDS, RATE, CHANNELS, a.pcm))
+                  % (secs, RATE, CHANNELS, a.pcm))
 
 
 if __name__ == "__main__":

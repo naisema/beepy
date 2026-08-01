@@ -26,6 +26,8 @@ out-*.fb
 out-vid-*.vid
 out-vid-*.planes
 out-vid-*.tsv
+out-vid-long.gray8
+out-vid-long.s16
 out-test-pack.vid
 /beepy-nav/tests/test_map
 /beepy-nav/tests/test_gpx

@@ -49,6 +49,24 @@ void view_library(canvas_t *c, const lib_t *l);
  * may not have been resumed. */
 void view_end(canvas_t *c, const char *title, double seconds, int idx, int of);
 
+/* The calibration screen. A2DP always makes audio LAG -- the sink buffers
+ * 150-250 ms before playing -- and that is the fortunate direction, because
+ * tolerance is asymmetric: audio arriving late is what distance does in the
+ * physical world. So the correction delays the VIDEO, and negative offsets
+ * are refused rather than offered.
+ *
+ * The instrument is a flash and a click: once a second a disc fills for
+ * exactly one frame while a click is queued at the same presentation time,
+ * and the viewer nudges the offset until they coincide. On one bit a one-frame
+ * all-or-nothing change is the sharpest temporal event the panel can make.
+ *
+ * reported is what the sink claims, shown so a viewer can see whether their
+ * trim is a small correction or a large one; it is a lower bound and not the
+ * answer (audio.h explains why).
+ */
+void view_sync(canvas_t *c, const char *sink, int offset_ms, int reported_ms,
+               int flash);
+
 /* The whole keymap. beepy-nav gets away with a three-key hint row; this app
  * has sixteen bindings and no spare row over video. */
 void view_help(canvas_t *c);

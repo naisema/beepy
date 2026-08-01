@@ -117,6 +117,35 @@ view_end(canvas_t *c, const char *title, double seconds, int idx, int of)
 }
 
 void
+view_sync(canvas_t *c, const char *sink, int offset_ms, int reported_ms,
+          int flash)
+{
+    char buf[80];
+
+    canvas_clear(c, PAPER);
+    strip(c, 0, LIB_TITLE_H, "AUDIO SYNC", sink, 2);
+
+    /* A localised disc rather than a full-screen invert, so the number stays
+     * readable while the calibration runs. */
+    if (flash)
+        disc(c, SCR_W / 2, 82, 30, INK);
+    else
+        circle(c, SCR_W / 2, 82, 30, INK);
+
+    snprintf(buf, sizeof buf, "%d MS", offset_ms);
+    draw_ctext(c, SCR_W / 2, 124, buf, 3, INK);
+    if (reported_ms >= 0)
+        snprintf(buf, sizeof buf, "SINK REPORTS %d MS", reported_ms);
+    else
+        snprintf(buf, sizeof buf, "SINK REPORTS NOTHING");
+    draw_ctext(c, SCR_W / 2, 158, buf, 2, INK);
+    draw_ctext(c, SCR_W / 2, 178, "SAVED FOR THIS DEVICE", 2, INK);
+
+    strip(c, SCR_H - LIB_FOOT_H, LIB_FOOT_H,
+          "ARROWS TRIM  ENTER SAVE  Q BACK", NULL, 2);
+}
+
+void
 view_help(canvas_t *c)
 {
     static const char *const K[][2] = {
