@@ -16,6 +16,7 @@ out-*.fb
 /beepy-nav/beepy-nav
 /beepy-nav/fbplay
 /libbeepyfb/tests/test_expand
+/libbeepyfb/tests/test_present_rows
 /beepy-nav/tests/test_map
 /beepy-nav/tests/test_gpx
 /beepy-nav/tests/test_route

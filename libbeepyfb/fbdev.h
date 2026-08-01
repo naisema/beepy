@@ -26,6 +26,9 @@ int fb_open(fb_t *f, const char *path);
 void fb_take(fb_t *f);
 void fb_release(fb_t *f);
 int fb_present(fb_t *f, const canvas_t *c);
+/* Rows y0..y1 only -- fewer lines is proportionally less SPI time. Clamped and
+ * widened by row_span_clamp(); returns 0 when the range is empty. */
+int fb_present_rows(fb_t *f, const canvas_t *c, int y0, int y1);
 int fb_dump(const canvas_t *c, const char *path);
 int write_all(int fd, const void *buf, size_t n);
 

@@ -105,6 +105,51 @@ run_dump(const canvas_t *c)
     return f;
 }
 
+/* The pre-M1 implementation, kept here as the reference the lookup table must
+ * reproduce. Written with explicit bytes rather than a uint32 store so that
+ * the reference itself is endianness-neutral; the original used a uint32 and
+ * that difference is the latent bug the table also fixed. */
+static void
+ref_expand(const canvas_t *c, unsigned char *frame, size_t line_len, int h, int w)
+{
+    for (int y = 0; y < h; y++) {
+        unsigned char *row = frame + (size_t)y * line_len;
+        const unsigned char *src = &c->bits[(size_t)y * c->stride];
+        for (int x = 0; x < w; x++) {
+            int ink = src[x / 8] & (0x80u >> (x % 8));
+            row[4 * x] = row[4 * x + 1] = row[4 * x + 2] = ink ? 0x00 : 0xFF;
+            row[4 * x + 3] = 0xFF;
+        }
+    }
+}
+
+/* The table must reproduce the loop it replaced, byte for byte. Without this
+ * the only guard on the optimisation is canvas_dump(), and a table that was
+ * wrong in the same way as a rewritten canvas_dump() would pass. */
+static void
+same_as_ref(const canvas_t *c, const char *what)
+{
+    unsigned char *a = run_expand(c);
+    unsigned char *b = malloc(FRAME_SZ);
+    if (!b) {
+        printf("FAIL out of memory\n");
+        exit(1);
+    }
+    memset(b, 0x5A, FRAME_SZ);
+    ref_expand(c, b, LINE_LEN, SCR_H, SCR_W);
+    for (size_t i = 0; i < FRAME_SZ; i++) {
+        if (a[i] != b[i]) {
+            size_t y = i / LINE_LEN, x = (i % LINE_LEN) / 4;
+            printf("FAIL %s (LUT vs reference): pixel (%zu,%zu) byte %zu: "
+                   "lut %02x, reference %02x\n", what, x, y, i % 4, a[i], b[i]);
+            failures++;
+            break;
+        }
+    }
+    free(a);
+    free(b);
+}
+
 /* Compare, and on a mismatch say WHICH pixel -- a byte offset alone is not
  * actionable when the frame is 384000 bytes. */
 static void
@@ -124,6 +169,9 @@ same(const canvas_t *c, const char *what)
     }
     free(a);
     free(b);
+    /* Every pattern is checked against BOTH the golden writer and the loop the
+     * lookup table replaced, so neither can drift alone. */
+    same_as_ref(c, what);
 }
 
 /* ------------------------------------------------------------- patterns */
@@ -245,6 +293,73 @@ main(void)
         free(fb);
         free(a);
         free(b);
+    }
+
+    /* 7. expand_rows() must touch exactly the rows asked for and no others.
+     *    The poison byte is what proves the "no others" half -- without it a
+     *    row range that quietly expanded to the whole frame would pass. */
+    {
+        canvas_t *full = fresh(INK);
+        unsigned char *f2 = malloc(FRAME_SZ);
+        const int Y0 = 100, Y1 = 139; /* the 40-row transient band of DESIGN 6.2 */
+        int clean = 1;
+        if (!f2) {
+            printf("FAIL out of memory\n");
+            exit(1);
+        }
+        memset(f2, 0xA5, FRAME_SZ);
+        expand_rows(full, f2, LINE_LEN, Y0, Y1, SCR_W);
+        for (int y = 0; y < SCR_H && clean; y++) {
+            for (size_t b = 0; b < LINE_LEN; b++) {
+                unsigned char got = f2[(size_t)y * LINE_LEN + b];
+                int inside = (y >= Y0 && y <= Y1);
+                unsigned char want = inside ? ((b % 4) == 3 ? 0xFF : 0x00) : 0xA5;
+                if (got != want) {
+                    printf("FAIL expand_rows row %d byte %zu: got %02x want %02x "
+                           "(%s the range)\n", y, b, got, want,
+                           inside ? "inside" : "outside");
+                    failures++;
+                    clean = 0;
+                    break;
+                }
+            }
+        }
+        /* And the same rows must match a full expand of the same canvas. */
+        {
+            unsigned char *fw = run_expand(full);
+            check(memcmp(fw + (size_t)Y0 * LINE_LEN, f2 + (size_t)Y0 * LINE_LEN,
+                         (size_t)(Y1 - Y0 + 1) * LINE_LEN) == 0,
+                  "expand_rows band equals the same band of a full expand");
+            free(fw);
+        }
+        free(f2);
+        free(full);
+    }
+
+    /* 8. row_span_clamp(): the single-row rule is not tidiness. A write of
+     *    exactly one line length yields a zero-height damage rect and the
+     *    driver performs no update at all, so a one-row present would be
+     *    silently dropped -- measured, beepy-vid/DESIGN.md 0.3. */
+    {
+        int y0, y1;
+        y0 = 10; y1 = 20;
+        check(row_span_clamp(240, &y0, &y1) == 1 && y0 == 10 && y1 == 20,
+              "clamp leaves an ordinary range alone");
+        y0 = 50; y1 = 50;
+        check(row_span_clamp(240, &y0, &y1) == 1 && y0 == 50 && y1 == 51,
+              "clamp widens a single row DOWNWARDS, keeping the asked-for row first");
+        y0 = 239; y1 = 239;
+        check(row_span_clamp(240, &y0, &y1) == 1 && y0 == 238 && y1 == 239,
+              "clamp widens the LAST row downwards, not off the panel");
+        y0 = -5; y1 = 300;
+        check(row_span_clamp(240, &y0, &y1) == 1 && y0 == 0 && y1 == 239,
+              "clamp trims an out-of-range span to the panel");
+        y0 = 100; y1 = 40;
+        check(row_span_clamp(240, &y0, &y1) == 0,
+              "an inverted range presents nothing");
+        y0 = 0; y1 = 0;
+        check(row_span_clamp(1, &y0, &y1) == 0,
+              "a one-row panel cannot be presented at all");
     }
 
     remove(REF_PATH);

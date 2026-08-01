@@ -117,12 +117,50 @@ int write_all(int fd, const void *buf, size_t n)
     return 0;
 }
 
+static int pwrite_all(int fd, const void *buf, size_t n, off_t off)
+{
+    const char *p = buf;
+    while (n) {
+        ssize_t w = pwrite(fd, p, n, off);
+        if (w < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        p += w;
+        n -= (size_t)w;
+        off += w;
+    }
+    return 0;
+}
+
+/* Present rows y0..y1 only.
+ *
+ * The panel is line addressed and the driver's damage rect passes the row
+ * range through untouched, so a shorter write is a proportionally shorter SPI
+ * transfer -- the whole reason this exists. Measured: 420000 B/s, i.e.
+ * panel_fps(rows) = 420000 / (52*rows + 2), so 240 rows is 33.1 fps and 120
+ * rows is 68 (beepy-vid/DESIGN.md 0.1).
+ *
+ * row_span_clamp() widens a single row to two, because a write of exactly one
+ * line length produces no panel update whatsoever.
+ */
+int fb_present_rows(fb_t *f, const canvas_t *c, int y0, int y1)
+{
+    off_t off;
+    size_t n;
+
+    if (!row_span_clamp(f->h, &y0, &y1))
+        return 0; /* nothing to present is not a failure */
+    expand_rows(c, f->frame, f->line_len, y0, y1, f->w);
+    off = (off_t)y0 * (off_t)f->line_len;
+    n = (size_t)(y1 - y0 + 1) * f->line_len;
+    return pwrite_all(f->fd, f->frame + off, n, off);
+}
+
 int fb_present(fb_t *f, const canvas_t *c)
 {
-    expand(c, f->frame, f->line_len, f->h, f->w);
-    if (lseek(f->fd, 0, SEEK_SET) < 0)
-        return -1;
-    return write_all(f->fd, f->frame, f->frame_sz);
+    return fb_present_rows(f, c, 0, f->h - 1);
 }
 
 /* Same frame, to a file -- lets rendering be verified without the panel. */

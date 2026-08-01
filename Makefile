@@ -1263,6 +1263,30 @@ test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
 #	server which accepts a connection and then says nothing (DESIGN.md 7.8).
 	./beepy-nav/tests/test_netfetch
 
+# T-PRESENT-ROWS. Device only: it opens /dev/fb1, SIGSTOPs fbterm and reads the
+# framebuffer back, so it cannot run in the Mac lane and is the ONLY thing that
+# can catch a wrong pwrite() offset in fb_present_rows() -- every golden goes
+# through canvas_dump(), so a band painted in the wrong place is invisible to
+# `check`.
+#
+# Deliberately NOT a prerequisite of `check` yet. It takes the panel and must
+# therefore run last and self-trap (beepy-vid/PLAN.md M4, and CLAUDE.md's rule
+# that a missed SIGCONT leaves the device looking dead); wedging the console at
+# minute three of a 25-minute gate costs the whole run. Run it by hand:
+#
+#     make test-panel        # on the device
+#
+test-panel: libbeepyfb/tests/test_present_rows
+	@trap 'kill -CONT $$(pgrep -x fbterm) 2>/dev/null; true' EXIT INT TERM HUP; \
+	./libbeepyfb/tests/test_present_rows
+
+libbeepyfb/tests/test_present_rows: libbeepyfb/tests/test_present_rows.c \
+                                    libbeepyfb/expand.c libbeepyfb/canvas.c \
+                                    libbeepyfb/fbdev.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -o $@ \
+		libbeepyfb/tests/test_present_rows.c libbeepyfb/expand.c \
+		libbeepyfb/canvas.c libbeepyfb/fbdev.c $(LDLIBS)
+
 # The panel's XRGB writers. Links canvas.c, dump.c and expand.c and nothing
 # else -- expand.c was split out of fbdev.c precisely so this runs in the Mac
 # lane, where fbdev.c (linux/fb.h) cannot be built.
@@ -1601,6 +1625,6 @@ clean:
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
-.PHONY: all check goldens host test-unit test-replay test-frames test-find \
+.PHONY: all check goldens host test-unit test-replay test-frames test-find test-panel \
 	host-replay tables design-gate test-tiles tiles test-roads roads \
 	bench sync clean netfix

@@ -29,4 +29,27 @@
  */
 void expand(const canvas_t *c, unsigned char *frame, size_t line_len, int h, int w);
 
+/* Rows y0..y1 inclusive only; every other row of frame is left untouched.
+ *
+ * This is what makes a partial present worth doing: the Sharp panel is line
+ * addressed, sharp_memory_fb_dirty() passes the row range through untouched,
+ * and a shorter write really is a shorter SPI transfer -- measured at
+ * 420000 B/s, so panel_fps(rows) = 420000 / (52*rows + 2)
+ * (beepy-vid/DESIGN.md 0.1, 0.3).
+ */
+void expand_rows(const canvas_t *c, unsigned char *frame, size_t line_len,
+                 int y0, int y1, int w);
+
+/* Clamp the range at y0 and y1 to 0..h-1, and widen a single row to two.
+ *
+ * The widening is not tidiness: a write of exactly one line length yields a
+ * zero-height damage rect and the driver performs NO panel update at all
+ * (measured, beepy-vid/DESIGN.md 0.3). A one-row present would therefore be
+ * silently dropped, which is far worse than presenting one row too many.
+ *
+ * Returns 1 if there is something to present, 0 if the range is empty.
+ * Lives here rather than in fbdev.c so it can be tested on the Mac.
+ */
+int row_span_clamp(int h, int *y0, int *y1);
+
 #endif /* BEEPYFB_EXPAND_H */
