@@ -266,14 +266,18 @@ def run_ffmpeg(path, out_gray, out_pcm, fps, rate, ch, ss, dur):
     if ss:
         cmd += ["-ss", str(ss)]
     cmd += ["-i", path]
-    if dur:
-        cmd += ["-t", str(dur)]
-    cmd += ["-map", "0:v", "-vf",
-            "scale=%d:%d:flags=area:sws_dither=none,format=gray" % (w, h),
-            "-r", fps, "-pix_fmt", "gray", "-f", "rawvideo", "-threads", "1",
-            out_gray]
-    cmd += ["-map", "0:a?", "-af", "aresample=%d" % rate, "-ac", str(ch),
-            "-ar", str(rate), "-sample_fmt", "s16", "-f", "s16le", out_pcm]
+    # -t belongs in EACH output's option group. Placed once after -i it limits
+    # only the first output, which produced a 30-second video with a
+    # 156-second soundtrack -- the pack was ten times larger than it needed to
+    # be and the audio outlived the picture by two minutes.
+    lim = ["-t", str(dur)] if dur else []
+    cmd += lim + ["-map", "0:v", "-vf",
+                  "scale=%d:%d:flags=area:sws_dither=none,format=gray" % (w, h),
+                  "-r", fps, "-pix_fmt", "gray", "-f", "rawvideo",
+                  "-threads", "1", out_gray]
+    cmd += lim + ["-map", "0:a?", "-af", "aresample=%d" % rate, "-ac", str(ch),
+                  "-ar", str(rate), "-sample_fmt", "s16", "-f", "s16le",
+                  out_pcm]
     subprocess.run(cmd, check=True)
     return w, h, x0, y0
 
