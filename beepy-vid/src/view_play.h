@@ -31,6 +31,22 @@
 #define BAND_Y0 STAGE_H
 #define BAND_H (SCR_H - BAND_Y0) /* 15 */
 
+/* The transient grows UPWARD from the band into the bottom 40 stage rows, so
+ * band and transient read as one thing swelling rather than as a second
+ * object appearing. Scale 3, because it answers "what did I just press" from
+ * across the room, where 18x24 makes a word a shape rather than a string.
+ * 40 of 225 rows is 17.8% of the stage, for 2.5 s. */
+#define TRANSIENT_H 40
+#define TRANSIENT_Y0 (BAND_Y0 - TRANSIENT_H)
+
+/* The paused panel is free in a way the transient is not: a paused frame
+ * conveys no motion, so covering 28% of it costs nothing. That is what
+ * removes a mode -- an earlier draft had a separate pinned-OSD state, and
+ * pausing already produces exactly the condition where a large persistent
+ * panel is free. 1+3+16+3+12+3+16+2+8 = 64, closing exactly. */
+#define PAUSED_H 64
+#define PAUSED_Y0 (BAND_Y0 - PAUSED_H)
+
 typedef struct {
     const char *title;
     double t, total; /* seconds */
@@ -38,6 +54,7 @@ typedef struct {
     int ended;
     int waiting; /* starved: the audio clock has nothing to give */
     int nopack;  /* no pack open -- say so rather than show a blank stage */
+    const char *transient; /* NULL, or scale-3 text over the bottom 40 rows */
 } osd_t;
 
 /* Draw the band over rows BAND_Y0..239. Leaves the stage untouched. */

@@ -95,7 +95,7 @@ HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h \
                        beepy-nav/src/*.h beepy-vid/src/*.h)
 
 VID_OBJS  = beepy-vid/src/vid.o beepy-vid/src/pack.o beepy-vid/src/codec.o \
-            beepy-vid/src/view_play.o
+            beepy-vid/src/view_play.o beepy-vid/src/view_pages.o
 VIDLIBS   = -lz
 
 all: gps-monitor/gps-monitor beepy-nav/beepy-nav beepy-vid/beepy-vid
@@ -269,6 +269,26 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav beepy-vid/beepy-vid \
 		--dump out-vid-badpack.fb
 	cmp out-vid-nopack.fb out-vid-badpack.fb
 	! cmp -s out-vid-play.fb out-vid-nopack.fb
+#	The pages that are not the film. --page library uses a FIXTURE compiled
+#	into the binary, never a directory scan: a page that listed ~/videos
+#	would photograph one device and move whenever a file was added there.
+	./beepy-vid/beepy-vid --demo --page library --dump out-vid-library.fb
+	./beepy-vid/beepy-vid --demo --page library-empty \
+		--dump out-vid-library-empty.fb
+	./beepy-vid/beepy-vid --demo --page end  --dump out-vid-end.fb
+	./beepy-vid/beepy-vid --demo --page help --dump out-vid-help.fb
+	./beepy-vid/beepy-vid --demo --page play --pack $(VIDPACK) --at 12 \
+		--transient "-30S -> 0:04" --dump out-vid-transient.fb
+	cmp goldens/vid-library.fb       out-vid-library.fb
+	cmp goldens/vid-library-empty.fb out-vid-library-empty.fb
+	cmp goldens/vid-end.fb           out-vid-end.fb
+	cmp goldens/vid-help.fb          out-vid-help.fb
+	cmp goldens/vid-transient.fb     out-vid-transient.fb
+#	Each of these would pass as a frozen blank if the page drew nothing.
+	! cmp -s goldens/vid-library.fb goldens/vid-library-empty.fb
+	! cmp -s goldens/vid-end.fb     goldens/vid-help.fb
+	! cmp -s out-vid-transient.fb   out-vid-play.fb
+	! cmp -s out-vid-paused.fb      out-vid-transient.fb
 #	The five goldens above nav-tiles are rendered with NO pack, and that is
 #	the standing proof that the tile layer is optional: a basemap that is
 #	absent must render exactly what rendered before basemaps existed. The two
@@ -376,6 +396,13 @@ endif
 		--paused --dump goldens/vid-paused.fb
 	./beepy-vid/beepy-vid --demo --page play --no-pack \
 		--dump goldens/vid-nopack.fb
+	./beepy-vid/beepy-vid --demo --page library --dump goldens/vid-library.fb
+	./beepy-vid/beepy-vid --demo --page library-empty \
+		--dump goldens/vid-library-empty.fb
+	./beepy-vid/beepy-vid --demo --page end  --dump goldens/vid-end.fb
+	./beepy-vid/beepy-vid --demo --page help --dump goldens/vid-help.fb
+	./beepy-vid/beepy-vid --demo --page play --pack $(VIDPACK) --at 12 \
+		--transient "-30S -> 0:04" --dump goldens/vid-transient.fb
 	@echo "goldens regenerated - review the diff before committing"
 
 # ----------------------------------------------------------- replay tests
@@ -1282,7 +1309,7 @@ HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
 
 HOST_VID = host/vid-vid.o host/vid-pack.o host/vid-codec.o \
-           host/vid-view_play.o \
+           host/vid-view_play.o host/vid-view_pages.o \
            host/canvas.o host/font.o host/cover.o host/dump.o host/expand.o
 
 host/beepy-vid: $(HOST_VID)
@@ -1538,6 +1565,49 @@ test-vid: beepy-vid/tests/viddecode $(VIDGRAY) $(VIDPCM) $(VIDPACK)
 		out-vid-z.vid out-vid-1.planes out-vid-z.planes
 	@echo "test-vid: PASS"
 
+# Mac lane. The scheduler is portable, so pacing is asserted here rather than
+# in the 25-minute device gate -- and NOT under real load: a CPU hog on a
+# 2-core Pi Zero is a flaky test, and Makefile:978 counts four races from
+# timing tests that raced. An injected stall has exactly one right answer.
+#
+# --fps 8 stretches the 24-frame fixture to 3 s so a stall fits inside it.
+test-vidpace: host/beepy-vid $(VIDPACK)
+	@echo "--- T-VID-PACE: an unstalled run drops nothing and holds cadence"
+	./host/beepy-vid $(VIDPACK) --headless --fps 8 \
+		--trace-frames out-vid-pace.tsv
+	python3 tools/assert_trace.py out-vid-pace.tsv --finite \
+		--dropped 0 --min-frame-gap 0.112 --max-frame-gap 0.200
+	@echo "--- T-VID-STALL: 500 ms at 8 fps drops exactly 3, by arithmetic"
+#	A stall of D seconds at F fps consumes floor(D*F) frame periods, one of
+#	which belongs to the frame already on screen: 0.5 * 8 - 1 = 3. Stable
+#	across six runs on this machine, and it is a count rather than a
+#	duration, so it does not depend on how fast the machine is.
+	./host/beepy-vid $(VIDPACK) --headless --fps 8 --stall-at 4:500 \
+		--trace-frames out-vid-stall.tsv
+	python3 tools/assert_trace.py out-vid-stall.tsv \
+		--dropped 3 --min-frame-gap 0.112 --max-frame-gap 0.70
+	@echo "--- T-VID-CONSERVED: every frame is either shown or counted dropped"
+#	The machine-independent half of the same claim, and the one that would
+#	survive a port: presented + dropped must equal the frame count exactly.
+#	A player that quietly skipped a frame without counting it passes every
+#	assertion above and fails this one.
+	awk -F'\t' 'BEGIN{p=0} /^#/{next} $$4==1{p++} END{d=$$6+0; \
+		if (p+d != 24) { printf "FAIL presented %d + dropped %d != 24\n", p, d; \
+		exit 1 } printf "  PASS  presented %d + dropped %d == 24\n", p, d }' \
+		out-vid-stall.tsv
+	@echo "--- T-VID-NOSPRINT: --min-frame-gap catches what nothing else can"
+#	A player that dumps its backlog after a stall shows every frame, drops
+#	nothing, and leaves the stall as its only long gap -- so --max-frame-gap,
+#	--dropped and --finite all pass it. Only a MINIMUM gap sees it. The
+#	fixture is synthesised here because the player must never do this.
+	python3 tools/mkpacefix.py --sprint out-vid-sprint.tsv
+	python3 tools/assert_trace.py out-vid-sprint.tsv --finite \
+		--dropped 0 --max-frame-gap 0.70
+	! python3 tools/assert_trace.py out-vid-sprint.tsv --min-frame-gap 0.112 \
+		> /dev/null 2>&1
+	rm -f out-vid-pace.tsv out-vid-stall.tsv out-vid-sprint.tsv
+	@echo "test-vidpace: PASS"
+
 # Deliberate, like tiles: and it regenerates a committed file.
 vidpack: $(VIDGRAY) $(VIDPCM)
 ifndef VID_OK
@@ -1769,6 +1839,6 @@ clean:
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 
-.PHONY: all check goldens host test-unit test-replay test-frames test-find test-panel test-vid vidpack \
+.PHONY: all check goldens host test-unit test-replay test-frames test-find test-panel test-vid test-vidpace vidpack \
 	host-replay tables design-gate test-tiles tiles test-roads roads \
 	bench sync clean netfix

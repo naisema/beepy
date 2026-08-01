@@ -430,6 +430,58 @@ class Checker:
                     f"no frame gap over {limit * 1000:.0f} ms",
                     f"worst {worst * 1000:.0f} ms at t={at:.2f}")
 
+    def min_frame_gap(self, limit):
+        """No two consecutive PRESENTED frames closer together than `limit`.
+
+        The other side of max_frame_gap, and the repo had no way to say it.
+        After a stall a player must not sprint through its backlog: the frames
+        are late, so showing them all at once is a burst of motion that never
+        happened, and then the picture is ahead of the sound. Correct
+        behaviour is to DROP the backlog and resume at the frame that is due
+        now -- which looks identical to a merely slow player in every
+        assertion this file could previously make, because both produce the
+        same average rate and the same maximum gap.
+
+        Only presented rows count. A frame the scheduler skipped has no
+        presentation time and pairing it with its neighbour would measure the
+        skip, not the pacing.
+
+        The limit wants a little slack: a player targeting 24 fps has a 41.7 ms
+        period, and quantising to a poll timeout puts real gaps a millisecond
+        or two either side. Pass something like 0.9 / fps.
+        """
+        t = self.col("t")
+        if "presented" in self.names:
+            shown = [tt for tt, p in zip(t, self.col("presented")) if p]
+        else:
+            shown = t
+        worst, at = 1e9, 0.0
+        for a, b in zip(shown, shown[1:]):
+            if b - a < worst:
+                worst, at = b - a, a
+        if len(shown) < 2:
+            self.report(False, f"no frame gap under {limit * 1000:.0f} ms",
+                        f"only {len(shown)} presented frames -- nothing to pace")
+            return
+        self.report(worst >= limit,
+                    f"no frame gap under {limit * 1000:.0f} ms",
+                    f"tightest {worst * 1000:.1f} ms at t={at:.2f}, "
+                    f"{len(shown)} presented")
+
+    def dropped_exactly(self, n):
+        """The cumulative drop counter ends at exactly n.
+
+        Used with --stall-at, where the answer is arithmetic rather than a
+        measurement: a stall of D seconds at frame k of an F fps clip drops
+        floor(D*F) frames, give or take the frame the stall interrupted. An
+        assertion with one right answer cannot flake, which is the whole
+        reason the stall is injected instead of created by loading the CPU --
+        Makefile:978 counts four races from doing it the other way.
+        """
+        d = self.col("dropped")
+        got = int(d[-1]) if d else -1
+        self.report(got == n, f"exactly {n} frames dropped", f"got {got}")
+
     def zero(self, name):
         v = self.col(name)
         bad = [(i, x) for i, x in enumerate(v) if x != 0.0]
@@ -468,6 +520,10 @@ def main(argv):
             c.latch_count(n, int(next(it)))
         elif a == "--max-frame-gap":
             c.max_frame_gap(float(next(it)))
+        elif a == "--min-frame-gap":
+            c.min_frame_gap(float(next(it)))
+        elif a == "--dropped":
+            c.dropped_exactly(int(next(it)))
         elif a == "--zero":
             c.zero(next(it))
         elif a == "--any":

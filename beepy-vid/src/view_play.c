@@ -95,6 +95,60 @@ view_play_band(canvas_t *c, const osd_t *o)
     }
 }
 
+/* The paused panel. Rows PAUSED_Y0..BAND_Y0-1, and the layout closes exactly:
+ *   1 rule + 3 + 16 (scale-2 state) + 3 + 12 (bar) + 3 + 16 (scale-2 keys)
+ *   + 2 + 8 (scale-1 keymap) = 64.
+ */
+static void
+paused_panel(canvas_t *c, const osd_t *o)
+{
+    char line[64], el[16], tot[16];
+    int y = PAUSED_Y0;
+
+    fillrect(c, 0, PAUSED_Y0, SCR_W, PAUSED_H, INK);
+    hline(c, 0, y, SCR_W, PAPER);
+    y += 4;
+
+    clock_str(el, sizeof el, o->t);
+    clock_str(tot, sizeof tot, o->total);
+    snprintf(line, sizeof line, "= PAUSED");
+    draw_text(c, 6, y, line, 2, PAPER);
+    snprintf(line, sizeof line, "%s / %s", el, tot);
+    draw_text(c, SCR_W - 6 - text_w(line, 2), y, line, 2, PAPER);
+    y += 19;
+
+    /* A wider bar than the band's, because here it is being read rather than
+     * glanced at. Same no-marker rule: the fill boundary is the playhead. */
+    rect(c, 6, y, SCR_W - 12, 12, PAPER);
+    if (o->total > 0) {
+        double f = o->t / o->total;
+        int inner = SCR_W - 14, w;
+        if (f < 0) f = 0;
+        if (f > 1) f = 1;
+        w = (int)(inner * f + 0.5);
+        if (w > 0)
+            fillrect(c, 7, y + 1, w, 10, PAPER);
+    }
+    y += 15;
+
+    draw_text(c, 6, y, "SPACE PLAY   Z/X FRAME   Q QUIT", 2, PAPER);
+    y += 18;
+
+    /* 64 characters of scale 1 is 384 px -- the whole keymap in one row. This
+     * is the second and last scale-1 exception in the design, and it earns it
+     * the way chooser.c:120 does: it is read once, while stopped, and no
+     * scale-2 line can hold 64 characters. */
+    draw_text(c, 6, y, "ARROWS SEEK 10S/60S  H HELP  ESC LIBRARY", 1, PAPER);
+}
+
+static void
+transient_panel(canvas_t *c, const osd_t *o)
+{
+    fillrect(c, 0, TRANSIENT_Y0, SCR_W, TRANSIENT_H, INK);
+    hline(c, 0, TRANSIENT_Y0, SCR_W, PAPER);
+    draw_ctext(c, SCR_W / 2, TRANSIENT_Y0 + 9, o->transient, 3, PAPER);
+}
+
 void
 view_play(canvas_t *c, const osd_t *o)
 {
@@ -105,5 +159,12 @@ view_play(canvas_t *c, const osd_t *o)
         draw_ctext(c, SCR_W / 2, 96, "NO PACK", 3, PAPER);
         draw_ctext(c, SCR_W / 2, 132, "BEEPY-VID FILM.VID", 2, PAPER);
     }
+    /* Paused wins over the transient: the panel already carries everything a
+     * transient would say, and stacking them would cover 46% of the stage to
+     * repeat one number. */
+    if (o->paused && !o->nopack)
+        paused_panel(c, o);
+    else if (o->transient && *o->transient)
+        transient_panel(c, o);
     view_play_band(c, o);
 }

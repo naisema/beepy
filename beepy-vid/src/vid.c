@@ -35,6 +35,7 @@
 
 #if defined(__linux__)
 #define VID_DEVICE 1
+#include <fcntl.h>
 #include <linux/input.h>
 #include <poll.h>
 #include <unistd.h>
@@ -48,19 +49,44 @@
 #include "libbeepyfb/tick.h"
 
 #include "pack.h"
+#include "view_pages.h"
 #include "view_play.h"
+
+/* The library demo's fixture, built here rather than scanned from a
+ * directory.
+ *
+ * CLAUDE.md's rule, learned four times: "A test whose absent case reads the
+ * device config is not a test." A --page library that listed ~/videos would
+ * render whatever happens to be on the machine, so the golden would be a
+ * photograph of one device and would move whenever a file was added. These
+ * five entries are the fixture, and they are chosen to exercise what the page
+ * has to get right: a long name, a short one, a never-opened pack (which must
+ * show nothing rather than 0%), a part-watched one, and an unreadable one. */
+static lib_item_t DEMO_ITEMS[] = {
+    { "BIG BUCK BUNNY",        596.5, 24, 1, 1, 148000000, 62, 1 },
+    { "THE RED BALLOON",      2052.0, 24, 1, 1,  91000000, -1, 1 },
+    { "TRAIN ARRIVING",         49.0, 24, 1, 0,   4000000,  0, 1 },
+    { "LECTURE 04 DITHERING",  3600.0, 12, 1, 1, 210000000, 88, 1 },
+    { "WEDDING RAW",           420.0, 24, 1, 1,  60000000, -1, 0 },
+};
 
 static const char USAGE[] =
 "usage: beepy-vid FILM.vid [--fps N] [--start SECONDS]\n"
+"       beepy-vid FILM.vid --headless [--trace-frames T] [--stall-at N:MS]\n"
 "       beepy-vid --demo --page play [--pack FILE | --no-pack] [--at N]\n"
-"                 [--paused] --dump FILE\n"
+"                 [--paused] [--transient TEXT] --dump FILE\n"
+"       beepy-vid --demo --page library|library-empty|end|help --dump FILE\n"
 "\n"
 "  --demo        render one frame and dump it; no panel, no keyboard\n"
 "  --at N        which frame the demo renders\n"
 "  --paused      demo the paused band\n"
 "  --no-pack     demo the no-pack page; an explicit fixture, never the\n"
 "                absence of a flag, so the test cannot read a real film\n"
-"  --dump FILE   write the 384000-byte XRGB frame and exit\n";
+"  --dump FILE   write the 384000-byte XRGB frame and exit\n"
+"  --headless    schedule and decode, present nothing; runs to the end\n"
+"  --trace-frames T   one TSV row per scheduling decision\n"
+"  --stall-at N:MS    inject a stall before frame N, so the drop count is\n"
+"                arithmetic rather than a measurement of the machine\n";
 
 /* ------------------------------------------------------------- signals */
 
@@ -94,6 +120,54 @@ on_quit(int sig)
     (void)sig;
     g_quit = 1;
 }
+
+/* Back-pressure, for rates above 24 fps.
+ *
+ * write() to /dev/fb1 returns into a shadow buffer and a workqueue transfers
+ * later, so the syscall gives no indication that the panel has caught up.
+ * Frames submitted while the previous transfer is still running are MERGED
+ * AWAY: measured at 400x225, a plain nanosleep loop lands 100% of frames at
+ * 24 fps and only 84.7% at 30, while waiting for the transfer lands 100% at
+ * both (DESIGN.md 4.3). The cliff is a phase problem, not a bandwidth one.
+ *
+ * The kernel's own SPI message counter is the only signal available without
+ * taking DRM master. Reading a small sysfs file per frame is ugly; it is also
+ * exact, and it is how every panel number in DESIGN.md 0 was obtained.
+ *
+ * Returns -1 when the counter is unreadable, and the caller then simply does
+ * not wait -- on a kernel that does not expose it, 24 fps still works.
+ */
+#define SPI_MSGS "/sys/class/spi_master/spi0/spi0.0/statistics/messages"
+
+static long
+spi_messages(void)
+{
+    char buf[32];
+    ssize_t n;
+    int fd = open(SPI_MSGS, O_RDONLY);
+    if (fd < 0)
+        return -1;
+    n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0)
+        return -1;
+    buf[n] = 0;
+    return strtol(buf, NULL, 10);
+}
+
+/* Wait until the counter moves past `was`, or until the deadline. Bounded, so
+ * a driver that stops counting stalls playback by one frame rather than
+ * hanging the player. */
+static void
+spi_wait(long was, double deadline)
+{
+    if (was < 0)
+        return;
+    while (mono_now() < deadline) {
+        if (spi_messages() != was)
+            return;
+    }
+}
 #endif
 
 /* ------------------------------------------------------------ playback */
@@ -106,7 +180,33 @@ typedef struct {
     uint32_t frame;        /* next frame to present */
     double fps;
     int paused, ended;
+
+    /* pacing instrumentation */
+    FILE *trace;
+    long dropped;          /* cumulative, never reset */
+    int stall_at;          /* frame index, -1 for none */
+    double stall_s;
+    const char *transient;
 } player_t;
+
+/* One row per scheduling decision, whether or not a frame was shown.
+ *
+ * presented and written are separate columns deliberately. A frame the
+ * scheduler skipped and a frame that was identical to its predecessor both
+ * produce "no SPI transfer", and conflating them would make the size==0 skip
+ * indistinguishable from a missed deadline -- which is exactly how a pacing
+ * bug hides. DESIGN.md 8.5.
+ */
+static void
+trace_row(player_t *p, double t, uint32_t idx, int presented, int written)
+{
+    if (!p->trace)
+        return;
+    fprintf(p->trace, "%.6f\t%.6f\t%u\t%d\t%d\t%ld\n",
+            t, idx * (p->have_pack ? (double)p->pack.fps_den / p->pack.fps_num
+                                   : 0.0),
+            idx, presented, written, p->dropped);
+}
 
 static double
 frame_seconds(const player_t *p)
@@ -155,6 +255,7 @@ compose(player_t *p, canvas_t *cv)
     o.paused = p->paused;
     o.ended = p->ended;
     o.nopack = !p->have_pack;
+    o.transient = p->transient;
     if (p->have_pack) {
         o.t = p->frame * frame_seconds(p);
         o.total = pack_seconds(p);
@@ -170,10 +271,13 @@ main(int argc, char **argv)
 {
     player_t P;
     const char *path = NULL, *dump = NULL, *page = "play";
-    int demo = 0, nopack = 0, at = 0, paused = 0;
+    int demo = 0, nopack = 0, at = 0, paused = 0, headless = 0;
+    const char *transient = NULL;
     double start = 0, fps_override = 0;
+    const char *tracepath = NULL;
 
     memset(&P, 0, sizeof P);
+    P.stall_at = -1;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -183,6 +287,8 @@ main(int argc, char **argv)
             nopack = 1;
         else if (!strcmp(a, "--paused"))
             paused = 1;
+        else if (!strcmp(a, "--transient") && i + 1 < argc)
+            transient = argv[++i];
         else if (!strcmp(a, "--page") && i + 1 < argc)
             page = argv[++i];
         else if (!strcmp(a, "--pack") && i + 1 < argc)
@@ -195,6 +301,21 @@ main(int argc, char **argv)
             fps_override = atof(argv[++i]);
         else if (!strcmp(a, "--start") && i + 1 < argc)
             start = atof(argv[++i]);
+        else if (!strcmp(a, "--headless"))
+            headless = 1;
+        else if (!strcmp(a, "--trace-frames") && i + 1 < argc)
+            tracepath = argv[++i];
+        else if (!strcmp(a, "--stall-at") && i + 1 < argc) {
+            /* N:MS -- a synthetic stall before frame N. See the loop. */
+            const char *v = argv[++i];
+            const char *c = strchr(v, ':');
+            if (!c) {
+                fprintf(stderr, "beepy-vid: --stall-at wants FRAME:MS\n");
+                return 2;
+            }
+            P.stall_at = atoi(v);
+            P.stall_s = atof(c + 1) / 1000.0;
+        }
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
             fputs(USAGE, stdout);
             return 0;
@@ -203,6 +324,39 @@ main(int argc, char **argv)
             return 2;
         } else
             path = a;
+    }
+    /* Pages that need no pack at all are rendered and dumped here, before any
+     * of the playback machinery is set up. */
+    if (demo && dump && strcmp(page, "play") != 0) {
+        canvas_t *cv = canvas_new(SCR_W, SCR_H);
+        lib_t L;
+        if (!cv)
+            return 1;
+        canvas_clear(cv, PAPER);
+        memset(&L, 0, sizeof L);
+        L.dir = "/HOME/BEEPY/VIDEOS";
+        if (!strcmp(page, "library")) {
+            L.items = DEMO_ITEMS;
+            L.n = (int)(sizeof DEMO_ITEMS / sizeof DEMO_ITEMS[0]);
+            L.sel = 1; /* not row 0: a selection bar drawn at a fixed row
+                        * would look identical whether or not it tracks sel */
+            view_library(cv, &L);
+        } else if (!strcmp(page, "library-empty")) {
+            view_library(cv, &L);
+        } else if (!strcmp(page, "end")) {
+            view_end(cv, "THE RED BALLOON", 2052.0, 1, 5);
+        } else if (!strcmp(page, "help")) {
+            view_help(cv);
+        } else {
+            fprintf(stderr, "beepy-vid: unknown page %s\n", page);
+            return 2;
+        }
+        if (canvas_dump(cv, dump) != 0) {
+            fprintf(stderr, "beepy-vid: cannot write %s\n", dump);
+            return 1;
+        }
+        printf("beepy-vid: wrote %s\n", dump);
+        return 0;
     }
     if (strcmp(page, "play") != 0) {
         fprintf(stderr, "beepy-vid: unknown page %s\n", page);
@@ -225,6 +379,19 @@ main(int argc, char **argv)
         }
     }
 
+    if (tracepath) {
+        P.trace = fopen(tracepath, "w");
+        if (!P.trace) {
+            fprintf(stderr, "beepy-vid: cannot write %s\n", tracepath);
+            return 1;
+        }
+        /* The '#' is load-bearing: tools/assert_trace.py:73-86 takes the
+         * commented line as the column names and treats everything else as
+         * data. Without it the loader has no names and every row is a
+         * TypeError. */
+        fputs("#t\tpts\tidx\tpresented\twritten\tdropped\n", P.trace);
+    }
+
     P.cv = canvas_new(SCR_W, SCR_H);
     if (!P.cv)
         return 1;
@@ -244,6 +411,7 @@ main(int argc, char **argv)
             return 2;
         }
         P.paused = paused;
+        P.transient = transient;
         if (P.have_pack) {
             if (at < 0 || (uint32_t)at >= P.pack.nframe) {
                 fprintf(stderr, "beepy-vid: --at %d is outside 0..%u\n",
@@ -269,6 +437,69 @@ main(int argc, char **argv)
         return 2;
     }
 
+    /* ------------------------------------------------------- headless
+     *
+     * The scheduler is portable and this is what makes it testable: the same
+     * loop, the same clock arithmetic, the same drop policy, with the panel
+     * and the keyboard removed. Pacing assertions therefore run in the Mac
+     * lane instead of costing a 25-minute device round trip, which is the
+     * split DESIGN.md 8.1 requires. Runs to the end of the pack and stops, so
+     * a test terminates without needing a key.
+     */
+    if (headless) {
+        double t0 = mono_now() - P.frame / P.fps;
+        uint32_t last_shown = (uint32_t)-1;
+        for (;;) {
+            double now = mono_now();
+            long d = (long)((now - t0) * P.fps);
+            uint32_t due;
+            int written = 0;
+
+            if (d < 0)
+                d = 0;
+            if ((uint32_t)d >= P.pack.nframe) {
+                trace_row(&P, now - t0, P.frame, 0, 0);
+                break;
+            }
+            due = (uint32_t)d;
+
+            {
+                int presented = (due != last_shown);
+                if (presented) {
+                    /* Frames between the last shown and the one now due are
+                     * dropped, not shown late: they are already in the past,
+                     * and showing them would be a burst of motion that never
+                     * happened followed by a picture ahead of its sound. */
+                    if (due > P.frame + 1)
+                        P.dropped += (long)(due - P.frame - 1);
+                    if (due != P.frame) {
+                        if (decode_to(&P, due, P.frame) != 0)
+                            return 1;
+                        P.frame = due;
+                    }
+                    compose(&P, P.cv);
+                    written = 1;
+                    last_shown = due;
+                }
+                trace_row(&P, now - t0, due, presented, written);
+            }
+
+            /* The injected stall. A real CPU hog on a 2-core Pi Zero is a
+             * flaky test and this repo has paid for flaky timing four times
+             * (Makefile:978); a synthetic stall makes the answer arithmetic
+             * with exactly one right value. */
+            if (P.stall_at >= 0 && due == (uint32_t)P.stall_at) {
+                sleep_s(P.stall_s);
+                P.stall_at = -1;
+            }
+            sleep_until(t0 + (due + 1) / P.fps);
+        }
+        if (P.trace)
+            fclose(P.trace);
+        pack_close(&P.pack);
+        return 0;
+    }
+
 #if !defined(VID_DEVICE)
     (void)start; /* only the device path seeks; --demo uses --at */
     fprintf(stderr, "beepy-vid: playback needs the device; use --demo here\n");
@@ -280,6 +511,10 @@ main(int argc, char **argv)
         uint32_t last_shown = (uint32_t)-1;
         double t0;
         int rc = 0;
+        /* Only above 24 fps: at or below it the measurement says a plain
+         * paced loop lands every frame, and a sysfs read per frame is not
+         * free. */
+        int backpressure = (P.fps > 24.5) && (spi_messages() >= 0);
 
         /* The grab BEFORE the panel, and refuse if it fails.
          *
@@ -351,16 +586,28 @@ main(int argc, char **argv)
                     }
                     P.frame = due;
                 }
+                if (due > P.frame + 1)
+                    P.dropped += (long)(due - P.frame - 1);
                 compose(&P, P.cv);
                 /* Whole frame: the band changes every second and the stage
                  * every frame, so a row-range present would cover almost
-                 * everything anyway. Narrowing it is M5's job, with the
-                 * pack's own y0/y1 to drive it. */
-                if (fb_present(&fb, P.cv) != 0) {
-                    fprintf(stderr, "beepy-vid: present failed\n");
-                    rc = 1;
-                    break;
+                 * everything anyway. Narrowing it wants the pack's own y0/y1
+                 * unioned with the band, and is left for when the OSD gains
+                 * its transient states. */
+                {
+                    long was = backpressure ? spi_messages() : -1;
+                    if (fb_present(&fb, P.cv) != 0) {
+                        fprintf(stderr, "beepy-vid: present failed\n");
+                        rc = 1;
+                        break;
+                    }
+                    /* Above 24 fps, submitting the next frame before this
+                     * transfer completes merges it away. Wait, bounded by one
+                     * frame period so a silent counter costs a frame and not
+                     * the playback. */
+                    spi_wait(was, mono_now() + 1.0 / P.fps);
                 }
+                trace_row(&P, mono_now() - t0, due, 1, 1);
                 last_shown = due;
             }
 
