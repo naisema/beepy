@@ -166,12 +166,19 @@ class Collect(osmium.SimpleHandler):
                 self.dropped_bbox += 1
                 return
         tags = {"highway": hw}
+        # ROUTING tags, kept whether or not names are. `oneway` was already in
+        # both branches for that reason and `toll` rides with it: --no-names
+        # exists because a basemap never draws them, which says nothing about
+        # what a router needs. Keeping toll only under keep_names would have
+        # produced a pack that could route a car around tolls or not depending
+        # on a flag about labels.
+        for k in ("oneway", "toll"):
+            if k in w.tags:
+                tags[k] = w.tags[k]
         if self.keep_names:
-            for k in ("name:en", "name", "oneway"):
+            for k in ("name:en", "name"):
                 if k in w.tags:
                     tags[k] = w.tags[k]
-        elif "oneway" in w.tags:
-            tags["oneway"] = w.tags["oneway"]
         self.out.append({"type": "way", "id": w.id, "tags": tags,
                          "geometry": [{"lat": la, "lon": lo}
                                       for la, lo in geom]})

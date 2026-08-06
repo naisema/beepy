@@ -828,6 +828,328 @@ def _chain(points, start, step_key, limit):
         cur = best
 
 
+# ------------------------------------------------------- 3D nav view (6.6)
+#
+# This mirrors beepy-nav/src/nav3d.c and persp.c, and the word "mirrors" is
+# doing real work: the design gate byte-compares the two, so every rule here is
+# transcribed rather than reinvented. Where the C rounds, this rounds the same
+# way; where the C bails, this bails.
+#
+# Two things make that tractable. The ribbon sort tie-breaks on the edge's own
+# NODE INDICES rather than on gather order, so this file can walk the pack in
+# whatever order Python likes and still paint the identical sequence -- no ring
+# walk and no radix sort to reproduce. And the pack is read DIRECTLY, rather
+# than re-derived from osm-asok.json: deriving it would mean reimplementing
+# mkpack.py's way splitting and class assignment, and the gate would then be
+# comparing two copies of the pipeline instead of two renderers.
+
+ROADS_PACK = "tests/roads/asok.roads"
+
+# Transcribed from nav3d.c, which took them from mktiles.py's OSM_WIDTH_M.
+N3_W_M = (5.0, 14.0, 12.0, 11.0, 9.0, 7.0, 6.0, 5.0, 4.0)
+N3_CULL_M = (900.0, 4000.0, 3000.0, 2000.0, 1400.0, 900.0, 600.0, 450.0, 350.0)
+N3_ROUTE_W_M = 9.0
+N3_ROUTE_CAP_PX = 20.0
+N3_MIN_SEG_PX = 3.0
+N3_MIN_W_PX = 0.8
+N3_PITCH_DEG = 70.0
+N3_FOCAL = 120.0
+N3_CHEVRON_FRAC = 0.72
+
+_ROADS = None
+
+
+def roads_pack(path=None):
+    """(en, adj, edge, lat0, lon0, klat, klon) from a BNAVROAD pack, cached.
+    Format per tools/mkpack.py; only the three graph sections are read."""
+    global _ROADS
+    if _ROADS is not None:
+        return _ROADS
+    import os
+    import struct
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               ROADS_PACK)
+    if not os.path.exists(path):
+        return None
+    f = open(path, "rb")
+    hdr = f.read(64)
+    if hdr[:8] != b"BNAVROAD":
+        return None
+    nsect = struct.unpack_from("<H", hdr, 14)[0]
+    lat0, lon0, klat, klon = struct.unpack_from("<dddd", hdr, 20)
+    cscale = struct.unpack_from("<I", hdr, 52)[0]
+    hb = struct.unpack_from("<H", hdr, 10)[0]
+    f.seek(hb)
+    sect = [struct.unpack("<II", f.read(8)) for _ in range(nsect)]
+    (noff, ncnt), (aoff, acnt), (eoff, ecnt) = sect[0], sect[1], sect[2]
+    f.seek(noff)
+    raw = f.read(8 * ncnt)
+    ke = klon * math.cos(math.radians(lat0))
+    en = []
+    for i in range(ncnt):
+        la, lo = struct.unpack_from("<ii", raw, 8 * i)
+        en.append(((lo / cscale - lon0) * ke, (la / cscale - lat0) * klat))
+    f.seek(aoff)
+    raw = f.read(4 * acnt)
+    adj = list(struct.unpack("<%dI" % acnt, raw))
+    f.seek(eoff)
+    raw = f.read(14 * ecnt)
+    edge = []
+    for j in range(ecnt):
+        to, _lmm, fl, _nm = struct.unpack_from("<IIHI", raw, 14 * j)
+        edge.append((to, (fl >> 1) & 0xF))
+    f.close()
+    _ROADS = (en, adj, edge, lat0, lon0, klat, ke)
+    return _ROADS
+
+
+class Persp:
+    """persp.c, transcribed. Pitch 90 is EXACTLY the top-down affine -- the
+    invariant t_pitch90_is_2d asserts on the C side."""
+
+    def __init__(self, pitch_deg, focal, nadir_mpp, heading_rad, vw, vh,
+                 chevron_frac):
+        pitch_deg = min(90.0, max(1.0, pitch_deg))
+        self.p = math.radians(pitch_deg)
+        self.f = focal
+        self.h = nadir_mpp * focal
+        self.sp, self.cp = math.sin(self.p), math.cos(self.p)
+        self.cx, self.cy = vw / 2.0, vh / 2.0
+        self.fwd = (math.sin(heading_rad), math.cos(heading_rad))
+        self.rgt = (math.cos(heading_rad), -math.sin(heading_rad))
+        v_r = self.cy - chevron_frac * vh
+        den = self.f * self.sp - v_r * self.cp
+        self.back = 0.0 if abs(den) < 1e-12 else \
+            (self.h / den) * (v_r * self.sp + self.f * self.cp)
+        self.has_horizon = self.cp > 1e-12
+        self.horizon_v = (self.f * self.sp / self.cp) if self.has_horizon else 0.0
+
+    def to_ground(self, de, dn):
+        return (de * self.fwd[0] + dn * self.fwd[1],
+                de * self.rgt[0] + dn * self.rgt[1])
+
+    def screen(self, fwd, lat):
+        """(x, y, t) or None. t is the metres a pixel covers there."""
+        Y = fwd + self.back
+        den = -(Y * self.cp + self.h * self.sp)
+        if abs(den) < 1e-12:
+            return None
+        v = (self.h * self.f * self.cp - Y * self.f * self.sp) / den
+        if self.has_horizon and v >= self.horizon_v - 1e-9:
+            return None
+        tt = self.f * self.sp - v * self.cp
+        if not tt > 1e-12:
+            return None
+        tt = self.h / tt
+        if not tt > 0.0:
+            return None
+        return (self.cx + lat / tt, self.cy - v, tt)
+
+
+class Bits:
+    """A 1x bit plane with nav3d.c's rasteriser, not PIL's.
+
+    This class exists because PIL's line and polygon rules are NOT the C's:
+    measured at pitch 70 the two disagreed by 2220 pixels of ink -- 3685
+    python-only against 1465 C-only -- while agreeing on every road they chose
+    to draw. Selection was already at parity; only the rasteriser was not. The
+    fix has to be here rather than in the C, because the C is what ships."""
+
+    def __init__(self, w, h):
+        self.w, self.h = w, h
+        self.px = bytearray(w * h)
+
+    def set(self, x, y, on):
+        if 0 <= x < self.w and 0 <= y < self.h:
+            self.px[y * self.w + x] = 1 if on else 0
+
+    @staticmethod
+    def q256(v):
+        """nav3d.c's q256(): 1/256 px, so an ulp cannot cross a rounding
+        boundary. See the comment there -- this is 6.5's fixed-point argument."""
+        return math.floor(v * 256.0 + 0.5) / 256.0
+
+    def line(self, fx0, fy0, fx1, fy1, on):
+        """nav3d.c's line(): endpoints rounded to nearest, plain Bresenham,
+        with the same iteration guard so a near-horizon segment cannot run
+        away."""
+        x0 = math.floor(self.q256(fx0) + 0.5); y0 = math.floor(self.q256(fy0) + 0.5)
+        x1 = math.floor(self.q256(fx1) + 0.5); y1 = math.floor(self.q256(fy1) + 0.5)
+        dx, dy = abs(x1 - x0), abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        guard = min(dx + dy + 4, 4 * (400 + 240))
+        while True:
+            self.set(x0, y0, on)
+            if (x0 == x1 and y0 == y1) or guard <= 0:
+                return
+            guard -= 1
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy; x0 += sx
+            if e2 < dx:
+                err += dx; y0 += sy
+
+    def quad_fill(self, q, on):
+        """nav3d.c's quad_fill(): convex scanline, half-open edge rule."""
+        q = [self.q256(v) for v in q]
+        ys = [q[2 * i + 1] for i in range(4)]
+        ymin, ymax = min(ys), max(ys)
+        if ymin < 0.0:
+            ymin = 0.0
+        if ymax > float(self.h - 1):
+            ymax = float(self.h - 1)
+        for y in range(int(math.floor(ymin + 0.5)),
+                       int(math.floor(ymax + 0.5)) + 1):
+            yc = float(y)
+            xl, xr, hit = 1e300, -1e300, 0
+            for i in range(4):
+                j = (i + 1) & 3
+                ya, yb = q[2 * i + 1], q[2 * j + 1]
+                xa2, xb2 = q[2 * i], q[2 * j]
+                if ya == yb:
+                    continue
+                if not ((ya <= yc < yb) or (yb <= yc < ya)):
+                    continue
+                xx = xa2 + (yc - ya) / (yb - ya) * (xb2 - xa2)
+                xl = min(xl, xx); xr = max(xr, xx)
+                hit += 1
+            if hit < 2:
+                continue
+            # The SPAN ends, quantised as nav3d.c does -- see the comment
+            # there. xl and xr are interpolated, so bounding their inputs does
+            # not bound them.
+            xa = max(0, int(math.floor(self.q256(xl) + 0.5)))
+            xb = min(self.w - 1, int(math.floor(self.q256(xr) + 0.5)))
+            for x in range(xa, xb + 1):
+                self.set(x, y, on)
+
+
+def _n3_ribbon(bits, cam, fa, la, fb, lb, w, cap_px, mode):
+    """nav3d.c's ribbon(). mode: 0 edges only, 1 paper fill + edges, 2 solid.
+    The half-width is capped PER VERTEX -- per segment notches the edge."""
+    df, dl = fb - fa, lb - la
+    L = math.sqrt(df * df + dl * dl)
+    if not L > 1e-9:
+        return 0
+    pf, pl = -dl / L, df / L
+    ends = []
+    for (f0, l0) in ((fa, la), (fb, lb)):
+        s = cam.screen(f0, l0)
+        if s is None:
+            return 0
+        hw = w / 2.0
+        if cap_px > 0.0 and hw > cap_px / 2.0 * s[2]:
+            hw = cap_px / 2.0 * s[2]
+        p1 = cam.screen(f0 + pf * hw, l0 + pl * hw)
+        p2 = cam.screen(f0 - pf * hw, l0 - pl * hw)
+        if p1 is None or p2 is None:
+            return 0
+        ends.append((p1, p2))
+    q = [ends[0][0][0], ends[0][0][1], ends[1][0][0], ends[1][0][1],
+         ends[1][1][0], ends[1][1][1], ends[0][1][0], ends[0][1][1]]
+    if mode == 2:
+        bits.quad_fill(q, 1)
+        return 1
+    if mode == 1:
+        bits.quad_fill(q, 0)
+    bits.line(q[0], q[1], q[2], q[3], 1)
+    bits.line(q[4], q[5], q[6], q[7], 1)
+    return 1
+
+
+def draw_nav3d(c, lat, lon, heading, mpp, route_en, knockouts,
+               x0=None, vw=None, vh=None, pitch_deg=N3_PITCH_DEG):
+    """The 3D map plane, into the canvas's 1x layer. Returns ribbons drawn, or
+    0 with nothing drawn when there is no pack -- which is how a checkout with
+    no fixture still renders the 2D page."""
+    pack = roads_pack()
+    if pack is None:
+        return 0
+    en, adj, edge, lat0, lon0, klat, ke = pack
+    x0 = MAP_X if x0 is None else x0
+    vw = (W - MAP_X) if vw is None else vw
+    vh = H if vh is None else vh
+    cam = Persp(pitch_deg, N3_FOCAL, mpp, heading, float(vw), float(vh),
+                N3_CHEVRON_FRAC)
+    e0 = (lon - lon0) * ke
+    n0 = (lat - lat0) * klat
+    bits = Bits(vw, vh)
+
+    # Gather. The C walks cells outward from the rider because it has 1.7
+    # million nodes; the committed fixture has a few thousand and they are all
+    # inside the widest cull, so a plain scan sees the identical set. The sort
+    # key does not depend on the order either way.
+    ribs = []
+    for nd in range(len(en)):
+        fa, la = cam.to_ground(en[nd][0] - e0, en[nd][1] - n0)
+        for j in range(adj[nd], adj[nd + 1]):
+            to, cls = edge[j]
+            if to <= nd or to >= len(en):
+                continue
+            if cls < 0 or cls >= 9:
+                cls = 0
+            fb, lb = cam.to_ground(en[to][0] - e0, en[to][1] - n0)
+            da = math.sqrt(fa * fa + la * la)
+            db = math.sqrt(fb * fb + lb * lb)
+            d = min(da, db)
+            if d > N3_CULL_M[cls] or d > N3_CULL_M[1]:
+                continue
+            sa = cam.screen(fa, la)
+            sb = cam.screen(fb, lb)
+            if sa is None or sb is None:
+                continue
+            w = N3_W_M[cls]
+            if w / max(sa[2], sb[2]) < N3_MIN_W_PX:
+                continue
+            ribs.append((max(sa[2], sb[2]), nd, to, fa, la, fb, lb, cls,
+                         min(sa[2], sb[2])))
+    # Far to near, tie-broken on node indices: a total order both sides share.
+    ribs.sort(key=lambda r: (-r[0], r[1], r[2]))
+
+    drawn = 0
+    for (_tf, _na, _nb, fa, la, fb, lb, cls, tnear) in ribs:
+        sa = cam.screen(fa, la)
+        sb = cam.screen(fb, lb)
+        if sa is None or sb is None:
+            continue
+        if math.hypot(sb[0] - sa[0], sb[1] - sa[1]) < N3_MIN_SEG_PX:
+            continue
+        w = N3_W_M[cls]
+        drawn += _n3_ribbon(bits, cam, fa, la, fb, lb, w, 0.0,
+                            1 if (w / tnear) >= 2.2 else 0)
+    for i in range(len(route_en) - 1):
+        fa, la = cam.to_ground(route_en[i][0] - e0, route_en[i][1] - n0)
+        fb, lb = cam.to_ground(route_en[i + 1][0] - e0, route_en[i + 1][1] - n0)
+        drawn += _n3_ribbon(bits, cam, fa, la, fb, lb, N3_ROUTE_W_M,
+                            N3_ROUTE_CAP_PX, 2)
+    for ko in knockouts:
+        if ko[0] > 0.0:                       # (r, cx, cy)
+            r, kcx, kcy = ko[0], ko[1], ko[2]
+            for yy in range(int(math.floor(kcy - r)), int(math.ceil(kcy + r)) + 1):
+                dy = float(yy) - kcy
+                dx2 = r * r - dy * dy
+                if dx2 < 0.0:
+                    continue
+                for xx in range(int(math.floor(kcx - math.sqrt(dx2))),
+                                int(math.ceil(kcx + math.sqrt(dx2))) + 1):
+                    bits.set(xx, yy, 0)
+        else:                                 # (0, x0, y0, x1, y1)
+            for yy in range(int(math.floor(ko[2])), int(math.ceil(ko[4])) + 1):
+                for xx in range(int(math.floor(ko[1])), int(math.ceil(ko[3])) + 1):
+                    bits.set(xx, yy, 0)
+
+    # Into the canvas's 1x layer, which is the aliased path -- the same place
+    # hairlines go, and the mockup's equivalent of one cov_blit_bits().
+    for y in range(vh):
+        row = y * vw
+        for x in range(vw):
+            if bits.px[row + x]:
+                c.hd.point((x0 + x, y), fill=INK)
+    return drawn
+
+
 _FRAME = None
 
 
@@ -870,7 +1192,22 @@ def osm_frame():
         return ((p["lon"] - lon0) * ke, (p["lat"] - lat0) * kn)
 
     _FRAME = (ways, name, met)
+    global _OSM_ORIGIN
+    _OSM_ORIGIN = (lat0, lon0, ke, kn)
     return _FRAME
+
+
+_OSM_ORIGIN = None
+
+
+def osm_origin():
+    """(lat0, lon0, ke, kn) of the junction frame every mockup coordinate is
+    measured from. Exposed because the 3D view (DESIGN.md 6.6) hands points to
+    a roads pack that keeps its OWN reference, and lat/lon is the only language
+    two tangent frames share -- the same reason nav.c needs geo_unproject()."""
+    if _OSM_ORIGIN is None:
+        osm_frame()
+    return _OSM_ORIGIN
 
 
 def load_osm():
@@ -1083,7 +1420,15 @@ def render_confirm(rt, est_kmh=17.0, mode="BIKE"):
 
     compass(c, W - 21, my0 + 4 + 21)
     scale_bar(c, 7, my1 - 5, mpp)
-    text(c, 6, 5, f"TO {rt['dest']}"[:33], 2)
+    # T and the toll answer, right-aligned in the title row (DESIGN.md 7.7.1).
+    # The badge is `T TOLL?` here because a mockup has no router: UNKNOWN is
+    # what a GPX and an OSRM reply also report, so this frozen frame is the
+    # not-told case. The key rides WITH the badge rather than on the strip --
+    # 7.7 built that strip for four half-lines, and T TOLL beside M BIKE
+    # measured into the turn count at 128 turns.
+    toll = "T TOLL?"
+    text(c, 6, 5, f"TO {rt['dest']}"[:33 - len(toll) - 2], 2)
+    rtext(c, W - 6, 5, toll, 2)
 
     total = sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
     mins = max(1, int(round(total / 1000 / est_kmh * 60)))
@@ -1106,6 +1451,63 @@ def page_confirm():
     osm = load_osm()
     if osm:
         finish(render_confirm(osm[1]), "nav-confirm")
+
+
+# The SAVE page's own copy of the MAP page's coordinate. Defined here rather than
+# read from MAP_LAT/MAP_LON below because this function is above them in the file
+# and moving either would reorder a section for no reason -- and the two being
+# the same digits is the point: the row this page shows is the row nav-map.png
+# shows, so a build that formatted one differently could not pass both frames.
+SAVE_LAT, SAVE_LON = 13.88510, 100.37850
+SAVE_NPLACE, SAVE_MAX = 3, 8
+
+
+def page_save(name, typed=False):
+    """
+    DESIGN.md 1.4.8: the name of a favourite being typed, over the coordinate it
+    is about to be written against.
+
+    FIND's field inside QUIT's frame, and every constant below is one of theirs --
+    the 26 px title bar, the query's cap-top at 34, the 12x22 block cursor 14 px
+    in, the 42 px strip. This page invented no geometry, which is exactly why it
+    can be byte-compared in full: it is text and block fills all the way down,
+    with no coverage shape anywhere on it.
+
+    `typed` picks the field's second state. Unedited, the default name is a
+    SELECTION -- an ink bar with the name in paper and no cursor -- because the
+    first character typed replaces the whole field, and inverted-means-
+    replaceable is the one convention a 1-bit panel has for saying so before it
+    happens.
+    """
+    c = Canvas()
+    nm = "CAFE" if typed else "PLACE 4"
+    c.rect(0, 0, W - 1, 25, INK)
+    text(c, 6, 5, "SAVE PLACE", 2, PAPER)
+    rtext(c, W - 6, 5, f"{SAVE_NPLACE} OF {SAVE_MAX}", 2, PAPER)
+
+    # The pen advance and not the ink box, for num_pen()'s own reason.
+    qw = num_pen(c, nm, QUERY_CAP)
+    if typed:
+        num(c, 8, 34, nm, QUERY_CAP, INK)
+        c.rect(14 + qw, 36, 14 + qw + 12, 58, INK)      # FIND's block cursor
+    else:
+        c.rect(8 - 4, 36 - 4, 8 + qw + 4, 58 + 4, INK)  # the selection
+        num(c, 8, 34, nm, QUERY_CAP, PAPER)
+
+    # Where. The same five decimals and the same single space the MAP strip uses,
+    # because this is the row the rider just read there -- and it is what the
+    # places file gets written with, so screen, page and file all say one thing.
+    # At scale 3: it is the SUBJECT of this page, not a status row.
+    text(c, 8, 74, f"{SAVE_LAT:.5f} {SAVE_LON:.5f}", 3)
+
+    strip = 42
+    c.rect(0, H - strip, W - 1, H - 1, INK)
+    text(c, 6, H - strip + 5, "ENTER = SAVE", 2, PAPER)
+    rtext(c, W - 6, H - strip + 5, "ESC = CANCEL", 2, PAPER)
+    # The instruction, on the row the refusals of 1.4.8 displace when there is
+    # one. Esc and not Q, because on this page Q types a Q.
+    text(c, 6, H - strip + 23, "TYPE A NAME", 2, PAPER)
+    finish(resolve(c.img), name)
 
 
 # ------------------------------------------------------------------- the pages
@@ -1190,7 +1592,7 @@ def turn_panel(c, off=None, nofix=False):
 
 
 def page_nav(name, basemap=False, off=None, course_up=True, dither=False,
-             route=None, streets=None, nofix=False):
+             route=None, streets=None, nofix=False, view3d=False):
     c = Canvas()
     rt = route or dict(pts=ROUTE_M, pos_i=POS_I, pos_f=POS_F,
                        turn_i=TURN_I, pin_i=PIN_I,
@@ -1216,22 +1618,64 @@ def page_nav(name, basemap=False, off=None, course_up=True, dither=False,
     mpp = auto_zoom(cue_distance(pts, on_route, pos_i, turn_i), cy)
     box = (MAP_X, 0, W - 1, H - 1)
 
-    if basemap:
-        draw_streets(c, pos, mpp, cx, cy, theta, box, streets)
+    if view3d:
+        # DESIGN.md 6.6. The 3D branch replaces the basemap, the track AND the
+        # route, exactly as view_nav.c's does: the route has to go through the
+        # same camera as the roads under it, and a flat route line over a
+        # tilted map would be a picture of two different places.
+        pack = roads_pack()
+        if pack is not None:
+            _en, _adj, _edge, plat0, plon0, pklat, pke = pack
+            # The route, moved into the ROADS pack's frame. mockup's own world
+            # frame is the junction origin (osm_frame()), so this is the same
+            # conversion nav.c does with geo_unproject() + roads_project().
+            # THE FRAME, and the one thing here that is not a transcription.
+            # view_nav.c's ASOK_ROUTE is referenced to its own FIRST POINT,
+            # which is where the pack's (lat0, lon0) lands -- so route metres
+            # and pack metres coincide there with no offset. These coordinates
+            # are referenced to the computed junction instead (osm_frame()), so
+            # reaching the pack's frame means subtracting the route's own start.
+            # That offset is invisible on every 2D page, where project() works
+            # relative to the fix, and it is exactly what has to be right in 3D,
+            # which converts absolutely.
+            m0e, m0n = pts[0]
+            r3d = [(pe - m0e, pn - m0n)
+                   for (pe, pn) in [on_route] + pts[pos_i + 1:]]
+            rpe, rpn = pos[0] - m0e, pos[1] - m0n
+            rlat = plat0 + rpn / pklat
+            rlon = plon0 + rpe / pke
+            ko = ((15.0, 21.0, 27.0),                      # compass
+                  (31.0, float(W - 33 - MAP_X), 33.0),     # speed badge
+                  (0.0, 2.0, float(H - 26), 80.0, float(H - 1)))  # scale bar
+            draw_nav3d(c, rlat, rlon, theta, mpp, r3d, ko)
+        c.flush_hairlines()
+    else:
+        if basemap:
+            draw_streets(c, pos, mpp, cx, cy, theta, box, streets)
 
     scr = project(pts, pos, mpp, cx, cy, theta)          # markers, unrounded
     track_w = pts[:pos_i + 1]
     if off:
         track_w = track_w + [lerp(pts[pos_i], on_route, 0.55)]
-    dashed(c, clip_poly(project(round_corners(track_w + [pos]),
-                                pos, mpp, cx, cy, theta), box), width=1)
+    if not view3d:
+        dashed(c, clip_poly(project(round_corners(track_w + [pos]),
+                                    pos, mpp, cx, cy, theta), box), width=1)
 
-    c.flush_hairlines()          # streets and track land under the route casing
-    cased_route(c, clip_poly(project(round_corners([on_route] + pts[pos_i + 1:]),
-                                     pos, mpp, cx, cy, theta), box),
-                outer=10, inner=6)
+        c.flush_hairlines()      # streets and track land under the route casing
+        cased_route(c, clip_poly(project(round_corners([on_route] + pts[pos_i + 1:]),
+                                         pos, mpp, cx, cy, theta), box),
+                    outer=10, inner=6)
 
-    if off:
+    if view3d:
+        # Neither the off-route tie line nor the pin is drawn in 3D, and that
+        # matches view_nav.c: both are marks placed by the FLAT projection, and
+        # a flat mark dropped onto a tilted map points at the wrong ground. The
+        # C wraps them in the same else branch this does. Leaving the pin in was
+        # worth 1949 differing pixels against the C page -- balanced between the
+        # two sides, which is the signature of a mark in the wrong place rather
+        # than a rasteriser that disagrees.
+        pass
+    elif off:
         ox, oy = project([on_route], pos, mpp, cx, cy, theta)[0]
         for t in range(0, 100, 7):
             c.disc(cx + (ox - cx) * t / 100, cy + (oy - cy) * t / 100, 1.5)
@@ -1256,6 +1700,30 @@ def page_nav(name, basemap=False, off=None, course_up=True, dither=False,
     finish(resolve(c.img, dither), name)
 
 
+def page_nav3d(name="nav-3d"):
+    """The frozen 3D state (DESIGN.md 6.6), matched to view_nav_3d_demo().
+
+    Three overrides on the OSM route, and each one is a fixture decision the C
+    side makes too:
+      pos_i 2   -- two vertices in, so there is road behind the fix as well as
+                   ahead; view_nav_3d_demo() uses the same index.
+      turn 410  -- the DESIGN's sample panel, quantised to 400, rather than the
+                   tiles demo's 420. The panel is not what this page tests, so
+                   it should be the one every other frozen page agrees on.
+      then_d    -- likewise.
+    Returns None when osm-asok.json is absent, exactly as the other OSM pages
+    do, so a checkout without the extract still renders everything else."""
+    osm = load_osm()
+    if osm is None:
+        return None
+    r = dict(osm[1])
+    r["pos_i"] = 2
+    r["pos_f"] = 0.0
+    r["turn"] = 410
+    r["then_d"] = "150M"
+    return page_nav(name, view3d=True, route=r)
+
+
 # ------------------------------------------------------------- MAP (DESIGN 1.5)
 # The same cartography as page_nav()'s map half, full width, with no route: open
 # the program and see where you are. Every mark is the one page_nav() uses --
@@ -1273,7 +1741,11 @@ MAP_MPP = 6.0                   # the default rung; Z/X move it, A comes back
 MAP_TRACK_N = 4                 # ROUTE_M[:4] read as a breadcrumb, not a route
 MAP_LAT, MAP_LON = 13.88510, 100.37850      # the device's own desk
 MAP_SATS = 9
-MAP_HINTS = "F FIND   R ROUTES   Q QUIT"
+# Four keys now (S SAVE, DESIGN.md 1.4.8), so the separators went from three
+# spaces to two: 32 characters at scale 2 is 384 px of the 400 and 33 would not
+# fit. S had to go on this row rather than being left off it -- 1.5 makes the row
+# the page's whole advertisement, and a key absent from it was never claimed.
+MAP_HINTS = "F FIND  R ROUTES  S SAVE  Q QUIT"
 # 21 px from the edge is where page_nav() puts the compass, but that page's map
 # starts at x 130 with a panel to its left. Here the needle's 21.6 px reach would
 # leave the frame whenever the rotation points it at the margin, so the badge
@@ -1482,10 +1954,13 @@ if __name__ == "__main__":
         page_nav("nav-turn-osm", basemap=True, route=osm[1], streets=osm[0])
         page_search()
         page_confirm()
+        page_nav3d()
     page_nav("nav-turn-nomap")
     page_nav("nav-turn-off", basemap=True, off=85)
     page_map("nav-map")
     page_map("nav-map-nofix", nofix=True)
+    page_save("nav-save")
+    page_save("nav-save-typed", typed=True)
     page_map_wait("nav-map-wait")
     page_overview()
     page_arrows()

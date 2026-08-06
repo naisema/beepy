@@ -1,8 +1,10 @@
 /* beepy-nav/src/config.c -- see config.h. */
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h> /* mkdir, for the one directory cfg_place_add() may make */
 
 #include "config.h"
 #include "route.h" /* UNITS_METRIC / UNITS_IMPERIAL */
@@ -18,6 +20,10 @@ cfg_defaults(navcfg_t *c)
     c->led_alerts = 1; /* 7.5; led.c already copes with an unwritable LED */
     c->nplace = 0;
     c->mode = NAV_MODE_BIKE;
+    /* 1, and NOT what the memset gives -- see config.h. This is the one default
+     * in this file that changes an answer the program used to give. */
+    c->major_roads = 1;
+    c->view3d = 0;
     c->reroute = REROUTE_ASK;
     c->router_url[0] = '\0';
     snprintf(c->router_type, sizeof c->router_type, "valhalla");
@@ -40,6 +46,65 @@ cfg_default_path(char *buf, size_t n)
              home && *home ? home : "/home/beepy");
 }
 
+void
+cfg_places_path(char *buf, size_t n)
+{
+    const char *home = getenv("HOME");
+    snprintf(buf, n, "%s/.config/beepy-nav.places",
+             home && *home ? home : "/home/beepy");
+}
+
+int
+cfg_place_add(const char *path, const char *name, double lat, double lon)
+{
+    FILE *f;
+
+    if (!path || !*path || !name || !*name)
+        return -1;
+    f = fopen(path, "a");
+    if (!f) {
+        /* One retry after making the directory, and no more than that. A fresh
+         * card has no ~/.config until something writes there, and a favourite
+         * that could never be saved on a new device because a directory was
+         * missing would be a feature that looks broken on first contact. Any
+         * other errno -- a read-only card, a full one -- is the rider's to fix,
+         * and the panel says NOT SAVED. */
+        char dir[CFG_PATH_MAX];
+        char *slash;
+        snprintf(dir, sizeof dir, "%s", path);
+        slash = strrchr(dir, '/');
+        /* ONE level, which is all this needs: the parent of ~/.config is the
+         * home directory and it exists by construction. EEXIST is the ordinary
+         * case and not an error -- ridelog_open()'s rule, for its reason. */
+        if (slash && slash != dir) {
+            *slash = '\0';
+            if (mkdir(dir, 0755) == 0 || errno == EEXIST)
+                f = fopen(path, "a");
+        }
+    }
+    if (!f) {
+        fprintf(stderr, "beepy-nav: cannot write %s -- %s\n", path,
+                strerror(errno));
+        return -1;
+    }
+    fprintf(f, "place = %s %.5f,%.5f\n", name, lat, lon);
+    /* Both checked, because a full card fails at the flush and not at the
+     * write, and a favourite reported saved that is not on the card is worse
+     * than one refused. */
+    if (fflush(f) != 0 || ferror(f)) {
+        fprintf(stderr, "beepy-nav: cannot write %s -- %s\n", path,
+                strerror(errno));
+        fclose(f);
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        fprintf(stderr, "beepy-nav: cannot close %s -- %s\n", path,
+                strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
 /* In place, both ends. Returns the new start. */
 static char *
 trim(char *s)
@@ -53,6 +118,67 @@ trim(char *s)
         e--;
     *e = '\0';
     return s;
+}
+
+/* One number, scanned RIGHT to LEFT out of [start, e). Returns where it begins,
+ * or NULL if there is not one there. Leading whitespace before `e` is skipped, so
+ * the caller can hand this the position just past the previous field. */
+static char *
+num_left(char *start, char *e)
+{
+    char *p = e;
+
+    while (p > start && (p[-1] == ' ' || p[-1] == '\t'))
+        p--;
+    e = p;
+    while (p > start && ((p[-1] >= '0' && p[-1] <= '9') || p[-1] == '.'))
+        p--;
+    if (p == e)
+        return NULL; /* no digits at all: not a number */
+    if (p > start && (p[-1] == '-' || p[-1] == '+'))
+        p--;
+    return p;
+}
+
+/* Split `NAME LAT,LON` by finding the COORDINATE FROM THE RIGHT, and so allow a
+ * name with spaces in it. Returns where the coordinate starts and cuts the name
+ * off in place; NULL when either half is missing.
+ *
+ * Taking the name as the first field was the obvious reading and it was wrong in
+ * a way nothing could see. `place = PLACE 1 13.72936,100.56100` -- which is
+ * exactly what 1.4.8's default name writes -- parsed as a place called PLACE at
+ * 1.00000, 13.72936: a point in the Atlantic off Guinea. Both halves are legal
+ * numbers, so the +-90 guard below could not catch it, and the rider would have
+ * been given a favourite that read back as somewhere else entirely.
+ *
+ * A character-class walk from the right does not work either, and the reason is
+ * worth recording: a name ending in a digit ("GYM 2") is indistinguishable from
+ * part of the coordinate that way, and " 2 13.88,100.37" parses happily as
+ * 2, 13.88. So this counts NUMBERS -- exactly two, with an optional comma
+ * between them -- which is the only rule that can tell the two apart. */
+static char *
+place_split(char *val)
+{
+    char *lat, *lon, *p;
+
+    lon = num_left(val, val + strlen(val));
+    if (!lon)
+        return NULL;
+    p = lon;
+    while (p > val && (p[-1] == ' ' || p[-1] == '\t'))
+        p--;
+    if (p > val && p[-1] == ',')
+        p--; /* `LAT , LON` and `LAT,LON` reach the same place */
+    lat = num_left(val, p);
+    if (!lat || lat == val)
+        return NULL; /* no latitude, or nothing left to be the name */
+    p = lat;
+    while (p > val && (p[-1] == ' ' || p[-1] == '\t'))
+        p--;
+    if (p == val)
+        return NULL;
+    *p = '\0'; /* the name ends here */
+    return lat;
 }
 
 /* ASCII, in place. strcasecmp is POSIX and this file is meant to compile
@@ -147,6 +273,36 @@ cfg_load(navcfg_t *c, const char *path, int loud)
                 c->mode = NAV_MODE_CAR;
             else
                 complain(path, lineno, "mode must be bike or car, not", val);
+        } else if (!strcmp(key, "prefer")) {
+            if (!strcmp(val, "pack") || !strcmp(val, "offline"))
+                c->prefer = CFG_PREFER_PACK;
+            else if (!strcmp(val, "online") || !strcmp(val, "net"))
+                c->prefer = CFG_PREFER_ONLINE;
+            else
+                complain(path, lineno, "prefer must be pack or online, not",
+                         val);
+        } else if (!strcmp(key, "view3d")) {
+            lower(val);
+            b = parse_flag(val);
+            if (b < 0)
+                complain(path, lineno, "not 0 or 1:", val);
+            else
+                c->view3d = b;
+        } else if (!strcmp(key, "major_roads")) {
+            lower(val);
+            b = parse_flag(val);
+            if (b < 0)
+                complain(path, lineno, "not 0 or 1:", val);
+            else
+                c->major_roads = b;
+        } else if (!strcmp(key, "tolls")) {
+            if (!strcmp(val, "avoid") || !strcmp(val, "no"))
+                c->tolls = CFG_TOLLS_AVOID;
+            else if (!strcmp(val, "allow") || !strcmp(val, "yes"))
+                c->tolls = CFG_TOLLS_ALLOW;
+            else
+                complain(path, lineno, "tolls must be avoid or allow, not",
+                         val);
         } else if (!strcmp(key, "place")) {
             /* `place = HOME 13.8851,100.3785`. Repeated, and accumulating
              * rather than overwriting -- the one key in this file where a
@@ -159,12 +315,13 @@ cfg_load(navcfg_t *c, const char *path, int loud)
              * HOME. */
             char nm[CFG_PLACE_NAME];
             double la, lo;
-            char *sp = val;
-            size_t nl;
-            while (*sp && *sp != ' ' && *sp != '\t')
-                sp++;
-            nl = (size_t)(sp - val);
-            if (!nl || !*sp) {
+            /* From the RIGHT, so `MY OFFICE 13.7,100.5` works and 1.4.8's own
+             * `PLACE 1` default does not silently become a place in the
+             * Atlantic. place_split() cuts the name off in place and hands back
+             * the coordinate; see it for what the first version of this did. */
+            char *sp = place_split(val);
+            size_t nl = sp ? strlen(val) : 0;
+            if (!sp || !nl) {
                 complain(path, lineno, "wants NAME LAT,LON, not", val);
             } else if (nl >= (size_t)CFG_PLACE_NAME) {
                 complain(path, lineno, "place name is too long", val);
@@ -173,8 +330,6 @@ cfg_load(navcfg_t *c, const char *path, int loud)
             } else {
                 memcpy(nm, val, nl);
                 nm[nl] = '\0';
-                while (*sp == ' ' || *sp == '\t')
-                    sp++;
                 if (sscanf(sp, "%lf , %lf", &la, &lo) != 2 &&
                     sscanf(sp, "%lf %lf", &la, &lo) != 2) {
                     complain(path, lineno, "is not LAT,LON", sp);

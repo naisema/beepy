@@ -49,6 +49,7 @@
 #include "led.h"
 #include "map.h"
 #include "ridelog.h"
+#include "roadgrid.h"
 #include "route.h"
 #include "router.h"
 #include "search.h"
@@ -93,9 +94,9 @@ static const char USAGE[] =
     "                always 1 Hz -- DESIGN.md 6.3)\n"
     "  --stats       render ms and frames drawn/skipped, per second and a\n"
     "                p95 summary at exit\n"
-    "  --dump-at S:F write the frame at replay second S to file F (up to 4;\n"
+    "  --dump-at S:F write the frame at replay second S to file F (up to 8;\n"
     "                this is how a moving page gets into fbshow --verify)\n"
-    "  --key S:C     press key C at replay second S (up to 8) -- how the\n"
+    "  --key S:C     press key C at replay second S (up to 16) -- how the\n"
     "                keymap is driven in a headless test. C may also be\n"
     "                kcNNN, a raw keycode through the panel's own keymap\n"
     "  --print       dump nav_t as text, per fix\n"
@@ -109,6 +110,15 @@ static const char USAGE[] =
     "                by tools/mktiles.py; --no-basemap defeats the config\n"
     "  --roads F     the road/name pack F searches and routes over (1.4),\n"
     "                built by tools/mkpack.py; --no-roads defeats the config\n"
+    "  --places F    read and write saved places in F instead of\n"
+    "                ~/.config/beepy-nav.places (DESIGN.md 1.4.8). --config\n"
+    "                already suppresses the default one, since the two files\n"
+    "                are one configuration; --no-places suppresses both and\n"
+    "                makes S refuse rather than save something that would\n"
+    "                not survive the exit\n"
+    "  --major-roads offline routing prefers bigger roads over shorter ones\n"
+    "                (DESIGN.md 7.7.2, car mode only, the default);\n"
+    "                --no-major-roads is the shortest-distance router\n"
     "  --no-log      do not record the ride. On a real port the raw NMEA and\n"
     "                the per-fix trace go to ~/rides/YYYYMMDD-HHMMSS.{nmea,tsv}\n"
     "                unless this says otherwise (rides_dir in the config)\n"
@@ -121,6 +131,7 @@ static const char USAGE[] =
     "                map-wait, map-pan, map-pan-ask, map-tiles, overview,\n"
     "                overview-tiles, arrows,\n"
     "                chooser, find, find-none, find-toofar, confirm,\n"
+    "                save, save-typed,\n"
     "                cliptest,\n"
     "                cliptest-panel -- and with --route it picks the page\n"
     "                the ride opens on\n"
@@ -130,12 +141,16 @@ static const char USAGE[] =
     "keys: Tab page   F find a destination   R change route   E end route\n"
 "      Q quit (asks first)   H hold\n"
     "      O course-up/north-up   Z/X zoom out/in   A auto zoom\n"
+"      V 2D/3D map\n"
     "      U metric/imperial   L cue alerts on/off\n"
-    "map:  F find   R routes   Q quit (asks first) -- and O, Z/X/A, U as\n"
+    "map:  F find   R routes   S save this place   Q quit (asks first)\n"
+"      -- and arrows pan, C centres, plus O, Z/X/A, U as\n"
 "      above; Tab is not\n"
     "      bound, because with no route there is no OVERVIEW to switch to\n"
     "find: type to filter   Down/Up select   Enter route   Esc (or Backspace\n"
-    "      on an empty query) cancel;  confirm: Enter go   Q cancel\n";
+    "      on an empty query) cancel;  confirm: Enter go   Q cancel\n"
+    "save: type a name   Enter save   Esc (or Backspace on an empty name)\n"
+    "      cancel\n";
 
 enum {
     PAGE_NAV,
@@ -143,6 +158,7 @@ enum {
     PAGE_NAV_NOFIX,
     PAGE_NAV_ASK,
     PAGE_NAV_TILES,
+    PAGE_NAV_3D,
     PAGE_MAP,
     PAGE_MAP_NOFIX,
     PAGE_MAP_WAIT,
@@ -161,6 +177,8 @@ enum {
     PAGE_MAP_WAIT_HOME,
     PAGE_MAP_SAVED,
     PAGE_FIND_SAVED,
+    PAGE_SAVE,
+    PAGE_SAVE_TYPED,
     PAGE_CLIPTEST,
     PAGE_CLIPTEST_PANEL,
     PAGE_CHOOSER
@@ -175,7 +193,7 @@ enum {
  * It is LAST so LIVE_NAV stays zero -- a zeroed app_t is a ride on the NAV
  * page, which is what main()'s reset across R counts on. */
 enum { LIVE_NAV, LIVE_OVERVIEW, LIVE_FIND, LIVE_CONFIRM, LIVE_MAP,
-       LIVE_QUIT };
+       LIVE_QUIT, LIVE_SAVE };
 
 /* run_live()'s "the rider wants a different route", distinct from any exit
  * status: main() loops back to the picker rather than returning it. Outside
@@ -204,6 +222,43 @@ static tiles_t *g_tiles;
  * not a pack. At file scope for the same reason g_tiles is: it outlives every
  * route, and unlike the tile pack it is not even bound to one (search.h). */
 static roads_t *g_roads;
+/* Built on the first V press and kept for the process's life: 7.4 MB and
+ * about a second, which is worth paying once and never again. */
+/* -1 = "the config decides". A flag rather than a direct write because the
+ * config is parsed after the arguments, and a test that says --no-view3d must
+ * not have it undone -- the T-FIND lesson, where an assertion quietly became a
+ * measurement of whichever device was running the gate. */
+static int g_view3d_cli = -1;
+static roadgrid_t *g_grid;
+
+/* The route window in the ROADS pack's frame, rebuilt on each 3D frame. Static
+ * because a draw loop should not malloc; bounded by the same window
+ * build_window() fills. */
+#define R3D_MAX 512
+static double g_r3d[2 * R3D_MAX];
+
+/* Build the 3D index if it is not there yet. Returns 1 when one exists.
+ *
+ * Called from two places and they want different things from it. The V key
+ * calls it mid-ride, where 950 ms is seven dropped frames and has to sit behind
+ * a note. main() calls it at STARTUP when the config already says view3d, which
+ * is the case that matters once 3D is the rider's default: without it the page
+ * would find g_grid NULL, fall silently back to 2D, and the config line would
+ * look like it did nothing. Paying it during startup -- where a second is lost
+ * among opening a 2.5 GB basemap and waiting for a fix -- is strictly better
+ * than paying it on whichever frame the rider first looks at the screen. */
+static int
+build_grid(void)
+{
+    roadgraph_t rg;
+    if (g_grid)
+        return 1;
+    if (!g_roads)
+        return 0;
+    roads_graph(g_roads, &rg);
+    g_grid = roadgrid_build(&rg, 256.0);
+    return g_grid != NULL;
+}
 
 /* The route CONFIRM approved, waiting for main() to install it. A route_t and
  * not a path, because there is no file: router_to() built it, route_prepare()
@@ -285,6 +340,11 @@ static int g_have_odo;
  * lives on main()'s stack. */
 static cfgplace_t g_place[CFG_PLACES_MAX];
 static int g_nplace;
+/* Where `S` writes one (DESIGN.md 1.4.8), and empty when it must not write at
+ * all -- which is what --no-places means and what every --demo page gets. A path
+ * and not a FILE*: the file is opened, appended to and closed inside one
+ * keypress, so nothing is held across a ride that a crash could truncate. */
+static char g_places_path[CFG_PATH_MAX];
 /* The same places projected for the MAP page, rebuilt each frame because the
  * world frame can change under them (a route loads, R starts another). At file
  * scope only so the page can be handed a pointer that outlives this call. */
@@ -308,6 +368,13 @@ mode_name(void)
  * holding a socket open is a small thing, but it is a small thing that
  * survives the program. */
 static netfetch_t g_fetch;
+/* Beside g_mode, and set from the config the same way: both are "how to route"
+ * and both are read by the offline router and the online request. */
+static int g_tolls = CFG_TOLLS_AVOID;
+/* DESIGN.md 7.7.2's class weighting, beside the mode it qualifies. Car only, and
+ * it changes what the offline router CHOOSES, never what it reports. */
+static int g_major = 1;
+static int g_prefer = CFG_PREFER_PACK;
 static char g_router_url[CFG_PATH_MAX];
 static char g_router_type[16];
 static char g_fetch_cmd[CFG_PATH_MAX];
@@ -414,6 +481,17 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
     case PAGE_NAV_TILES:
         view_nav_tiles_demo(cov, tiles);
         break;
+    /* The 3D state (6.6). Needs a roads pack AND its index, and with either
+     * absent it draws the 2D page -- which is the same "the layer is optional"
+     * comparison nav-tiles makes, one level up. The index is built here rather
+     * than at startup because a demo dump is a one-shot process: there is no
+     * ride for the 950 ms to interrupt. */
+    case PAGE_NAV_3D:
+        if (roads && build_grid())
+            view_nav_3d_demo(cov, roads, g_grid);
+        else
+            view_nav_tiles_demo(cov, NULL);
+        break;
     /* The MAP page of DESIGN.md 1.5, in its four states: a position, a position
      * that has gone stale, no position yet, and a position over a basemap. The
      * fourth is separate rather than a --basemap on the first for exactly the
@@ -478,6 +556,12 @@ render_demo(cov_t *cov, canvas_t *cv, int page, const char *routes,
         break;
     case PAGE_MAP_SAVED:
         view_map_saved_demo(cov, g_tiles);
+        break;
+    case PAGE_SAVE:
+        view_save_demo(cov, 0);
+        break;
+    case PAGE_SAVE_TYPED:
+        view_save_demo(cov, 1);
         break;
     case PAGE_FIND_SAVED:
         view_find_saved_demo(cov, roads);
@@ -621,6 +705,7 @@ typedef struct {
     int alert_cue, alert_done, alert_fired;
 
     int page, hold, quit, course_up;
+        int view3d;      /* DESIGN.md 6.6, toggled by V, seeded from config */
 
     /* 0 on the MAP page of DESIGN.md 1.5, and only there: `rt` is then an empty
      * route_t and every rule of section 7 is skipped rather than run against
@@ -664,6 +749,28 @@ typedef struct {
      * the only act left for it is to ask for it as a car, so the flag disambiguates
      * a key the page already had rather than taking one it needed. */
     int car_offer;
+
+    /* --- SAVE (DESIGN.md 1.4.8) ----------------------------------------- */
+
+    /* The name being typed, and the fix it will be written against. The
+     * COORDINATE IS CAPTURED WHEN THE PAGE OPENS and not read back at ENTER:
+     * naming a place takes seconds, the receiver goes on delivering fixes
+     * underneath, and a rider who pressed S outside a shop must not have a
+     * coordinate from further up the road written under the name they typed. */
+    char sname[CFG_PLACE_NAME];
+    int sn;
+    /* The name is still the untouched default, so it is SELECTED: drawn inverted
+     * and replaced whole by the first character typed. Without it, pre-filling
+     * the field made a rider backspace seven times before naming anything -- the
+     * first replay through this page saved a place called PLACE 1CAFE. */
+    int sfresh;
+    double slat, slon;
+    /* The one transient in this program that is composed rather than chosen: the
+     * five literals of `note` cannot carry a name the rider invented, and
+     * "SAVED CAFE" is the confirmation worth reading. Kept in app_t so it
+     * outlives the keypress that wrote it -- `note` is a pointer, and pointing it
+     * at a local would be a dangling read on the next frame. */
+    char notebuf[CFG_PLACE_NAME + 8];
 
     /* --- the MAP pan (DESIGN.md 1.5.1) ---------------------------------- */
 
@@ -1056,24 +1163,56 @@ fmt_remaining(char *buf, size_t n, double eta_s)
         snprintf(buf, n, "%dH %02dM", mins / 60, mins % 60);
 }
 
-/* Arrival, 12-hour, value first and the label trailing. No meridiem: on a
- * ride you know whether it is morning, and "12:42 ETA" is nine characters
- * against a ten-character panel -- it always fits, with no degradation rule
- * to reason about. */
+/* When the ride ends, as a LOCAL clock time (DESIGN.md 1.1.3): the wall clock
+ * now, plus however many seconds are left. `eta_s` is a duration -- route.c has
+ * no business reading a system clock -- so this is the one place the two are put
+ * together, and route.h says why the nav_t has no timestamp of its own.
+ *
+ * 0 for "not known", which is what a standstill gives: eta_s < 0 there, because
+ * no ETA is better than one divided by a speed of nothing. */
+static time_t
+eta_clock(const app_t *a)
+{
+    time_t now;
+
+    if (!(a->nv.eta_s > 0.0))
+        return 0;
+    /* The RECEIVER'S clock first (fix.h): it is exact where the Pi's is whatever
+     * the last shutdown left, and it makes a replay's arrival time reproducible,
+     * which two byte-for-byte comparisons in the gate depend on.
+     *
+     * The system clock only when the receiver has not given a date yet -- a cold
+     * RMC, or a fixture without one. Consistent with the panel's own clock row,
+     * which has always been time(NULL); an ETA is more useful slightly wrong than
+     * absent, and this is the one path where it can be. */
+    now = fix_utc_epoch(a->gps.date, a->gps.utc);
+    if (now == 0)
+        now = time(NULL);
+    return now + (time_t)(a->nv.eta_s + 0.5);
+}
+
+/* Arrival, 24-HOUR and local, value first with the label trailing.
+ *
+ * 24-hour because 12-hour was ambiguous in the one place it mattered: the panel
+ * has no room for AM/PM, and the original argument -- "on a ride you know whether
+ * it is morning" -- fails on the ride that starts at 17:00 and is offering an
+ * arrival of 7:20. A rider reading that has to work out which 7 it is, and the
+ * two answers are fourteen hours apart. It also costs nothing: "18:41 ETA" is
+ * nine characters, exactly what "12:42 ETA" was, against a ten-character panel.
+ *
+ * LOCAL, via localtime_r, which needs the device's zone to be set -- it is
+ * (Asia/Bangkok), and if it were not this would read UTC and say so honestly
+ * rather than applying an offset this program invented. */
 static void
 fmt_eta(char *buf, size_t n, time_t eta)
 {
     struct tm tm;
-    int h12;
     if (eta == 0) {
         snprintf(buf, n, "-- ETA");
         return;
     }
     localtime_r(&eta, &tm);
-    h12 = tm.tm_hour % 12;
-    if (h12 == 0)
-        h12 = 12;
-    snprintf(buf, n, "%d:%02d ETA", h12, tm.tm_min);
+    snprintf(buf, n, "%02d:%02d ETA", tm.tm_hour, tm.tm_min);
 }
 
 static void
@@ -1208,6 +1347,20 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         cov_resolve(cov, cv);
         return;
     }
+    if (a->page == LIVE_SAVE) {
+        save_t s;
+        s.name = a->sname;
+        s.fresh = a->sfresh;
+        /* The fix save_open() captured, not a->fx: see app_t. */
+        s.lat = a->slat;
+        s.lon = a->slon;
+        s.nplace = g_nplace;
+        s.max = CFG_PLACES_MAX;
+        s.note = a->note && a->frame_t < a->note_until ? a->note : NULL;
+        view_save(cov, &s);
+        cov_resolve(cov, cv);
+        return;
+    }
     if (a->page == LIVE_CONFIRM && a->have_proposed) {
         const route_t *pr = &a->proposed;
         confirm_t cf;
@@ -1225,6 +1378,11 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         cf.units = a->ctx.units;
         cf.mode = g_mode;
         cf.note = a->note && a->frame_t < a->note_until ? a->note : NULL;
+        /* Explicitly, like every other field here: `cf` is a stack struct with
+         * no initialiser, so an unassigned toll would be whatever the frame
+         * before it left behind -- and the failure mode is a TOLL badge that
+         * appears on an offline route and moves between runs. */
+        cf.toll = pr->toll;
         view_confirm(cov, &cf);
         cov_resolve(cov, cv);
         return;
@@ -1236,7 +1394,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
             a->cue_idx[i] = r->cue[i].idx;
         fmt_big(togo, sizeof togo, a->rnv.togo_m, a->ctx.units);
         fmt_big(total, sizeof total, r->total_m, a->ctx.units);
-        fmt_clock(clock, sizeof clock, a->nv.eta);
+        fmt_clock(clock, sizeof clock, eta_clock(a));
         o.pts = r->en;
         o.npts = r->npt;
         o.cue_idx = a->cue_idx;
@@ -1274,6 +1432,34 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         m.units = a->ctx.units;
         m.mpp_manual = a->mpp_manual;
         m.tiles = g_tiles;
+        /* 6.6, and every field of it optional: any of these absent and the
+         * page takes the 2D branch, which is what keeps the five frozen nav
+         * goldens the standing proof that this layer changes nothing. */
+        m.view3d = a->view3d;
+        m.roads = g_roads;
+        m.grid = g_grid;
+        m.lat = a->fx.lat;
+        m.lon = a->fx.lon;
+        m.r3d_pts = NULL;
+        m.r3d_n = 0;
+        if (a->view3d && g_roads && g_grid) {
+            /* The window, moved into the roads pack's frame once per frame.
+             * It has to be MOVED and not passed through: route metres are
+             * referenced to the route's own first point and the pack to its
+             * own lat/lon, and drawing one in the other's frame would put the
+             * guidance line a kilometre off the streets beneath it -- the same
+             * class of bug tiles_bind_route() exists to prevent. */
+            int q, nq = a->win_n > R3D_MAX ? R3D_MAX : a->win_n;
+            for (q = 0; q < nq; q++) {
+                double la2, lo2;
+                geo_unproject(a->rt.lat0, a->rt.lon0, a->win_en[2 * q],
+                              a->win_en[2 * q + 1], &la2, &lo2);
+                roads_project(g_roads, la2, lo2, &g_r3d[2 * q],
+                              &g_r3d[2 * q + 1]);
+            }
+            m.r3d_pts = g_r3d;
+            m.r3d_n = nq;
+        }
         /* DESIGN.md 6.1: the map turns with the SMOOTHED heading, and 1.1:
          * the chevron gets what is left over, so it keeps pointing along the
          * road while the rotation catches up. North-up (theta 0) leaves the
@@ -1297,7 +1483,7 @@ render_live(app_t *a, cov_t *cov, canvas_t *cv)
         p.units = a->ctx.units;
         p.kind = a->rnv.cue_i >= 0 ? r->cue[a->rnv.cue_i].kind : CUE_DEST;
         fmt_remaining(remain, sizeof remain, a->nv.eta_s);
-        fmt_eta(etabuf, sizeof etabuf, a->nv.eta);
+        fmt_eta(etabuf, sizeof etabuf, eta_clock(a));
         p.remain = remain;
         p.eta = etabuf;
         p.togo_m = a->nv.seg >= 0 ? a->nv.togo_m : -1.0;
@@ -2246,11 +2432,23 @@ net_request(double slat, double slon, double dlat, double dlon, char *url,
      * believes whatever `trip.units` comes back saying, and a server whose
      * default is miles would otherwise be checked against a distance in
      * kilometres. Asking removes the question. */
+    /* use_tolls only for the car, and it is a PREFERENCE and not a ban.
+     * Valhalla scores 0 as "avoid strongly" and will still route over a toll
+     * road when there is no other way there -- so the CONFIRM page reports
+     * summary.has_toll rather than assuming this flag got its way. Asking is
+     * still worth it: the default is 0.5, which in Bangkok means the
+     * expressway most of the time.
+     *
+     * Not sent for the bicycle: Valhalla's bicycle costing has no use_tolls,
+     * and an unknown option in a costing_options block is a request a stricter
+     * server can reject outright. */
     snprintf(body, (size_t)nbody,
              "{\"locations\":[{\"lat\":%.6f,\"lon\":%.6f},"
-             "{\"lat\":%.6f,\"lon\":%.6f}],\"costing\":\"%s\","
+             "{\"lat\":%.6f,\"lon\":%.6f}],\"costing\":\"%s\",%s"
              "\"directions_options\":{\"units\":\"kilometers\"}}",
-             slat, slon, dlat, dlon, car ? "auto" : "bicycle");
+             slat, slon, dlat, dlon, car ? "auto" : "bicycle",
+             car && g_tolls == CFG_TOLLS_AVOID
+                 ? "\"costing_options\":{\"auto\":{\"use_tolls\":0}}," : "");
 }
 
 /* Ask the online router for what the pack could not answer. The FIND page stays
@@ -2462,8 +2660,8 @@ find_route_selected(app_t *a)
      * it is what makes 7.7's mode toggle on CONFIRM safe: a bicycle refused up a
      * motorway-only spur puts the mode back and the route is still there. */
     route_init(&nr);
-    if (router_to(g_roads, e, n, h->e, h->n, g_mode, h->name, &nr, why,
-                  (int)sizeof why, &code)) {
+    if (router_to(g_roads, e, n, h->e, h->n, g_mode, g_tolls, g_major, h->name,
+                  &nr, why, (int)sizeof why, &code)) {
         fprintf(stderr, "beepy-nav: %s\n", why);
         if (code == RC_OFFMAP || code == RC_UNREACHABLE) {
             net_start(a, h, 0);
@@ -2480,6 +2678,23 @@ find_route_selected(app_t *a)
             "beepy-nav: routed to %s -- %d points, %.2f km, %d cues, %s\n",
             a->proposed.name, a->proposed.npt, a->proposed.total_m / 1000.0,
             a->proposed.ncue, mode_name());
+    /* prefer = online: ask anyway, AFTER the pack's answer is already on the
+     * page (7.7.1).
+     *
+     * This order is the whole safety of the feature. The offline router costs
+     * by distance and will not take an expressway; Valhalla costs by time and
+     * will -- but the network is a phone hotspot on a bicycle, and a rider who
+     * asked for the faster answer must not be left with NO answer when it does
+     * not arrive. So the pack route is installed and shown first, the fetch is
+     * fired second, and the reply REPLACES the proposal only if it lands. A
+     * timeout, a captive portal or no signal all leave the rider looking at the
+     * route they already had, with FETCHING having come and gone.
+     *
+     * Nothing new is needed for the replacement: this is the same net_start()
+     * path RC_OFFMAP takes, and net_poll() installs a reply the same way there.
+     * The only change is WHEN it is allowed to run. */
+    if (g_prefer == CFG_PREFER_ONLINE && g_router_url[0] && !g_req.live)
+        net_start(a, h, 0);
 }
 
 /* ---------------------------------------------------- rerouting (7.11)
@@ -2630,8 +2845,8 @@ reroute_go(app_t *a)
         roads_project(g_roads, a->fx.lat, a->fx.lon, &se, &sn);
         roads_project(g_roads, dlat, dlon, &de, &dn);
         route_init(&nr);
-        if (router_to(g_roads, se, sn, de, dn, g_mode, a->rt.name, &nr, why,
-                      (int)sizeof why, &code) == 0) {
+        if (router_to(g_roads, se, sn, de, dn, g_mode, g_tolls, g_major,
+                      a->rt.name, &nr, why, (int)sizeof why, &code) == 0) {
             route_install(a, &nr);
             return;
         }
@@ -2792,7 +3007,251 @@ find_key(app_t *a, int ch)
     return 1;
 }
 
-/* CONFIRM has exactly the three keys its own strip advertises. */
+/* ---------------------------------------------- SAVE (DESIGN.md 1.4.8) ---
+ *
+ * §1.4.6 gave the rider eight favourites and no way to make one: a `place` line
+ * is a line in a config file, so creating one meant carrying a coordinate off
+ * the MAP strip as far as a laptop. `S` on MAP is the other half of that
+ * feature, and everything below it is a name, a duplicate test and one appended
+ * line.
+ */
+
+/* Already in the list? Exact and case-sensitive, which is safe because
+ * everything that reaches g_place is uppercase by then -- config.c uppercases
+ * what it parses and save_key() folds what it types, so there is no path by
+ * which "home" and "HOME" both get in. */
+static int
+place_named(const char *name)
+{
+    int i;
+    for (i = 0; i < g_nplace; i++)
+        if (!strcmp(g_place[i].name, name))
+            return 1;
+    return 0;
+}
+
+/* PLACE N, and N is the FIRST FREE number rather than nplace + 1. Those differ
+ * the moment a rider deletes a line by hand: with HOME, PLACE 2 and PLACE 3 in
+ * the file and two slots used, counting would propose PLACE 3 and the save would
+ * then be refused as a duplicate -- a default that walks straight into the
+ * program's own refusal.
+ *
+ * Not the nearest road name, which would say something a week later where this
+ * says nothing. That costs a linear pass over the name table, which DESIGN.md
+ * 1.4.7 sized at 110 556 names and estimated at 30-60 ms on the device WITHOUT
+ * MEASURING IT. The measurement is owed on the FIND page first, where the same
+ * pass runs on every keystroke; until it exists this page will not spend it. */
+static void
+place_default_name(char *buf, size_t n)
+{
+    int k;
+    for (k = 1; k <= CFG_PLACES_MAX; k++) {
+        snprintf(buf, n, "PLACE %d", k);
+        if (!place_named(buf))
+            return;
+    }
+    /* Unreachable: save_open() refuses a full list before asking for a name, so
+     * there are at most CFG_PLACES_MAX - 1 names to collide with and
+     * CFG_PLACES_MAX candidates. The loop leaves the last one in the buffer
+     * rather than an empty string, because a name is the one thing this page
+     * cannot proceed without. */
+}
+
+/* The ceiling, composed rather than written out. "8 PLACES MAX" would be a
+ * literal 8 beside a CFG_PLACES_MAX that is free to change, and the panel is the
+ * last place that should be the one telling the rider a stale number. */
+static void
+note_places_full(app_t *a)
+{
+    snprintf(a->notebuf, sizeof a->notebuf, "%d PLACES MAX", CFG_PLACES_MAX);
+    note_show(a, a->notebuf);
+}
+
+static void
+save_open(app_t *a)
+{
+    /* Three refusals, and none of them is a dead key (DESIGN.md 2). The MAP page
+     * is reachable with no fix at all -- 1.5 draws the waiting screen -- and this
+     * key is the one thing on it that needs the position to be real. */
+    /* Each refusal says it twice: on the panel because the rider is looking at
+     * it, and on stderr because that is what a test can assert and what whoever
+     * reads a log over ssh has. net_start() does the same with its five. */
+    /* NEVER HAD ONE, or LOST THE ONE IT HAD -- both refuse, and the second half
+     * is the one worth arguing. 1.1.2 keeps the last known position on the strip
+     * through a gap, because it is still the last thing known and worth reading.
+     * WRITING it is a different claim: a coordinate half a minute old under a
+     * bridge is a favourite in the wrong soi, permanently, and the rider would
+     * have no way to tell from the name. Reading a stale number and recording one
+     * are not the same act, so the page that records refuses where the strip that
+     * reads does not. The gap is seconds long and S is one key. */
+    if (a->epochs < 1 || a->nofix) {
+        fprintf(stderr, "beepy-nav: nothing to save -- %s\n",
+                a->epochs < 1 ? "there has been no fix yet"
+                              : "the fix is lost, and the last one is stale");
+        note_show(a, "NO FIX");
+        return;
+    }
+    if (g_nplace >= CFG_PLACES_MAX) {
+        fprintf(stderr, "beepy-nav: %d places already saved, which is the "
+                        "ceiling -- delete one in %s\n", g_nplace,
+                g_places_path[0] ? g_places_path : "the config file");
+        note_places_full(a);
+        return;
+    }
+    /* --no-places. A save that lived only until exit would be worse than a
+     * refusal: the mark would appear, the rider would trust it, and it would be
+     * gone next time the program started. */
+    if (!g_places_path[0]) {
+        fprintf(stderr, "beepy-nav: no places file, so there is nowhere to "
+                        "save -- see --places\n");
+        note_show(a, "NO PLACES FILE");
+        return;
+    }
+    /* CAPTURED HERE, not read back at ENTER. Naming a place takes seconds and
+     * the receiver goes on delivering fixes underneath: a rider who pressed S
+     * outside a shop must not get the coordinate of wherever they had drifted to
+     * by the time they finished typing. */
+    a->slat = a->fx.lat;
+    a->slon = a->fx.lon;
+    place_default_name(a->sname, sizeof a->sname);
+    a->sn = (int)strlen(a->sname);
+    a->sfresh = 1;
+    a->page_back = a->page;
+    a->page = LIVE_SAVE;
+    /* A live transient from some earlier key would otherwise land in the strip's
+     * second row, where this page puts its refusals -- so the page would open
+     * apparently already complaining about something. */
+    a->note = NULL;
+}
+
+static void
+save_commit(app_t *a)
+{
+    /* Reachable, and worth the line: backspace on an EMPTY field cancels, so the
+     * field is empty for exactly one keypress -- the one after deleting the last
+     * character -- and ENTER during it must not write a nameless place. */
+    if (a->sn == 0) {
+        fprintf(stderr, "beepy-nav: a saved place needs a name\n");
+        note_show(a, "NAME NEEDED");
+        return;
+    }
+    /* Checked HERE and not only in save_open(), because this is the function
+     * that writes: a guard at the page's entrance protects the page, and a guard
+     * at the write protects g_place[]. */
+    if (g_nplace >= CFG_PLACES_MAX) {
+        note_places_full(a);
+        return;
+    }
+    /* Refused rather than replaced. `place` ACCUMULATES and nothing here
+     * rewrites a file, so a second HOME would be two rows with one name on the
+     * FIND list -- a list nobody can navigate by memory any more. The page stays
+     * up with the name still in the field, because editing it is the answer. */
+    if (place_named(a->sname)) {
+        fprintf(stderr, "beepy-nav: %s is already a saved place\n", a->sname);
+        note_show(a, "NAME IN USE");
+        return;
+    }
+    if (cfg_place_add(g_places_path, a->sname, a->slat, a->slon) != 0) {
+        /* cfg_place_add() has already put the errno on stderr. The page stays up
+         * for the reason above: a read-only card is not something a rider fixes
+         * from here, but a full one is, and either way the sentence has to be
+         * readable for longer than a transient over a page they have left. */
+        note_show(a, "NOT SAVED");
+        return;
+    }
+    /* And into the live list, which is what makes this feel instant rather than
+     * next-boot: render_state() reprojects saved places every frame and
+     * find_update() rebuilds the FIND rows on every keystroke, so the mark is
+     * under the chevron before the key is released and nothing had to be added
+     * for that to be true. */
+    snprintf(g_place[g_nplace].name, CFG_PLACE_NAME, "%s", a->sname);
+    g_place[g_nplace].lat = a->slat;
+    g_place[g_nplace].lon = a->slon;
+    g_nplace++;
+    fprintf(stderr, "beepy-nav: saved %s at %.5f,%.5f -- %d of %d, in %s\n",
+            a->sname, a->slat, a->slon, g_nplace, CFG_PLACES_MAX,
+            g_places_path);
+    /* Composed, unlike every other transient in the program: the five literals
+     * of `note` cannot carry a name the rider invented, and SAVED CAFE is the
+     * confirmation actually worth reading. */
+    snprintf(a->notebuf, sizeof a->notebuf, "SAVED %s", a->sname);
+    a->page = a->page_back;
+    note_show(a, a->notebuf);
+}
+
+/* The SAVE page owns every key, for the reason find_key() gives about its own:
+ * the whole surface is a text field, so Q types a Q. Which leaves ENTER, Esc and
+ * backspace -- and backspace on an empty field backs out, because the Beepy's
+ * Esc needs the symbol layer and no page may be reachable that a rider cannot
+ * leave with the keys already under their thumbs (1.4.4). */
+static int
+save_key(app_t *a, int ch)
+{
+    switch (ch) {
+    case '\n':
+    case '\r':
+        save_commit(a);
+        break;
+    case 27: /* Esc */
+        a->page = a->page_back;
+        break;
+    case '\b':
+    case 127: /* DEL, which is what a terminal sends for Backspace */
+        if (a->sn == 0) {
+            a->page = a->page_back;
+            break;
+        }
+        /* The default is a SELECTION, so backspace deletes all of it rather than
+         * one character of it -- the same thing the first typed character does,
+         * and the only reading consistent with drawing it inverted. A rider who
+         * wanted the field empty is then one press from empty instead of seven,
+         * and the NEXT backspace cancels the page as usual. */
+        if (a->sfresh) {
+            a->sn = 0;
+            a->sname[0] = '\0';
+            a->sfresh = 0;
+            a->note = NULL;
+            break;
+        }
+        a->sname[--a->sn] = '\0';
+        /* Editing IS the answer to NAME IN USE, so the refusal goes with the
+         * change -- find_key()'s rule for 7.10's offer, for the same reason: a
+         * complaint left standing over a field the rider has already fixed is a
+         * complaint about nothing. */
+        a->note = NULL;
+        break;
+    default:
+        /* FIND's alphabet exactly (A-Z, 0-9, space): those are the glyphs
+         * tools/gen_query.py prepared for the 24 px table this page draws in, and
+         * a character with no glyph would blank the field rather than appear as a
+         * box. Folded up because config.c stores names uppercase and the font has
+         * no lower case anyway. */
+        if (ch >= 'a' && ch <= 'z')
+            ch = ch - 'a' + 'A';
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+              ch == ' '))
+            return 0;
+        /* The first character takes the WHOLE field, because the default was
+         * drawn as a selection and this is what a selection means. Checked before
+         * the length test below, or a 19-character default would refuse the
+         * keypress that was about to replace it. */
+        if (a->sfresh) {
+            a->sn = 0;
+            a->sname[0] = '\0';
+            a->sfresh = 0;
+        }
+        if (a->sn + 1 >= (int)sizeof a->sname)
+            return 0; /* full; a silent no-op beats a wrap, as on FIND */
+        a->sname[a->sn++] = (char)ch;
+        a->sname[a->sn] = '\0';
+        a->note = NULL;
+        break;
+    }
+    key_repaint(a);
+    return 1;
+}
+
+/* CONFIRM has exactly the four keys its own strip advertises. */
 static int
 confirm_key(app_t *a, int ch)
 {
@@ -2823,6 +3282,52 @@ confirm_key(app_t *a, int ch)
             note_show(a, "FETCHING");
         } else {
             note_show(a, g_mode == NAV_MODE_CAR ? "CAR" : "BIKE");
+        }
+        break;
+    }
+    /* 7.7.1's tolls, on this page for exactly M's reason and with the same
+     * mechanism. "Is this trip worth the toll?" is asked per journey, not per
+     * rider, so a config key alone is worse here than it is for `mode`: the
+     * answer changes between two destinations on the same morning, and editing
+     * a file over ssh to change it is not an interface.
+     *
+     * And it belongs HERE because here it can be answered honestly. Toggling
+     * rebuilds the route, so the distance, the estimate, the turn count, the
+     * drawn line and the TOLL badge all move together -- which is what lets a
+     * rider see what the toll actually buys before paying it. A toggle
+     * anywhere else could only promise to affect some future route.
+     *
+     * NO ROUTE is a real outcome and not belt-and-braces, unlike M's. Avoiding
+     * tolls is an EXCLUSION (7.7.1), so where the only way through is tolled
+     * the graph has no path at all -- press T on such a route and the old
+     * setting has to come back, or the rider is left on a page whose route
+     * they can no longer reach. */
+    case 't':
+    case 'T': {
+        int was = g_tolls;
+        if (!a->have_proposed || g_req.live)
+            return 0; /* nothing to rebuild, or one already in flight */
+        g_tolls = g_tolls == CFG_TOLLS_AVOID ? CFG_TOLLS_ALLOW
+                                             : CFG_TOLLS_AVOID;
+        find_route_selected(a);
+        if (!a->have_proposed) {
+            g_tolls = was;
+            find_route_selected(a); /* put the reachable one back on the page */
+            note_show(a, "NO ROUTE");
+        } else if (g_req.live) {
+            note_show(a, "FETCHING");
+        } else {
+            /* Names the SETTING, in words that cannot be mistaken for the
+             * badge's. The first draft said "TOLLS OK" / "NO TOLLS" against a
+             * title reading "T NO TOLL", and the two looked like a
+             * contradiction the moment they disagreed -- which is the common
+             * case, not a corner: allowing tolls does not put one on a route
+             * that has no toll option, so the badge stays NO TOLL while the
+             * policy has plainly changed. Both facts are true and the rider
+             * needs both; only the wording was at fault. ALLOWED/AVOIDED is a
+             * policy verb, TOLL/NO TOLL is a property of the line on screen. */
+            note_show(a, g_tolls == CFG_TOLLS_AVOID ? "TOLLS AVOIDED"
+                                                    : "TOLLS ALLOWED");
         }
         break;
     }
@@ -2910,6 +3415,8 @@ handle_key(app_t *a, int ch)
         return find_key(a, ch);
     if (a->page == LIVE_CONFIRM)
         return confirm_key(a, ch);
+    if (a->page == LIVE_SAVE)
+        return save_key(a, ch);
     /* The MAP pan of 1.5.1. Arrows, and only on MAP -- the NAV page's map is a
      * third of the screen with a route in it and auto-zooms to the next cue, so
      * there is nothing there a pan would improve.
@@ -2951,6 +3458,17 @@ handle_key(app_t *a, int ch)
     if (a->page == LIVE_MAP && (ch == 'c' || ch == 'C')) {
         a->pan_ask = 0;
         a->pan_x = a->pan_y = 0.0;
+        key_repaint(a);
+        return 1;
+    }
+    /* S saves where you are (DESIGN.md 1.4.8). MAP ONLY, and up here with C
+     * rather than in the switch below for exactly that reason: the switch is
+     * every page's keymap, and this key belongs to one page. The NAV page
+     * advertises a different strip, and a rider mid-corner is not filing
+     * bookmarks -- so on that page S stays unclaimed rather than becoming a
+     * sixth thing the busiest screen can do. */
+    if (a->page == LIVE_MAP && (ch == 's' || ch == 'S')) {
+        save_open(a);
         key_repaint(a);
         return 1;
     }
@@ -3033,6 +3551,31 @@ handle_key(app_t *a, int ch)
     case 'o':
     case 'O':
         a->course_up = !a->course_up;
+        break;
+    /* DESIGN.md 6.6. V for view, because every other letter a rider would
+     * reach for is taken: O is north-up, Z/X/A are the zoom ladder, and D
+     * reads as delete on a page that can end a route.
+     *
+     * The index is built on the FIRST press and kept, because it costs about
+     * 950 ms on the device (roadgrid.h) -- seven dropped frames. Doing it here
+     * rather than at startup means a rider who never presses V never pays, and
+     * doing it behind a note means the one who does is told why the screen
+     * stopped rather than left wondering. */
+    case 'v':
+    case 'V':
+        if (!g_roads) {
+            note_show(a, "NO ROADS PACK");
+            break;
+        }
+        if (!a->view3d && !g_grid) {
+            note_show(a, "BUILDING 3D");
+            if (!build_grid()) {
+                note_show(a, "3D INDEX FAILED");
+                break;
+            }
+        }
+        a->view3d = !a->view3d;
+        note_show(a, a->view3d ? "3D" : "2D");
         break;
     /* DESIGN.md 6.1: "Z/X switch to manual; A returns to auto". Stepping
      * from live_zoom() rather than from mpp_manual is what makes the first
@@ -3994,6 +4537,8 @@ main(int argc, char **argv)
     double fps = DR_FPS;
     char err[320];
     char cfgpath[CFG_PATH_MAX], routes[CFG_PATH_MAX];
+    char placespath[CFG_PATH_MAX];
+    int no_places = 0;
     char rides[RIDELOG_PATH_MAX];
     navcfg_t cfg;
     canvas_t *cv;
@@ -4006,14 +4551,74 @@ main(int argc, char **argv)
      * pre-pass is for; it is cheaper than deferring every other flag. */
     cfg_defaults(&cfg);
     cfgpath[0] = '\0';
-    for (i = 1; i < argc - 1; i++)
-        if (!strcmp(argv[i], "--config"))
+    placespath[0] = '\0';
+    /* --places and --no-places join this pre-pass rather than the loop below for
+     * --config's reason: the places file is READ HERE, before g_place is filled,
+     * and a flag answered after the read would be a flag that did nothing. */
+    for (i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--config") && i + 1 < argc)
             snprintf(cfgpath, sizeof cfgpath, "%s", argv[++i]);
+        else if (!strcmp(argv[i], "--places") && i + 1 < argc)
+            snprintf(placespath, sizeof placespath, "%s", argv[++i]);
+        else if (!strcmp(argv[i], "--no-places"))
+            no_places = 1;
+    }
     if (cfgpath[0]) {
         cfg_load(&cfg, cfgpath, 1);
+        /* And NO default places file on top of it. The two files are ONE
+         * configuration, so --config F means "use that configuration instead of
+         * mine" -- which is also what makes every test in this repo hermetic
+         * without naming a second flag. 2.1 already has the rule: a test whose
+         * absent case reads the device config is not a test, and one that reads
+         * it while WRITING is worse. A caller who wants a places file with a
+         * fixture conf names it with --places.
+         *
+         * SAID OUT LOUD, because for a rider it is the surprising half: they
+         * pointed --config at another file and their favourites went away. Not
+         * when they named --places (nothing was suppressed), not for
+         * --no-places (they asked for it), and ONLY WHEN THERE IS A FILE TO
+         * HAVE SUPPRESSED -- "your favourites went away" is not news to a rider
+         * who has none, and the test suite is full of --config invocations that
+         * would otherwise all carry a sentence about nothing.
+         *
+         * It names the PLACES path and not cfgpath, and that is not cosmetic: a
+         * line echoing a caller's path puts arbitrary words into stderr, and
+         * this one put "reroute" there via
+         * tests/net/reroute-auto.conf -- which broke `! grep -q "reroute"` two
+         * sections away. A message that only ever prints paths this program
+         * chose cannot do that. */
+        if (!placespath[0] && !no_places) {
+            char def[CFG_PATH_MAX];
+            FILE *pf;
+            cfg_places_path(def, sizeof def);
+            pf = fopen(def, "r");
+            if (pf) {
+                fclose(pf);
+                fprintf(stderr, "beepy-nav: --config given, so %s is not read "
+                                "-- saved places are the ones in the named "
+                                "config (see --places)\n", def);
+            }
+        }
     } else {
         cfg_default_path(cfgpath, sizeof cfgpath);
         cfg_load(&cfg, cfgpath, 0);
+        if (!placespath[0])
+            cfg_places_path(placespath, sizeof placespath);
+    }
+    /* The saved places, SECOND (DESIGN.md 1.4.8) -- and second is the whole of
+     * the ordering rule: `place` accumulates, so hand-written places keep the
+     * head of the list, and 1.4.6 makes the head load-bearing by centring the
+     * pre-fix map on the first of them. A rider who put HOME in their conf keeps
+     * it first whatever they save on the road.
+     *
+     * NOT LOUD, even when --places named the file, which is the one place this
+     * departs from --config's rule. There the file is the rider's and a mistyped
+     * path is worth a warning; here the file is the PROGRAM's, and its absence
+     * means "nothing has been saved yet" -- the state every device is in until
+     * the first S, and cfg_place_add() is what creates it. */
+    if (placespath[0] && !no_places) {
+        cfg_load(&cfg, placespath, 0);
+        snprintf(g_places_path, sizeof g_places_path, "%s", placespath);
     }
     g_reroute = cfg.reroute;
     snprintf(g_router_url, sizeof g_router_url, "%s", cfg.router_url);
@@ -4022,15 +4627,36 @@ main(int argc, char **argv)
     memcpy(g_place, cfg.place, sizeof g_place);
     g_nplace = cfg.nplace;
     g_mode = cfg.mode;
+    g_tolls = cfg.tolls;
+    g_prefer = cfg.prefer;
 
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if (!strcmp(a, "--demo"))
+        if (!strcmp(a, "--demo")) {
             demo = 1;
+            /* The demo pages are the FROZEN reference, and a frozen reference
+             * must not depend on the machine it is dumped on. They pass no
+             * --config, so they read ~/.config/beepy-nav.conf -- and the moment
+             * a rider sets view3d there, every NAV golden would start rendering
+             * 3D and `make check` would fail on their device and nowhere else.
+             *
+             * So --demo pins 2D, and will keep pinning it until the 3D page has
+             * a golden and a mockup.py of its own (DESIGN.md 6.6's outstanding
+             * item). An explicit --view3d after --demo still wins, which is how
+             * that golden will be dumped when the time comes.
+             *
+             * This is 1.4.8's rule again, and the third place it has bitten:
+             * T-FIND was reading `prefer`, the plain/note/nofix frame family
+             * was reading `basemap`, and the goldens themselves were one config
+             * line away from the same thing. */
+            g_view3d_cli = 0;
+        }
         else if (!strcmp(a, "--page") && i + 1 < argc) {
             const char *p = argv[++i];
             if (!strcmp(p, "nav"))
                 page = PAGE_NAV;
+            else if (!strcmp(p, "nav-3d"))
+                page = PAGE_NAV_3D;
             else if (!strcmp(p, "nav-off"))
                 page = PAGE_NAV_OFF;
             else if (!strcmp(p, "nav-nofix"))
@@ -4075,6 +4701,10 @@ main(int argc, char **argv)
                 page = PAGE_MAP_SAVED;
             else if (!strcmp(p, "find-saved"))
                 page = PAGE_FIND_SAVED;
+            else if (!strcmp(p, "save"))
+                page = PAGE_SAVE;
+            else if (!strcmp(p, "save-typed"))
+                page = PAGE_SAVE_TYPED;
             else if (!strcmp(p, "cliptest"))
                 page = PAGE_CLIPTEST;
             else if (!strcmp(p, "cliptest-panel"))
@@ -4189,14 +4819,30 @@ main(int argc, char **argv)
             no_log = 1;
         else if (!strcmp(a, "--basemap") && i + 1 < argc)
             snprintf(cfg.basemap, sizeof cfg.basemap, "%s", argv[++i]);
+        else if (!strcmp(a, "--view3d"))
+            g_view3d_cli = 1;
+        else if (!strcmp(a, "--no-view3d"))
+            g_view3d_cli = 0;
         else if (!strcmp(a, "--no-basemap"))
             cfg.basemap[0] = '\0';
         else if (!strcmp(a, "--roads") && i + 1 < argc)
             snprintf(cfg.roads, sizeof cfg.roads, "%s", argv[++i]);
         else if (!strcmp(a, "--no-roads"))
             cfg.roads[0] = '\0';
+        /* DESIGN.md 7.7.2. Both spellings, because this is the one default in
+         * the config that changes an answer the program used to give, and a
+         * rider comparing the two wants to do it without editing a file. */
+        else if (!strcmp(a, "--major-roads"))
+            cfg.major_roads = 1;
+        else if (!strcmp(a, "--no-major-roads"))
+            cfg.major_roads = 0;
         else if (!strcmp(a, "--config") && i + 1 < argc)
             i++; /* already read, above */
+        else if (!strcmp(a, "--places") && i + 1 < argc)
+            i++; /* likewise: the pre-pass took it */
+        else if (!strcmp(a, "--no-places")) {
+            /* Likewise. Listed so the loop does not call it unknown. */
+        }
         /* Answered HERE and not after the packs load: a keycode question needs
          * no map, and the mode's whole value is that it starts instantly and
          * touches nothing. On the Mac it is refused rather than silently
@@ -4219,6 +4865,12 @@ main(int argc, char **argv)
             return 2;
         }
     }
+
+    /* AFTER the argument loop, unlike its siblings above, because this is the one
+     * of them with flags of its own (--major-roads / --no-major-roads): copied
+     * before the loop it would take the file's value and ignore the flag, which
+     * is the opposite of 2.1's rule that a flag always wins. */
+    g_major = cfg.major_roads;
 
     /* The config file's routes_dir, or the way it has always been decided --
      * $BEEPY_ROUTES, then ~/routes. Resolved here rather than inside
@@ -4327,6 +4979,16 @@ main(int argc, char **argv)
      * and there is no ride to open a page of. */
     APP.page = page == PAGE_OVERVIEW ? LIVE_OVERVIEW : LIVE_NAV;
     APP.course_up = !cfg.north_up;
+    APP.view3d = g_view3d_cli >= 0 ? g_view3d_cli : cfg.view3d;
+    if (APP.view3d && g_roads) {
+        if (build_grid())
+            fprintf(stderr,
+                    "beepy-nav: 3D index -- %d cells over %d nodes, %ld KB\n",
+                    roadgrid_ncell(g_grid), roadgrid_nnode(g_grid),
+                    roadgrid_bytes(g_grid) / 1024);
+        else
+            fprintf(stderr, "beepy-nav: 3D index failed; the NAV map stays 2D\n");
+    }
     APP.fps = fps;
     APP.rate_5hz = cfg.rate_5hz;
     /* The config sets where the ride starts; L moves it from there, and

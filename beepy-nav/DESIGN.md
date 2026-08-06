@@ -70,11 +70,10 @@ number above answers only "how far to the next junction". Battery and clock
 return only when no route is loaded, when there is nothing to count down.
 
 Formats: minutes below an hour then `1H 23M`, because `97 MIN` is a number you
-have to convert; arrival as 12-hour with the value first and the label
-trailing (`10:42 ETA`), with no meridiem — on a ride you know whether it is
-morning, and nine characters always fit with no degradation rule to reason
-about. Both read `--` when there is too little history to average, rather than
-a guess.
+have to convert; arrival as **24-hour local** with the value first and the label
+trailing (`18:41 ETA`) — see §1.1.3 for why it is neither 12-hour nor UTC, and
+why it is not the ride clock it used to be. Both read `--` when there is too
+little history to average, rather than a guess.
 
 **The next-cue preview is gone from the panel** — it was a 20 px glyph and a
 distance in this space. The cue after the announced one is still marked: the
@@ -173,7 +172,7 @@ Map region:
 | North | black disc with a reversed `N`, plus a needle on the rim pointing to world north |
 | Current speed | number in a white circle, black ring, top-right of the map — ~24 px digits with `KM/H` beneath; same ring construction as the position marker so the round instruments read as a family |
 | Scale | 1-2-5 bar, bottom-left, scale-2 label |
-| Basemap (optional, §6) | streets at 1 px, arterials at 2 px |
+| Basemap (optional, §6) | streets and arterials as CASINGS at the fine rungs — a 1 px edge each side of a light interior — and single 1/2 px lines where a road is too narrow to hold one (§6.5) |
 
 ### 1.1.1 The countdown must change slowly — quantisation and latching
 
@@ -270,6 +269,76 @@ An earlier draft put `FOLLOW DOTS BACK` where the cue preview used to be. It is
 not drawn: at scale 2 — the panel's floor since §5.1 — sixteen characters need
 192 px against a 128 px panel, and the instruction is redundant, because the
 tie-line already points at the route and the panel already says how far.
+
+### 1.1.3 The ETA was not a time — the receiver's clock, 24-hour, local
+
+**The product owner's words: "I want you change ETA time to 24hr and show local
+time not UTC time."** The 24-hour part was a formatting choice. Chasing the
+second part found that the ETA had never been a clock time at all.
+
+`nav_t` carried `time_t eta`, documented as **"wall clock"**, and `route_snap()`
+filled it with `now + eta_s` — where `now` is whatever clock the caller passes
+for the speed ring. nav.c passed **the ride clock**: seconds since the ride
+began. So ten minutes into a ride with 82 seconds to go the field held about 660,
+and the panel rendered it through `localtime()` as **`7:11 ETA`** — 00:11 on the
+1st of January 1970, plus seven hours of Bangkok.
+
+That is the worst shape a bug can take on an instrument. It was not blank, not
+absurd, not obviously stale: it was a plausible morning time that moved sensibly
+as the ride went on, and it meant nothing. Measured on the `ride.nmea` fixture at
+t=600 with a real local time of 18:40, the panel said `7:11 ETA` where the answer
+was 18:41.
+
+#### The field is gone, not fixed
+
+`nav_t` has **no arrival timestamp** any more. `eta_s` — a duration — is the
+honest output of `route.c`, which is a pure function of a route and a ride and has
+no business reading a system clock. Turning a duration into a clock time is the
+caller's job because the caller is the only one that knows the clock.
+
+Deleting it is what makes the old mistake unrepeatable rather than merely
+corrected: there is no longer a field whose contract says "wall clock" and whose
+value depends on which clock a caller happened to pass.
+
+#### Whose clock, and why not the Pi's
+
+**The receiver's.** `fix_utc_epoch()` builds a Unix time from the RMC date and
+time the parser already keeps (`gps_t.date`, `gps_t.utc`), and the ETA is that
+plus `eta_s`, displayed through `localtime_r()`.
+
+Three reasons, and the first is the one that matters on this hardware:
+
+| | |
+|---|---|
+| **The Pi Zero has no RTC** | on a cold boot with no network its clock is whatever the last shutdown left. The satellites' is exact. A navigator holding an atomic clock has no business asking the SD card what time it is |
+| **A replay becomes reproducible** | the fixture carries the date and the hour, so two runs of one ride produce the same frame. Two byte-for-byte comparisons in the gate — `note-b` against `plain-b`, `nopack-b` against `plain-b` — draw that row on a *moving* fixture and would otherwise have started failing whenever two runs straddled a minute boundary. A latent flake, which is worse than a break |
+| **`time(NULL)` remains the fallback** | only when the receiver has given no date — a cold RMC, or a fixture without one. Consistent with the panel's clock row, which has always been the system clock: an ETA is more useful slightly wrong than absent, and this is the one path where it can be |
+
+Verified end to end rather than argued: the `ride.nmea` fixture starts at
+**09:40:00 UTC on 2026-07-29**, the frame at t=600 is 09:50:00, `eta_s` is 82 s,
+so arrival is 09:51:22 UTC — and the panel reads **`16:51 ETA`**, which is that in
+Bangkok. Two runs of the same replay produce byte-identical frames.
+
+#### Why 24-hour
+
+The original argument for 12-hour was "on a ride you know whether it is morning".
+It fails on the ride that starts at 17:00 and offers an arrival of `7:20`: the
+rider has to work out which 7, and the two answers are fourteen hours apart. The
+panel has no room for AM/PM, so ambiguity was the only other option. It costs
+nothing — `18:41 ETA` is nine characters, exactly what `12:42 ETA` was, against a
+ten-character panel — and the OVERVIEW page's ETA was already 24-hour, so this
+also stops one program from stating the same fact two ways.
+
+**Local, via `localtime_r`, which needs the device's zone to be set.** It is
+(`Asia/Bangkok`), which is why this reads correctly; if it were not, this would
+read UTC and say so honestly rather than applying an offset the program invented.
+`mktime()` is not used anywhere in the conversion for the same reason inverted:
+it would have applied the local zone to a UTC date and shifted every ETA by the
+very offset being displayed.
+
+**No golden moves.** Every frozen frame passes the panel a literal
+`"10:42 ETA"`, so the format change cannot reach one — and `10:42` happens to be
+the same string in both formats anyway.
 
 ### 1.2 OVERVIEW — `nav-overview.png`
 
@@ -787,6 +856,218 @@ the honest estimate is 30–60 ms and it needs measuring **on the device**. If i
 over, the fix is a prefix index — `PLACES` is already sorted by name, which is why
 §1.4.1 said it was.
 
+#### 1.4.8 Saving a place, from the device — `nav-save.png`
+
+§1.4.6 gave the rider eight favourites and no way to make one. A `place` line is
+a line in a config file, so creating one meant reading a position off the MAP
+strip, carrying it as far as a laptop, and typing it into
+`~/.config/beepy-nav.conf` over ssh — which is a feature only its author ever
+uses. **The product owner's words: "I want to save place from current location
+in map view."**
+
+`S` on MAP opens a page with one field on it.
+
+**Why a page rather than a keypress**, when §1.6 argued the other way round for
+`Q`. There the confirmation existed to state a *loss*, and the page was the only
+thing that could carry the three facts deciding it. Here the page exists to
+carry a *name*, and a name is the whole value of a favourite: `HOME` is worth
+eight keys, `PLACE 3` is worth none, and a save with no page can only ever
+produce the second. With the default pre-filled the fast path costs the same two
+presses a bare keypress would — `S`, `ENTER` — so the page is not charged to the
+rider who does not want it.
+
+**The layout is FIND's field over CONFIRM's strip**, and every constant is
+theirs. The name is typed at the same y, in the same 24 px table, behind the
+same 12×22 block cursor, out of the same A–Z/0–9/space alphabet, and backspace
+on an empty field backs out exactly as it does on FIND — the Beepy's `Esc` needs
+the symbol layer, and §1.4.4's rule that a rider must never reach a page they
+cannot leave with the keys under their thumbs applies here word for word.
+Nothing about typing is learned twice. The title bar counts the list the way
+FIND's counts its own — `3 OF 8` — because the ceiling is the one fact a rider
+needs before deciding whether this place is worth a slot.
+
+**The default name is `PLACE N`, and N is the first free number rather than
+`nplace + 1`.** Those differ the moment a rider deletes a line by hand: with
+`HOME`, `PLACE 2` and `PLACE 3` in the file and two slots used, the count would
+propose `PLACE 3` and the save would be refused as a duplicate by the rule
+below — a default that walks into the program's own refusal.
+
+**Not the nearest road name, which was the better default.** The pack could
+answer it — `PLACE 3` says nothing a week later and `SOI 23` says where you
+stood — but the answer costs a linear pass over the name table, which §1.4.7
+sized at 110 556 names and estimated at 30–60 ms on the device without
+measuring it. That measurement is owed on the FIND page first, where the same
+pass runs on every keystroke; until it exists this page will not spend it. The
+field is pre-filled and selected-for-typing either way, so the cost of the
+weaker default is four keys, once, for the rider who cares.
+
+**And that default is what broke §2.1's parser, which is worth the paragraph.**
+`place = PLACE 1 13.72936,100.56100` is what `S` `ENTER` writes, and the reader
+took the name as the *first* whitespace field — so it came back as a place called
+`PLACE` at **1.00000, 13.72936**, a point in the Atlantic off Guinea. Both halves
+are legal numbers, so the ±90° guard that exists precisely to catch a swapped
+pair could not see it, nothing warned, and the rider would have been handed a
+favourite that read back as somewhere else entirely. The two-press path — the one
+this whole page is designed around — wrote a lie.
+
+The fix is to find the **coordinate from the right**, which also buys multi-word
+names (`MY OFFICE 13.7,100.5`) in both files. A character-class walk backwards is
+*not* enough, and the reason belongs on the record: a name ending in a digit is
+indistinguishable from part of the coordinate that way, so `GYM 2 13.88,100.37`
+would parse as 2, 13.88. `place_split()` counts **numbers** — exactly two, with an
+optional comma between them — because that is the only rule that can tell a name
+from a coordinate.
+
+T-SAVE-ROUNDTRIP is the assertion, and *how* it asserts is the point: it **routes
+to the place after a restart**. A coordinate in the Atlantic is off the pack, the
+offline router refuses it, and there is no `routed to` line at all. A test that
+compared the file's text — which is what one would write first — would have passed
+the broken version happily, because the broken version wrote the text correctly
+and only ever read it back wrong.
+
+Five ways it says no, and each is a transient on a row rather than a key that
+does nothing — §2's "a dead key is indistinguishable from a broken program". Each
+also says it on stderr, which is what makes them assertable and what whoever reads
+a log over ssh has:
+
+| | |
+|---|---|
+| `NO FIX` | there has never been a position, **or the one there was is lost**. The MAP page is *reachable* without one (§1.5 draws the waiting screen) and this key is the one thing on it that needs the fix to be real |
+| `8 PLACES MAX` | `CFG_PLACES_MAX` is full. Refused rather than rotated: dropping the rider's oldest favourite to make room for a coffee shop is a decision the program does not get to make |
+| `NAME IN USE` | said on the page, which stays up with the name still in the field — the answer is to edit it, and a transient over a page the rider had left would not let them |
+| `NOT SAVED` | the write failed. It stays on the page for the same reason, and stderr carries the `errno` for whoever reads a log |
+| `NAME NEEDED` | the field is empty. Reachable for exactly one keypress — the one after backspace clears the selected default — so it is asserted rather than assumed away |
+
+A duplicate is refused rather than replaced because `place` **accumulates** and
+nothing here rewrites a file: two `HOME`s would be two rows with one name on the
+FIND list, which is a list nobody can navigate by memory any more.
+
+**And `NO FIX` covers a lost fix, not only a missing one** — which is the half of
+that refusal worth arguing, because §1.1.2 deliberately does the opposite. That
+section keeps the last known position *on the strip* through a gap, on the
+grounds that it is still the last thing known and worth reading. Writing it is a
+different act: a coordinate half a minute old under a bridge becomes a favourite
+in the wrong soi, permanently, and the name gives the rider no way to tell. So
+the page that *records* refuses where the strip that *reads* does not. The cost
+is waiting a few seconds for a key that takes one press.
+
+**The file is `~/.config/beepy-nav.places`, and it is the conf's own format read
+by the conf's own parser.** `cfg_load()` is called on it a second time, so a
+place added by hand, a name too long, a latitude outside ±90° and a swapped
+`100,13` pair all behave exactly as §2.1 already promises, with the file name and
+line number on stderr — one grammar, one set of rules, and no second loader to
+drift.
+
+Two files rather than one, and the split is the point: **the program writes this
+one and the rider writes the other**, so no bug on this page can ever damage a
+hand-written setting. It is also read *second*, which keeps hand-written places
+at the head of the list — and the head of that list is load-bearing, because
+§1.4.6 makes the first saved place the map's centre before there has ever been a
+fix. A rider who put `HOME` in their conf keeps it there whatever they save on
+the road.
+
+**Append-only, never rewritten.** Comments and order survive because nothing
+here has an opinion about them, and a line cut off by a power loss mid-write is a
+malformed line — which §2.1's parser already drops with a warning while the rest
+of the list loads. Five decimals, because five is what the MAP strip showed the
+rider: a file that disagreed with the screen about the sixth decimal would be a
+number nobody could check against anything.
+
+The place also goes into the in-memory list, so **the mark is under the chevron
+before the key is released** — `render_state()` reprojects saved places every
+frame and `find_update()` rebuilds the FIND rows on every keystroke, so nothing
+had to be added for that to be true. It is the whole reason this feature is a
+page and a file writer and not a feature.
+
+**Deleting one still needs an editor**, and that is a real gap rather than a
+deferral: eight is a small ceiling and the eighth save is the one that runs into
+it. The honest form of it is that `S` refuses, says why, and leaves the rider a
+file they can edit — not that the page pretends the list is unbounded.
+
+**What the gate measures.** `goldens/nav-save.fb` and the design gate against
+`mockup.py`'s `page_save()`, because the whole page is text and a string is the
+thing that rots silently. Then **T-SAVE**, a replay driving `S`, four letters and
+`ENTER` with `--places` pointed at a temporary file: the line lands in that file,
+FIND then lists the place, a second save of the same name is refused and the file
+does not grow, and `S` before the first fix writes nothing. `--places` is not a
+convenience — §2.1's rule that "a test whose absent case reads the device config
+is not a test" applies with more force to a test that *writes*, and a gate that
+appended to `~/.config` on every run would be a gate that edited the machine it
+was measuring.
+
+And it moved six goldens. §1.5's hint row advertises the page's keymap and a key
+absent from it was never claimed, so `S SAVE` had to go on that row — 32
+characters at scale 2 is 384 px of the 400, which fits — and every frozen MAP
+frame that shows the row changed with it: `nav-map`, `nav-map-nofix`,
+`nav-map-wait`, `nav-map-tiles`, `nav-map-saved` and `nav-map-wait-home`. That is
+a deliberate regeneration in a commit of its own, which is what the rule about
+goldens is for.
+
+**Measured, and the measurement is the check on the change**: each of the six
+differs by exactly **1 212 pixels, all of them in rows 221–234** — the hint row's
+own band, the same count in all six frames. `nav-map-pan` and `nav-map-pan-ask`
+did *not* move at all, which is the corroboration: §1.5.1 gives those states the
+row for `MAP HELD` and the pan question instead, so a keymap change cannot reach
+them. Anything outside that band, or a pan frame moving, would have meant this
+change did something other than add a word to one row.
+
+#### 1.4.9 Several regions in one pack — measured, including what it costs
+
+**The product owner's words: "can you merge bangkok, nonthaburi, chaingmai,
+samutprakan, nakhonswan and songkla ... i don't want switch?"** One basemap and
+one road pack, four cuts, no swapping. It works, and the numbers below are the
+whole of the argument because every one of them could have said no.
+
+Six named places are **four cuts**, not six: Nonthaburi is 13.3 km from a Bangkok
+centre and Samut Prakan 19.4 km, so one 25 km cut holds Bangkok, Nonthaburi,
+Samut Prakan, home and work with 4.8 km to spare. Three separate 20 km circles
+around adjacent cities would have been worse than wasteful — they leave gaps
+*between* the cities, which is exactly the ground a rider crosses.
+
+| measured on the device | |
+|---|---|
+| nodes / directed edges | **1 738 370 / 3 436 441** |
+| pack on disk, resident | 72 MB |
+| `roads_open()` | 561 ms |
+| a local route, Bangkok | 654 ms |
+| a local route, Chiang Mai | 526 ms |
+| **a cross-region refusal** | **1 570 ms**, then §7.10's online path |
+| peak RSS during a route | **149.6 MB** of the device's 426 MB |
+
+**The cross-region refusal was the predicted regression and it is 1.6 s.** Before
+this, a Chiang Mai destination was more than `ROUTER_MAX_SNAP_M` from any node in
+the pack, so it was refused *instantly* as `RC_OFFMAP`. Now it snaps to a real
+Chiang Mai node, and the only way to learn there is no road between the two
+components is to exhaust the one you are standing in. 1.6 s to refuse, then the
+network is asked — against 5.8 s for the whole run including pack load, this is
+not the cost it could have been. It was worth measuring rather than assuming in
+either direction.
+
+**What it does cost is projection.** A road pack has ONE tangent-plane reference
+(§6.1) and metres-per-degree-of-longitude is a constant in it. Over 12° of
+latitude that constant cannot be right everywhere:
+
+| | east–west scale error |
+|---|---|
+| Bangkok | −0.02% — the reference is here |
+| Nakhon Sawan | +0.88% |
+| Songkhla | −2.13% |
+| Chiang Mai | **+2.59%**, or 259 m per 10 km travelled east–west |
+
+Separate packs each get their own reference and have none of this; it is precisely
+what swapping was buying. It is accepted here because the error is **east–west
+only** (northing is exact, 110 540 m per degree with no latitude term), because
+the fix and the tiles are projected through the *same* constants so the map stays
+self-consistent and the snap still lands on the right road, and because the
+reference is kept at Bangkok's — where the rider mostly is, and where it makes
+every existing route come out identical to before. Balancing the error across the
+span would give ±2.35% instead of +2.59/−2.13, which is not worth moving
+everyone's frame for.
+
+**Nothing about the search changed**: the pack still carries the country's
+157 568 destinations, so §1.4.7's split is unaffected — search reaches Thailand,
+routing reaches these four regions, and the network covers the rest.
+
 ### 1.5 MAP — where you are, with no route — `nav-map.png`
 
 **The product owner's words: "I want current location in map screen after open
@@ -1054,6 +1335,7 @@ key absent from it was never claimed by the page.
 | Key | Action |
 |---|---|
 | `F` | open FIND — the whole point of the flow: open, see where you are, search, go |
+| `S` | save where you are as a favourite (§1.4.8). MAP only — the NAV page advertises a different keymap, and a rider mid-corner is not filing bookmarks |
 | arrows | pan the map (§1.5.1) — the trackpad, in arrow mode, is these four keys |
 | `C` | centre it again. The only thing that does |
 | `R` | open the route picker; `Q` there comes back to MAP, it does not exit |
@@ -1070,6 +1352,16 @@ page:
 | `N` / `P`, `↓` / `↑` | move the selection |
 | `Enter` | load the route and start riding |
 | `Q`, `Esc` | back to MAP without loading one |
+
+And on the SAVE page of §1.4.8, which owns every key for FIND's reason — the
+whole surface is a text field, so `Q` types a Q:
+
+| Key | Action |
+|---|---|
+| A–Z, 0–9, space | type the name, up to 19 characters |
+| `Enter` | write it, and go back to MAP |
+| `Esc` | cancel, writing nothing |
+| Backspace | delete a character; on an **empty** field it cancels, because `Esc` needs the symbol layer |
 
 And on the QUIT page of §1.6, which is the one **modal** state in the program —
 nothing behind it is drawn or reachable until it is answered, and every key not
@@ -1106,6 +1398,7 @@ only way any of this is testable without a physical thumb.
 beepy-nav --route ROUTE.gpx [-d DEV] [--north-up] [--imperial]
           [--replay F.nmea] [--config FILE] [--key SEC:CHAR]
           [--basemap PACK.tiles] [--roads PACK.roads]
+          [--places FILE] [--no-places]
 ```
 
 `--key` presses a key at a given replay second, either as a character or by
@@ -1144,7 +1437,41 @@ quoting rule nobody would remember.
 | `rides_dir` | a path | `~/rides` | where the ride log goes (§7.6); `--no-log` turns it off entirely |
 | `basemap` | a path | none | the OSM raster pack under the map (§6.5); `--no-basemap` defeats it |
 | `roads` | a path | none | the road/name pack FIND searches (§1.4); `--no-roads` defeats it |
-| `place` | `NAME LAT,LON` | none | a saved destination (§1.4.6). **The one key here that repeats**: each line adds another, up to eight, kept in file order. No flag overrides it — a favourite is not a per-ride decision |
+| `major_roads` | `0` / `1` | **`1`** | offline routing prefers bigger roads over shorter ones (§7.7.2), car mode only. **The one default in this file that changes an answer the program used to give** — `0` restores the shortest-distance router exactly, and `--major-roads` / `--no-major-roads` compare the two without editing anything |
+| `place` | `NAME LAT,LON` | none | a saved destination (§1.4.6). **The one key here that repeats**: each line adds another, up to eight, kept in file order. No flag overrides it — a favourite is not a per-ride decision. The **name may contain spaces**, because the coordinate is found from the right (§1.4.8) — `MY OFFICE 13.7338,100.5601` is one place, not a parse error |
+
+**And one file beside this one.** `~/.config/beepy-nav.places` holds the places
+`S` writes (§1.4.8), in this same grammar and read by this same parser — the
+program's list, appended to and never rewritten, read *after* the file above so
+that hand-written places keep the head of the list. `--places FILE` reads and
+writes somewhere else, which is what makes the writer testable, and
+`--no-places` defeats it entirely, which is what keeps a golden from picking up
+whatever the device happens to have saved. Eight is the ceiling **across both
+files**: they are one list, and a rider with eight `place` lines in the conf is
+told `8 PLACES MAX` rather than quietly given a ninth the loader would drop.
+
+**`--config FILE` already suppresses the default places file**, and that rule
+earns itself twice over. It is consistent — the two files are one configuration,
+so naming one names both — and it is what makes every replay test in this repo
+hermetic with no second flag on the line. The rule below about a test whose
+absent case reads the device config applies with more force to a test that
+*writes*: a fixture conf with the rider's own eight favourites stacked on top of
+it is not the fixture anybody wrote. A caller who wants both names both.
+
+**And it says so on stderr**, once, because for a rider that is the surprising
+half — they pointed `--config` somewhere else and their favourites went away. Not
+printed when `--places` was given (nothing was suppressed), nor with
+`--no-places` (they asked for it), nor **when there is no places file to have
+suppressed** — that last condition is what keeps a sentence about nothing off
+every `--config` invocation in the test suite.
+
+It names the *places* path rather than the config it was given, and that is not
+cosmetic. **A message that echoes a caller's path puts arbitrary words into
+stderr**, and the first version of this line put `reroute` there by way of
+`tests/net/reroute-auto.conf` — which broke `! grep -q "reroute"` in a test two
+sections away, in a suite whose negative assertions are how half of §7 is proved.
+A line that only ever prints paths this program chose for itself cannot do that
+to anybody.
 
 Flags also accept `yes`/`no`, `true`/`false`, `on`/`off`. **A command-line flag
 always wins**, because it is the more specific statement of intent: the file
@@ -1652,16 +1979,157 @@ reference name different ground, and a merge across references would produce a
 pack that is well-formed and wrong. That is not recoverable after the fact, so
 the tool refuses — and `mktiles --frame LAT,LON` exists to set the reference
 independently of the region being cut, which is how the fine build is placed in
-the coarse build's frame. A rung present in two inputs is taken from the first
-and the choice is printed: rungs are whole grids, and interleaving two of them
-would mean deciding per tile which map wins, which is a merge of cartography
-and not of files.
+the coarse build's frame.
+
+**A rung present in two inputs is UNIONED**, and that is what lets one basemap
+hold street detail for several cities. The grid grows to the bounding box of both
+and every tile keeps its own address; where both inputs hold the *same* cell the
+first wins and the collision count is printed, because that is the only place a
+choice is being made.
+
+This used to take the rung from the first input and discard the rest, on the
+grounds that "interleaving two of them would mean deciding per tile which map
+wins, which is a merge of cartography and not of files". That is true only where
+they *overlap* — and cuts around different cities do not. Bangkok's 1.5 m/px grid
+sits at tile y −264 and Songkhla's at y +1659, 1 900 tiles apart, with zero cells
+in common. What the old rule cost was a rider who had to swap packs to change
+province.
+
+**The price is index, and it is worth naming because it is the one thing that
+scales badly.** A rung's index is one `u32` per grid *cell* whether or not a tile
+is there, so a bounding box spanning two cities pays for the empty middle.
+Measured on four cuts — Bangkok metro, Nakhon Sawan, Chiang Mai, Songkhla, which
+span 12° of latitude — all five fine rungs together cost **12.1 MB resident**
+against 735 MB of tiles on disk. That is affordable because `tile.c` never holds
+the tiles themselves: it keeps the pack open and reads each one on demand into an
+LRU, so pack size is a disk cost and only the indexes are RAM.
+
+That measurement held only while the fine rungs stopped at 1.5 m/px. Pushing the
+ladder to 0.375 broke it, and the fix is the next section.
+
+#### The sparse index, and the arithmetic that forced it
+
+**The 25 M rung is what a dense index cannot pay for.** Magnification (below)
+gets a 50 M screen out of a 1.5 m/px pack by turning each pack pixel into a
+block, and blocks are honest but they are not detail. Real detail at 25 M means
+cutting the pack at 0.375 m/px, and on the four-region union that rung's grid is
+**2012 × 13 716 — 27.6 million cells.** One `u32` per cell is **105 MB of
+resident index for a single rung**, and the fourteen rungs together come to over
+142 MB. On a 512 MB Pi Zero 2 W that is not a tax, it is a refusal.
+
+**The cells are almost all empty, which is the whole opening.** Those 27.6
+million cells hold **182 724 tiles — 0.66% occupancy.** The union's bounding box
+spans 12° of latitude, from Songkhla to Chiang Mai, and the rider is never in the
+Gulf of Thailand. A dense index is a good format for a pack that is one city and
+a terrible one for a pack that is four.
+
+**So version 2 stores pairs, sorted.** A v2 rung's index is `nsparse` entries of
+`(key, offset)`, both `u32`, ordered by key, where `key = gy * nx + gx` is
+exactly the cell number v1 would have indexed. Lookup is a binary search;
+absence is a miss and draws nothing. Version 1 kept a spare word in each 32-byte
+zoom entry, so v2 spends it on the tile count and the header is unchanged —
+`tiles_open()` reads both versions, and every pack built before this section
+still opens.
+
+**What it costs and what it buys:**
+
+| | dense (v1) | sparse (v2) |
+|---|---|---|
+| 0.375 m/px rung | 105.3 MB | **1.39 MB** |
+| all 14 rungs, resident | 142 MB+ | **2.5 MB** |
+| lookup | one array read | ~18 compares |
+| tiles on disk | 2.5 GB | 2.5 GB (identical) |
+
+Eighteen compares against a 1.4 MB array that stays in cache, once per tile per
+frame at 8 fps. It does not show up in a frame budget, and the alternative was
+not a slower pack but no pack.
+
+**`mergetiles.py` chooses per rung, and does not need to be told.** A rung whose
+grid exceeds `DENSE_MAX_CELLS` (4 mebicells) is written sparse; anything smaller
+stays dense, because for a single city the dense index is smaller *and* simpler.
+`--sparse` forces it for testing. The writer emits keys in sorted order by
+construction — it walks the grid — so the reader's binary search needs no
+verification pass.
+
+**The bound moved to the tile count, and getting that wrong cost the first
+build.** v1's sanity check refused a grid over 4 mebicells, because that is what
+its index allocated. Raising that cap for dense packs and leaving it applied to
+both is why the first correct 2.5 GB v2 pack came back **"implausible zoom grid;
+no basemap"** — a rung with a 1.4 MB index was rejected for the size of a table
+it does not have. A sparse rung's grid is legitimately enormous; what allocates
+is the count, so that is where the cap belongs (4 mebitiles, 33 MB, four times
+the widest real pack). `t_sparse_index` passed throughout the mistake, because a
+4 × 4 grid is sixteen cells and cannot tell a per-cell bound from a per-tile one.
+It now also opens a 2048 × 16 384 grid holding one tile — 33.5 million cells,
+eight times the dense cap — and reverting the fix fails it.
+
+**T-TILES-SPARSE is a pixel identity, not a smoke test.** The same cuts are
+merged twice, once forced sparse and once forced dense, and the same replay frame
+is rendered from each: **0 differing pixels.** A format that changes only how a
+tile is *found* must change nothing about what is *drawn*, and that is the only
+assertion that can say so. All four cities then render at 100 M, 50 M and 25 M
+from the real 2.5 GB pack before it is transferred (`SPARSE-FOUR.png` is the four
+at 25 M; `ZOOM-LADDER.png` is one of them across all three rungs, which is where
+you can see the side sois go from a single line at 100 M to a casing at 50 M to a
+wide smooth casing at 25 M -- three cut rungs, not one rung magnified three
+times) — a pack has twice been
+shipped to the device before a frame was drawn from it, and both times all of it
+was blank.
+
+#### Roads as casings, at the fine rungs only
+
+**The product owner's words, with the reference design beside them: "did you see
+road line in this picture it's have parallel line but you design is one line can
+you do like this".** They were right, and the reference had been in the repo the
+whole time: every street in it is a *casing* — a dark edge each side of a lighter
+interior — and `mktiles.py` drew one filled line per road.
+
+`--cased MPP` draws them, on every rung at or finer than MPP. **Two passes per
+tile, all edges then all interiors**, and the order is the whole trick: one pass
+per road lets the next road's edge cut across the interior of the last, and a
+junction comes out as a pile of overlapping bands instead of one continuous white
+space you can read a turn out of.
+
+**Fine rungs only, and that is not timidity.** A casing needs three pixels to show
+an interior at all. At 15 m/px a Bangkok soi is a third of a pixel, every road
+would be edge with no interior, and a city of them is felt — which is the same
+argument `NOT_A_ROAD` already makes about footpaths. So 2.5 m/px and finer are
+cased and the rest keep the single line that is correct for them; §1.1's panel
+table says both.
+
+**What it costs:** 0.09% of pack size — 735 989 456 bytes against 735 342 288 for
+the same four regions uncased. The edge stroke is one pixel wider than the line it
+replaces and the interior is erased back out of it, so almost every casing lands
+in a tile that already had ink.
+
+**What it cannot copy from the reference.** That design has three tones — grey
+background, white interiors, darker blocks. §4 allows two, and `page_smooth` exists
+to record what happened when a halftone was tried: at this size a dithered street
+grid reads as mush. So the interiors are white and the blocks are white, and it is
+the edges that carry the shape.
+
+One thing the change had to be careful about, because it would have been invisible:
+the tile-bucket `pad` decides which tiles a way is drawn into, and a cased stroke
+reaches one pixel further than an uncased one. Widening it for everybody would have
+changed which tiles an *uncased* way registers in — and the committed fixture packs
+are compared byte for byte, so `beepy-nav/tests/tiles/asok.tiles` would have moved
+for a feature it does not use. It is conditional on `cased`, and the fixture was
+rebuilt and `cmp`'d to prove it.
 
 What the join must not do is disturb the rungs it carries over, so that is what
 `make test-tiles` asserts: the frozen `nav-tiles` golden, drawn from a pack that
 now also holds two coarser rungs, comes back byte-identical; and a pack joined
 to itself is itself, byte for byte, which is where an off-by-one in the index
-rewrite would show.
+rewrite would show — and which is also the union's collision path taken to its
+limit, every cell present in both inputs and the first winning every time.
+
+**T-TILES-MERGE-UNION** is the union's own assertion, and it is built to fail on
+the rule it replaced: the same ground at the same rung, cut to two corridor
+widths, so one is a strict superset of the other and the counts differ. Taking
+the rung from the first input returns 6 tiles for narrow-then-wide; unioning
+returns 32 whichever order they are given in. A test that could not tell the two
+apart would have been the easy one to write — the 10 m/px rung gives 4 tiles for
+both widths, because a 2 560 m tile swallows the difference.
 
 #### Reading it on the device
 
@@ -1732,6 +2200,182 @@ seven pixels on this page to make room). That leaves 200 px of title, which the
 demo's own name overruns, so the rule is written down: the **length** is kept
 whole and the **name** loses characters. The number is the part that changes;
 the name is the part you already know.
+
+### 6.6 The 3D nav view — `NAV3D-GMAP.png`, `NAV3D-TOGGLE.png`
+
+**The product owner asked for "3D like Google Maps", and supplied the reference
+shot.** That picture settled two things a description would not have. It is a
+*gentle* oblique with the horizon off the top of the screen, not the windscreen
+view the first prototypes drew — and the map is a street grid seen from above and
+behind, roughly a kilometre across, not a road rushing at the viewer. Pitch 70
+degrees is the setting chosen from `NAV3D-GMAP.png`, and the scale bar stays.
+
+#### Why it cannot be the basemap, and how that was established
+
+**Sampling a pre-rendered tile in perspective destroys the one property 6.5's
+blit rests on.** That section's claim is that "a straight line stays connected …
+never dotted", and it holds because rotation samples at a uniform density.
+Perspective minifies **anisotropically**: the vertical ground step per screen row
+is `z²/(h·f)` while the horizontal step per column is `z/f`, a ratio of `z/h`. At
+100 m out on a 40 m camera that is 2.5, so nearest-neighbour sampling of a 1 px
+road skips rows and the road comes apart into dots.
+
+**Choosing a coarser rung to compensate trades one failure for the other.** The
+pack has fourteen rungs and they are a mipmap pyramid, so per-row rung selection
+is the obvious repair — and it does reconnect the near field, at the cost of
+turning the horizon into a solid black bar, because a coarse rung's thick lines
+compress into two or three rows. `NAV3D-RUNGS.png` is the pair of pictures.
+There is no rung between those two failures: the anisotropy is inherent, not a
+tuning problem.
+
+**A line primitive is connected by construction, so the view is drawn from the
+VECTOR roads pack.** `nav3d.c` renders into its own bit buffer and lands with one
+`cov_blit_bits()`, exactly as `tiles_blit()` does and for the same reason — 6.5
+records that streets through the coverage path come out "hairy". The two views
+therefore read different data: 2D is the raster basemap, 3D is the road graph.
+
+#### One projection, one knob
+
+**`persp.c` is a real pitched pinhole, and at pitch 90 it reduces EXACTLY to the
+top-down affine.** Verified to 1e-12 in `t_pitch90_is_2d`: at 4 m/px a point
+100 m ahead lands 25 px up, 100 m to the right lands 25 px right, and `t` — the
+metres a pixel covers — does not vary with distance. That last assertion is the
+one that matters, because a surviving perspective term is precisely what would
+make a "3D" renderer disagree with the 2D map it claims to generalise.
+
+The value of the invariant is that the toggle sets a **pitch**, not a renderer.
+Two renderers drift the first time either is edited; one projection with a knob
+cannot. Clamping the pitch to 89.98 degrees — invisible on the panel — fails that
+test four ways, which is how the assertion is known to bite.
+
+The first two prototypes (`tools/nav3d_proto.py`, `tools/nav3d_ribbon.py`) used a
+Mode-7 formulation with a horizontal camera axis and the horizon on screen. They
+could not express the reference at all and could not degenerate to 2D at any
+setting; their "tilt" knob was really a camera height. They are kept for the
+raster measurement above, not as a design.
+
+**`back` is solved for, so changing the pitch does not move the rider.** The
+chevron is pinned at 0.72 of the viewport height — which is where `view_nav.c`
+already puts the fix, `cy = H * 0.72` — for every pitch. Without that, tilting
+would also zoom, and two pitches could not be compared without confounding the
+two effects.
+
+#### The culls, and the one that scales by itself
+
+Three filters, in the order they run, and only the third is interesting:
+
+- **Class distance.** A residential lane 2 km out is one row of ink and a
+  thousand of them are a smear; a motorway at 2 km is what you are navigating
+  by. Motorway 4000 m down to living street 350 m.
+- **Segment length**, 3 px, measured **euclidean**. Manhattan is never smaller —
+  on a diagonal by up to 41% — and `mockup.py` measures the true length, so a
+  metric that merely looks similar is a failed gate.
+- **Sub-pixel WIDTH**, 0.8 px. A ribbon thinner than a pixel is noise, and this
+  is the rule that scales with pitch by itself. A distance table cannot: the top
+  screen row is **905 m** out at pitch 75, **1739 m** at 60 and **5347 m** at 50,
+  so the far field outgrows any fixed number. Measured at pitch 50, ink in the
+  top 40 rows: **3009 with a length rule alone, 395 with the width rule added.**
+  The smeared horizon in the first `NAV3D-GOOGLE.png` is that 3009.
+
+**Roads are ribbons at `mktiles.py`'s own `OSM_WIDTH_M`,** so the two views never
+disagree about how wide Sukhumvit is; a second table would drift on first edit.
+Below about 2.2 px of screen width the casing collapses to a single stroke,
+because there is no interior left to show and filling it would erase the road
+either side. Painter's order is far to near, which is what makes a near road
+occlude a far one.
+
+**The route's screen width is capped at 20 px, per VERTEX.** At its true 9 m with
+a near plane a few metres out it subtends a third of a 270 px viewport and blots
+the map — the reference caps its own ribbon for the same reason. Per vertex
+rather than per segment: clamping once from a segment's nearer end makes
+consecutive segments step between widths and the edge comes out notched, which
+is visible in the first `NAV3D-GOOGLE.png`.
+
+#### The index the pack does not have
+
+The roads pack has six sections and none is spatial. Nothing needed one: `snap()`
+scans all 1 738 370 nodes once per route. This view needs "every road near the
+rider" every frame. Measured on the device:
+
+| | per frame |
+|---|---|
+| full scan of 1 738 370 nodes | **33.2 ms** — 27% of the 125 ms budget |
+| `roadgrid.c` | **0.088 ms** |
+
+27% is the honest figure, and an earlier draft of `roadgrid.h` claimed the scan
+would be the whole budget, which was wrong. It is still a quarter of every frame
+spent finding what to draw before drawing any of it, on a page that then projects
+and fills some thousand ribbons. 378× for 7.41 MB is the trade.
+
+It is built in RAM rather than stored in the pack, because storing it would bump
+the format and invalidate every pack already on a device to save a cost paid once
+per boot. **The build is 950 ms — about seven dropped frames — so it happens on
+the first `V` press behind a `BUILDING 3D` note**, never silently mid-ride, and a
+rider who stays in 2D never pays it.
+
+**The sort key is intrinsic to the pack.** Ribbons sort far to near and tie-break
+on the edge's own node indices, not on the order they were gathered in. Node
+indices are a property of the pack, so any two implementations that read it agree
+on them without agreeing on anything else — which is what lets `mockup.py` gather
+in whatever order suits Python and still paint the identical sequence. Tying to
+gather order would have forced the mockup to reimplement the ring walk *and* the
+radix sort, and the design gate would then have been testing that
+reimplementation instead of the renderer.
+
+#### What the page keeps, and what it costs
+
+**`V` toggles, `view3d` in the config persists it, `--view3d`/`--no-view3d` pin
+it for tests.** The flag is a tri-state — `-1` means "the config decides" —
+because the config is parsed after the arguments, and a test that says
+`--no-view3d` must not have it undone. That is 1.4.8's lesson restated: an
+assertion that reads the device config is not an assertion.
+
+**Every 3D field on `navmap_t` is optional, and any one absent takes the 2D
+branch.** The turn panel, compass, speed badge, scale bar and chevron are
+`view_nav.c`'s and are untouched. The proof is not an argument: with the branch
+in place, `make check` reports every frozen golden byte-identical.
+
+Two things the 3D branch needs that 2D does not. **Knockouts** behind the
+compass, badge and scale bar — over an oblique street grid they are legible only
+by luck, and a raster basemap at 4 m/px is sparse enough that 2D never needed
+one. They live in the 3D buffer rather than in `view_nav.c` precisely so the 2D
+page and its goldens cannot be perturbed. And the whole **route window is moved
+into the roads pack's frame** each frame through lat/lon (`geo_unproject`, written
+directly under `geo_project` so the two cannot drift): route metres are
+referenced to the route's own first point and the pack to its own lat/lon, and
+drawing one in the other's frame would put the guidance line a kilometre off the
+streets beneath it — the same class of bug `tiles_bind_route()` exists to prevent.
+
+**Cost: 33.5 ms per frame on the device at pitch 70**, 27% of the 125 ms budget,
+for about a thousand ribbons. And the frame is **byte-identical between clang and
+gcc 10.2.1**, which is what makes a golden possible at all: the radix sort is
+stable, the ribbon sort is a total order, and the rasteriser is integer.
+
+**The scale bar stays, at the product owner's request, and it is a small lie.**
+In perspective the scale changes every row — at pitch 70 a pixel at the bottom of
+the viewport covers a few metres and one near the top covers tens — so "200M" is
+exact only at the chevron's row. At pitch 75 that is a rounding error; by pitch
+50 it would not be defensible, which is one more reason 70 is the setting.
+
+#### What cannot be copied from the reference
+
+- **Extruded buildings.** This is the largest visual difference and it is a
+  *data* gap, not a rendering one: neither pack holds building footprints and
+  `pbf2osm.py` does not extract them. Quads plus vertical edges would be
+  straightforward to draw.
+- **Grey fills and shading.** One bit, and 6.4 rules out dithering with a reason.
+- **A speed limit.** Measured on `maps/thailand-latest.osm.pbf`: 2 923 134
+  highway ways in Thailand, **29 126 with `maxspeed` — 1.00%**. Secondary is
+  11.0%, trunk 9.7%, tertiary 4.7%, residential 1.0%, service 0.1%. A limit box
+  would be blank on essentially every road the rider uses, which is worse than
+  absent — a box that is usually empty teaches the rider to stop looking at it.
+  It is a data gap and not a format one: EDGES flags is a u16 with ten bits
+  spare, so a 4-bit index into the eight common values would cost nothing.
+  (An earlier count of the *extract* said 0%; that was `pbf2osm.py`, which drops
+  the tag. Measuring the wrong artefact and reporting it is how that number
+  nearly became "OSM Thailand has no speed limits".)
+- **Labels lying on the road surface.** The 5x7 font cannot be foreshortened,
+  which is why the reference draws its own labels flat on top.
 
 
 ---
@@ -2053,6 +2697,224 @@ destination is, which is also precisely the condition that makes asking an
 online router worth its 1.4 seconds.
 
 ---
+
+### 7.7.1 Tolls: asked for online, reported on CONFIRM, unknowable offline
+
+`tolls = avoid` (the default) excludes tolled edges from the offline graph and
+sends `costing_options.auto.use_tolls = 0` online; `tolls = allow` does neither.
+The CONFIRM title row then reports what the route actually is, as `TOLL` or
+`NO TOLL`. The split between those two — ask for one thing, report another — is
+the whole design.
+
+**One key for both routers**, because the rider never sees which one answered.
+The pack is asked first and the network only where it cannot answer (7.8), so a
+setting that meant different things either side of that fallback would avoid
+tolls on some trips and not others for reasons invisible from the saddle. In
+bike mode it does nothing: 7.7 already excludes motorway and trunk offline, and
+Valhalla's bicycle costing has no `use_tolls`.
+
+**The request is a preference and the badge is the answer.** Valhalla scores
+`use_tolls: 0` as *avoid strongly*, not *never*, and will route over a toll road
+when there is no alternative. A page that showed what was asked for would read
+`NO TOLL` on a route up the Chalong Rat. So the flag is sent and the reply is
+believed, and the two are allowed to disagree. Asking is still worth it: the
+default is 0.5, which in Bangkok means the expressway most of the time.
+
+**Offline answers it too, since pack v4.** `EDGES.flags` bit 5 is set from
+`toll=yes`, `router_path()` excludes those edges under `tolls = avoid`, and
+`router_to()` then reports `out->toll` **measured on the edges Dijkstra actually
+chose** rather than copied from the setting. Measuring costs a scan of one
+node's out-list per hop and buys two things: the badge states a fact about the
+route instead of echoing the policy back, and a packer that silently stopped
+setting the bit shows up as every route reporting NO TOLL.
+
+`toll=yes` and nothing else. OSM's `toll=no` is a survey saying the road is
+FREE, and the `toll:hgv` / `toll:motorcar` variants qualify it by vehicle; a
+packer keying on the presence of `toll` would refuse exactly the roads someone
+took the trouble to record. `tests/roads/tolls.json` carries a `toll=no` way for
+that case.
+
+**Two sources still cannot answer, so UNKNOWN is a value and it is zero.** OSRM
+does not report it and a GPX has no router. `route_init()` is a `memset`, so
+both say *"I was not told"* for free. The obvious spelling — `-1` unknown, `0`
+no, `1` yes — would have had them claim NO TOLLS, a lie in exactly the case a
+rider cannot check. `vid.c:300` records the same trap for a zeroed fd claiming
+stdin.
+
+**A bump is two installs, and this one is unusually unforgiving.** `search.c`
+refuses a pack whose version it does not recognise, so a v4 binary will not read
+a v3 pack and F goes dead until both have travelled. That refusal is the right
+behaviour and not a rough edge: a v3 pack has no toll bit, every edge in it
+reads as untolled, and `tolls = avoid` against one would be a setting that
+silently did nothing. Better to refuse the pack than to honour the setting in
+name only.
+
+That is also why `NO TOLL` is drawn rather than left blank when it *is* known:
+the blank has to keep meaning "nobody said", or the one trustworthy case becomes
+indistinguishable from the three that are not.
+
+**In the title row, not the strip.** 7.7 built that strip for four half-lines
+and said no fifth value competes for the space; FIND already puts `FETCHING` on
+the right of its title. The badge buys its width out of the title's 33
+characters, which are cut and not shrunk anyway (6.5: the number is the part
+that changes, the name is the part you already know). **UNKNOWN draws nothing
+and takes no width**, which is what keeps every offline proposal byte-identical
+to `mockup.py` — the design gate still compares this page exactly rather than
+within a budget, and needed no mockup counterpart.
+
+**Gated on the request and on the frame, separately.** `T-NET-USETOLLS` copies
+the composed body out through `$BEEPY_BODY` and asserts `use_tolls` is present
+for `auto`, absent for `bicycle`, and that both bodies still parse as JSON —
+because the fixture answers the same bytes whatever was asked, so a
+`costing_options` attached to the wrong costing would produce a perfect route
+and no complaint. `T-NET-TOLL` runs the same capture twice differing only in
+`"has_toll"`, and asserts the frames differ *and* are identical once the title
+row is masked: the first half proves the flag arrives, the second proves it
+arrives where 7.7 has room for it. A third pair routes an offline destination
+under both fixtures and requires byte-identical frames, which is the assertion
+that a reply's flag cannot reach a route the pack built.
+
+### 7.7.2 Priority roads offline — a cost that is not a distance
+
+**The product owner's words, after a test ride: "did you design priority road for
+calculate route because i test route to NAMI SALAYA not priority road?"** No, and
+here is what it did instead.
+
+Dijkstra minimised **length**, one line of it:
+
+```c
+nd = d + G.edge[k].len_mm / 1000.0;
+```
+
+so a route through a tangle of sois beat a main road whenever it saved a metre.
+Measured on the rider's own region pack, HOME → SALAYA CLOCK TOWER:
+
+| router | distance | turns |
+|---|---|---|
+| offline, shortest distance | 15.95 km | **32** |
+| Valhalla, costing by time | 19.66 km | 13 |
+
+Thirty-two turns for a 16 km drive. The router was working exactly as specified
+and the specification was wrong for the vehicle.
+
+#### Why §7.7 refused this, and why that reason expired
+
+§7.7 chose **exclusion and not weighting**, and its argument was specific:
+`len_mm` is "what Dijkstra adds up **and what the route reports**, and a cost
+multiplier would make those two different numbers — one for choosing and one for
+showing."
+
+That premise no longer held, and checking rather than believing it is what made
+this cheap:
+
+- `router_to()` takes `total_m` from `router_path()` and **never reads it**. The
+  length the rider sees comes from `route_prepare()`, off the returned geometry.
+- `total_m`'s only real consumers are `test_search.c`'s assertions.
+- The toll block already walks the chosen path scanning `adj` for each hop — and
+  its own comment says it "stays true if an exclusion is ever relaxed into a
+  weighting."
+
+So *"one number for choosing and one for showing"* was already the architecture
+everywhere except the one line that still conflated them. **The change is to stop
+conflating them, not to accept the cost §7.7 declined to pay.**
+
+`dist[]` now carries weighted metres, and `*total_m` is **measured off the chosen
+path** — the access legs plus Σ`len_mm`, using the toll block's own scan. Where
+two edges join the same pair of nodes, the one measured is the **cheapest**,
+because that is the one Dijkstra relaxed; `prev` records nodes and not edges, so
+this has to be re-derived, and taking the shortest or the first would report a
+length off a different road from the one being ridden. No extra memory: a scan of
+one node's out-list per hop, against the 13 MB of `dist`/`prev`/`mark` a
+million-node pack already allocates.
+
+#### The weights
+
+| class | weight | | class | weight |
+|---|---|---|---|---|
+| motorway | 0.70 | | unclassified | 1.30 |
+| trunk | 0.75 | | residential | 1.50 |
+| primary | 0.85 | | living_street | 2.00 |
+| secondary | 0.95 | | unrecognised (0) | 1.00 |
+| tertiary | **1.00** | | | |
+
+Tertiary is the pivot at 1.00, so a tertiary route is costed at its true length
+and every other class is dearer or cheaper *than that* rather than than nothing.
+The break-even that matters: residential ÷ primary = 1.76, so a main road may be
+up to 1.76× longer and still win — past that the soi is genuinely the better
+answer and the router says so.
+
+**Class 0 is 1.00**, for `mode_allows()`'s reason turned around: it means "a tag
+the packer did not recognise", which is as likely to be an arterial as an alley,
+and a penalty there would quietly worsen every route over a pack built by a newer
+packer.
+
+**Bike is 1.00 everywhere, deliberately.** §7.7 already keeps a bicycle off
+motorway and trunk by *exclusion*, a bicycle genuinely does want the short way,
+and steering one onto a Thai primary to save turns is a safety judgement this
+program is in no position to make. T-CLASS-BIAS asserts the bicycle route is
+identical with the weighting on and off, so this stays true rather than merely
+being intended.
+
+**And exclusion survives as a separate mechanism**, which is now load-bearing
+rather than incidental: a bicycle refused a motorway is a rule about the law, and
+no cost can express it — a multiplier of 50 is still a road the router will take
+when the alternative is long enough.
+
+#### What it does, measured
+
+| router | distance | turns |
+|---|---|---|
+| offline, shortest distance | 15.95 km | 32 |
+| **offline, class-weighted** | **16.94 km** | **17** |
+| Valhalla, costing by time | 19.66 km | 13 |
+
+Turns halved for one kilometre more — and 2.7 km shorter than the online answer
+with nearly as few turns, which makes the offline router a genuine alternative to
+the network for the first time rather than a fallback to be tolerated.
+
+#### `major_roads`, and a default that changes an answer
+
+A config key (§2.1), **defaulting to 1**, which is the one default in that file
+that changes what the program used to say. The justification is that `mode = car`
+is a claim about a vehicle: shortest-distance is not a car profile, and a rider
+who set `mode = car` did not ask for 32 turns. `major_roads = 0` gives the old
+router back exactly, and `--major-roads` / `--no-major-roads` exist so the two can
+be compared without editing a file.
+
+#### One limitation, stated because it is invisible
+
+**`service` and `track` are not in the packer's table**, so they land in class 0
+beside "a tag we do not recognise" — and class 0 must stay neutral for the reason
+above. Car parks and alleys therefore cannot be weighted by a pack built today.
+
+That costs less than it sounds: a Bangkok soi route is *residential*,
+*unclassified* and *living_street*, which are 6, 7 and 8 and fully weighted — the
+16.94 km measurement above was taken on the rider's existing pack with no rebuild.
+Sharpening it means adding `service` and `track` to `mkpack.py` **and re-cutting
+every pack**, which is hours of the rider's Mac time and belongs in its own
+change.
+
+#### What the gate measures
+
+`tests/roads/bias.json` — a short residential zigzag against a **longer** primary
+between the same two points. `modes.json` could not serve, and the reason is the
+whole design of the fixture: there the big road is the *shorter* one (442 m of
+motorway against 1091 m of residential), so shortest-distance already picks it
+and a weighting test over it could not fail.
+
+**T-CLASS-BIAS**, in `test_search.c`: with the bias a car takes the longer road;
+without it the same car takes the shorter one (so the bias is what did it, and not
+the fixture merely having one sensible route); a bicycle is identical either way;
+and **the reported length is true metres and not the cost** — costed at 0.85 the
+primary would report about 1180 m for a 1392 m road, *shorter than the zigzag it
+had just rejected for being too long*, which is a number a rider would notice and
+never be able to explain.
+
+The fixture's margin is measured, not guessed: 984 m of zigzag against 1282 m of
+primary, a ratio of 1.30 against a break-even of 1.76. **The first cut was 1.65 —
+six per cent inside break-even — and that is a bad test**, because any tuning of
+the weight table would flip it and it would be measuring the constant rather than
+the behaviour.
 
 ### 7.8 Fetching, without stopping the ride
 

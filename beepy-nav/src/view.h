@@ -93,6 +93,26 @@ typedef struct {
      * off the road you are demonstrably on. North-up, where the rotation is
      * zero, this is simply the course. */
     double residual;
+
+    /* ---- the 3D view (DESIGN.md 6.6), and every field of it optional ----
+     *
+     * `view3d` off, or any of these NULL, and the page draws exactly what it
+     * drew before: the same basemap blit, the same cased route, the same
+     * goldens. That is deliberate -- the 2D page is the one with five frozen
+     * goldens behind it and the 3D branch must not be able to perturb it.
+     *
+     * The rider's position arrives as lat/lon here and not as world metres,
+     * because the roads pack has its OWN projection reference and re-centring
+     * a pack per frame is what tiles_bind_route() exists to avoid. `r3d_pts`
+     * is the route already in that pack's frame for the same reason: the
+     * caller is the one that knows whether a route came from a GPX, the
+     * offline router or the network, so it converts once and the page draws. */
+    int view3d;
+    double lat, lon;
+    const struct roads *roads;
+    const struct roadgrid *grid;
+    const double *r3d_pts;   /* (e, n) pairs in the ROADS pack's frame */
+    int r3d_n;
 } navmap_t;
 
 /* A saved place drawn on the MAP page (DESIGN.md 1.4.6). Geometry is world
@@ -298,7 +318,56 @@ typedef struct {
      * figures on the left change on their own; this says which of the two
      * profiles produced them, once, for the rider who pressed the key. */
     const char *note;
+    /* ROUTE_TOLL_* -- whether this route uses a toll road (7.7.1). Offline
+     * routes answer it too since pack v4; OSRM replies and GPX files do not.
+     *
+     * In the TITLE row and not the strip, because DESIGN.md 7.7 built that
+     * strip for exactly four half-lines and said so: "no fifth value competing
+     * for the space". The title row already has the precedent -- FIND puts
+     * FETCHING on its right -- and the badge buys its width out of the title's
+     * 33 characters, which are cut rather than shrunk anyway.
+     *
+     * UNKNOWN draws NOTHING and takes no width, which is not only tidiness: it
+     * is what keeps every offline and GPX proposal byte-identical to the
+     * mockup, so the design gate still compares this page exactly rather than
+     * within a budget. */
+    int toll;
 } confirm_t;
+
+/* The SAVE page (DESIGN.md 1.4.8): the name of a favourite being typed, over the
+ * coordinate it is about to be written against.
+ *
+ * FIND's field and CONFIRM's strip, and every constant is theirs rather than a
+ * new set: the name sits at FIND's query y, in FIND's 24 px table, behind FIND's
+ * block cursor, out of FIND's alphabet. Nothing about typing on this device is
+ * learned twice, and the page cost no layout decisions at all.
+ *
+ * The page renders no fix and holds no state -- the caller has already decided
+ * there is a position worth saving, which is why `lat`/`lon` are plain doubles
+ * and there is no waiting variant of this page. */
+typedef struct {
+    const char *name; /* what has been typed, uppercase; never NULL in practice */
+    /* The name is still the untouched default, so it is drawn as a SELECTION --
+     * inverted, and with no cursor, because a selection replaces a caret rather
+     * than sitting beside one. The first character typed takes the whole field.
+     *
+     * This is the field's whole usability, not a decoration. Pre-filling is what
+     * makes S ENTER a two-press save; without a selection it also made the rider
+     * backspace seven times before naming anything, and the first replay through
+     * this page wrote a place called PLACE 1CAFE. Inverted-means-replaceable is
+     * the one convention a 1-bit panel has for it. */
+    int fresh;
+    double lat, lon;  /* the fix being saved, to the strip's five decimals */
+    /* How full the list is, for the title bar's "3 OF 8". The ceiling is worth
+     * the width because the eighth save is the one that runs into it, and a
+     * rider who can see the count coming is not surprised by 8 PLACES MAX. */
+    int nplace, max;
+    /* A refusal, or NULL -- NAME IN USE and NOT SAVED (1.4.8). On the strip's
+     * second row, which is CONFIRM's home for the same thing: the page STAYS UP
+     * behind it, because both refusals are answered by editing the field and a
+     * transient over a page the rider had already left would not let them. */
+    const char *note;
+} save_t;
 
 /* The QUIT page (DESIGN.md 1.6): the one modal question in the program.
  *
@@ -322,6 +391,7 @@ void view_map(cov_t *c, const livemap_t *m);
 void view_overview(cov_t *c, const overview_t *o);
 void view_find(cov_t *c, const find_t *f);
 void view_confirm(cov_t *c, const confirm_t *cf);
+void view_save(cov_t *c, const save_t *s);
 void view_quit(cov_t *c, const quit_t *q);
 
 /* Map marks shared by the pages that draw a map; defined in view_nav.c, where
@@ -353,6 +423,12 @@ void view_nav_demo(cov_t *c, int off, int nofix, int ask);
  * this is the same page with the tile layer absent -- which is the pair the
  * "a missing pack changes nothing" test compares. */
 void view_nav_tiles_demo(cov_t *c, struct tiles *t);
+
+/* The frozen 3D state (DESIGN.md 6.6). Takes the pack and its index rather
+ * than reading globals, for the same reason view_nav_tiles_demo() takes the
+ * tile handle: the page stays a pure function of its arguments. */
+void view_nav_3d_demo(cov_t *c, const struct roads *roads,
+                      const struct roadgrid *grid);
 
 /* The static states mockup.py's page_map() and page_map_wait() render: the MAP
  * page with a position (`nofix` 1 for the state where it has gone stale), and
@@ -391,6 +467,13 @@ void view_find_toofar_demo(cov_t *c, roads_t *g);
 /* mockup.py's page_confirm(): the same Asok route the basemap demo rides,
  * proposed rather than under way. */
 void view_confirm_demo(cov_t *c);
+/* mockup.py's page_save() (DESIGN.md 1.4.8), over the device's own desk -- the
+ * same coordinate the MAP goldens are drawn about, so the row this page shows is
+ * the row nav-map.fb shows and a build that formatted one differently from the
+ * other could not pass both. `typed` picks the field's second state: 0 is the
+ * page as it opens, with the default name SELECTED, and 1 is a name typed over
+ * it with the cursor after it. */
+void view_save_demo(cov_t *c, int typed);
 void view_quit_demo(cov_t *c, int riding);
 void view_map_wait_home_demo(cov_t *c, struct tiles *t);
 void view_map_saved_demo(cov_t *c, struct tiles *t);

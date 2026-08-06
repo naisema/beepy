@@ -32,6 +32,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "config.h" /* CFG_TOLLS_* for the router calls */
 #include "router.h"
 #include "search.h"
 
@@ -362,7 +363,7 @@ t_router_small(void)
      * along SECOND STREET, north up the unnamed way, then west. 0.002 deg of
      * longitude twice and 0.003 of latitude once. */
     around = 2.0 * 2.0 * DLON_M + 3.0 * DLAT_M;
-    n = router_path(g, 0.0, 3.0 * DLAT_M, 0.0, 0.0, NAV_MODE_CAR, nodes, ROUTER_MAXPT, &total,
+    n = router_path(g, 0.0, 3.0 * DLAT_M, 0.0, 0.0, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, nodes, ROUTER_MAXPT, &total,
                     why, (int)sizeof why, NULL);
     check(n == 7, "southbound is seven nodes the long way round");
     /* 5 mm, because edge lengths are stored as integer millimetres (mkpack.py)
@@ -372,7 +373,7 @@ t_router_small(void)
     check(count_violations(&G, nodes, n) == 0, "and it breaks no oneway");
 
     /* Northbound is the street itself: four nodes, three segments. */
-    n = router_path(g, 0.0, 0.0, 0.0, 3.0 * DLAT_M, NAV_MODE_CAR, nodes, ROUTER_MAXPT, &total,
+    n = router_path(g, 0.0, 0.0, 0.0, 3.0 * DLAT_M, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, nodes, ROUTER_MAXPT, &total,
                     why, (int)sizeof why, NULL);
     check(n == 4, "northbound is the street itself");
     checkf(fabs(total - 3.0 * DLAT_M) < 5e-3,
@@ -383,27 +384,27 @@ t_router_small(void)
      * second carriageway that joins nothing in this extract, which is exactly
      * what the edge of a real pack looks like. */
     why[0] = '\0';
-    n = router_path(g, 0.0, 0.0, -1.0 * DLON_M, 3.0 * DLAT_M, NAV_MODE_CAR, nodes,
+    n = router_path(g, 0.0, 0.0, -1.0 * DLON_M, 3.0 * DLAT_M, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, nodes,
                     ROUTER_MAXPT, &total, why, (int)sizeof why, NULL);
     check(n < 0 && why[0] != '\0', "an unreachable destination says so");
-    check(router_to(g, 0.0, 0.0, -1.0 * DLON_M, 3.0 * DLAT_M, NAV_MODE_CAR,
+    check(router_to(g, 0.0, 0.0, -1.0 * DLON_M, 3.0 * DLAT_M, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0,
                     "NOWHERE", &rt,
                     why, (int)sizeof why, NULL) != 0,
           "and router_to(, NULL) fails the same way");
     check(rt.npt == 0 && rt.pt == NULL,
           "leaving no half-built route behind it");
     /* A pack that is not there at all: the same failure, not a crash. */
-    check(router_path(NULL, 0, 0, 1, 1, NAV_MODE_CAR, nodes, ROUTER_MAXPT, &total, why,
+    check(router_path(NULL, 0, 0, 1, 1, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, nodes, ROUTER_MAXPT, &total, why,
                       (int)sizeof why, NULL) < 0,
           "routing with no pack says so");
-    check(router_to(NULL, 0, 0, 1, 1, NAV_MODE_CAR, NULL, &rt, why,
+    check(router_to(NULL, 0, 0, 1, 1, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, NULL, &rt, why,
                     (int)sizeof why, NULL) != 0,
           "and so does router_to(, NULL)");
 
     /* The route_t a ride will be given: the rider's own position first, the
      * destination last, prepared and cued exactly as route_load() leaves a GPX.
      * Started 40 m east of the origin so the access leg is real. */
-    check(router_to(g, 40.0, 3.0 * DLAT_M, 0.0, 0.0, NAV_MODE_CAR,
+    check(router_to(g, 40.0, 3.0 * DLAT_M, 0.0, 0.0, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0,
                     "SECOND STREET", &rt, why,
                     (int)sizeof why, NULL) == 0,
           "router_to(, NULL) builds a route");
@@ -520,7 +521,7 @@ t_oneway(void)
         if (s == d)
             continue;
         n = router_path(A, GA.en[2 * s], GA.en[2 * s + 1], GA.en[2 * d],
-                        GA.en[2 * d + 1], NAV_MODE_CAR, nodes,
+                        GA.en[2 * d + 1], NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, nodes,
                         ROUTER_MAXPT, &total, why,
                         (int)sizeof why, NULL);
         if (n < 2)
@@ -556,14 +557,14 @@ t_oneway(void)
         /* The control: on a pack built the mockup's way, this pair's shortest
          * path IS illegal. If this stops being true the pair has stopped being
          * adversarial and the assertion below has stopped meaning anything. */
-        n = router_path(B, se, sn, de, dn, NAV_MODE_CAR, nodes, ROUTER_MAXPT, &total, why,
+        n = router_path(B, se, sn, de, dn, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, nodes, ROUTER_MAXPT, &total, why,
                         (int)sizeof why, NULL);
         if (n >= 2 && count_violations(&GA, nodes, n) > 0)
             adv_caught++;
         else
             printf("FAIL %s: not adversarial any more\n", p->what);
         /* And with oneway honoured it is legal. */
-        n = router_path(A, se, sn, de, dn, NAV_MODE_CAR, nodes, ROUTER_MAXPT, &total, why,
+        n = router_path(A, se, sn, de, dn, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, nodes, ROUTER_MAXPT, &total, why,
                         (int)sizeof why, NULL);
         if (n >= 2 && count_violations(&GA, nodes, n) == 0)
             adv_ok++;
@@ -606,7 +607,7 @@ t_reference_path(void)
         roads_close(B);
         return;
     }
-    n = router_path(B, 0.0, 0.0, 320.8778, 511.3470, NAV_MODE_CAR, nodes, ROUTER_MAXPT,
+    n = router_path(B, 0.0, 0.0, 320.8778, 511.3470, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, nodes, ROUTER_MAXPT,
                     &open_m, why, (int)sizeof why, NULL);
     check(n > 2, "the reference pair routes on the oneway-ignoring pack");
     checkf(fabs(open_m - 824.0) <= 3.0,
@@ -616,7 +617,7 @@ t_reference_path(void)
            "and is within 4 m of the hand-built %.1f m route (%.1f)",
            HAND_BUILT_M, open_m - HAND_BUILT_M);
 
-    n = router_path(A, 0.0, 0.0, 320.8778, 511.3470, NAV_MODE_CAR, nodes, ROUTER_MAXPT,
+    n = router_path(A, 0.0, 0.0, 320.8778, 511.3470, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, nodes, ROUTER_MAXPT,
                     &legal_m, why, (int)sizeof why, NULL);
     check(n > 2, "and it routes legally too, thanks to the 25 m snap");
     checkf(legal_m > open_m,
@@ -635,6 +636,73 @@ t_reference_path(void)
  * short MOTORWAY and a longer RESIDENTIAL dogleg -- so "the mode changed the
  * route" is a LENGTH and not a flag. A router that ignored class would return
  * the motorway to both callers and this would see one number twice. */
+
+/* Pack v4's toll bit, the same way t_modes() tests v2's class: tolls.json puts a
+ * short TOLLWAY and a longer FREE ROAD dogleg between the same two points, so
+ * "avoiding tolls changed the route" is a LENGTH and not a flag. A router that
+ * ignored the bit would hand both callers the tollway and this would see one
+ * number twice.
+ *
+ * BOTH WAYS ARE PRIMARY in that fixture, which is what stops this passing on
+ * 7.7's code: if the short way were a motorway, class alone would already
+ * refuse it for a bicycle and the toll bit could be absent entirely. */
+static void
+t_tolls(void)
+{
+    char why[160];
+    route_t allow, avoid;
+    double se, sn, de, dn, spe, spn, fe, fn;
+    roads_t *g = roads_open("beepy-nav/tests/roads/tolls.roads", why,
+                            (int)sizeof why);
+
+    check(g != NULL, "the tolls fixture opens");
+    if (!g)
+        return;
+    roads_project(g, 13.740, 100.560, &se, &sn);
+    roads_project(g, 13.744, 100.560, &de, &dn);
+
+    check(router_to(g, se, sn, de, dn, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, "X",
+                    &allow, why, (int)sizeof why, NULL) == 0,
+          "a car allowed tolls routes across");
+    check(router_to(g, se, sn, de, dn, NAV_MODE_CAR, CFG_TOLLS_AVOID, 0, "X",
+                    &avoid, why, (int)sizeof why, NULL) == 0,
+          "and so does one avoiding them -- by the free road");
+    check(allow.total_m < avoid.total_m,
+          "the tolled route is shorter than the free one");
+    check(avoid.total_m > 1.5 * allow.total_m,
+          "and the detour is a real one, not a rounding");
+    /* The badge on CONFIRM comes from these, and they are measured on the
+     * chosen edges rather than copied from the policy. */
+    check(allow.toll == ROUTE_TOLL_YES,
+          "the tolled route reports ROUTE_TOLL_YES");
+    check(avoid.toll == ROUTE_TOLL_NO,
+          "and the free one reports ROUTE_TOLL_NO, not UNKNOWN");
+    route_free(&allow);
+    route_free(&avoid);
+
+    /* Where the only road is tolled, avoiding tolls means no route -- the same
+     * honest refusal 7.7 gives a bicycle on a motorway-only spur. */
+    roads_project(g, 13.748, 100.560, &spe, &spn);
+    check(router_to(g, se, sn, spe, spn, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, "X",
+                    &allow, why, (int)sizeof why, NULL) == 0,
+          "a car allowed tolls reaches a toll-only spur");
+    route_free(&allow);
+    check(router_to(g, se, sn, spe, spn, NAV_MODE_CAR, CFG_TOLLS_AVOID, 0, "X",
+                    &avoid, why, (int)sizeof why, NULL) != 0,
+          "and one avoiding them is refused it rather than sent up it");
+
+    /* toll=no is OSM saying the road is FREE. It must stay routable when tolls
+     * are avoided: a packer that set the bit for any `toll` key would refuse
+     * the ways someone bothered to survey. */
+    roads_project(g, 13.736, 100.562, &fe, &fn);
+    check(router_to(g, se, sn, fe, fn, NAV_MODE_CAR, CFG_TOLLS_AVOID, 0, "X",
+                    &avoid, why, (int)sizeof why, NULL) == 0,
+          "toll=no is free, and stays routable when tolls are avoided");
+    check(avoid.toll == ROUTE_TOLL_NO, "and reports itself untolled");
+    route_free(&avoid);
+    roads_close(g);
+}
+
 static void
 t_modes(void)
 {
@@ -650,10 +718,10 @@ t_modes(void)
     roads_project(g, 13.740, 100.560, &se, &sn);
     roads_project(g, 13.744, 100.560, &de, &dn);
 
-    check(router_to(g, se, sn, de, dn, NAV_MODE_CAR, "X", &car, why,
+    check(router_to(g, se, sn, de, dn, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, "X", &car, why,
                     (int)sizeof why, NULL) == 0,
           "a car routes across");
-    check(router_to(g, se, sn, de, dn, NAV_MODE_BIKE, "X", &bike, why,
+    check(router_to(g, se, sn, de, dn, NAV_MODE_BIKE, CFG_TOLLS_ALLOW, 0, "X", &bike, why,
                     (int)sizeof why, NULL) == 0,
           "and so does a bicycle -- by another road");
     /* The whole point: not merely both routable, but DIFFERENT. The car takes
@@ -670,11 +738,11 @@ t_modes(void)
      * which is the honest answer, and the condition that makes asking an
      * online router with a real cycling profile worth 1.4 seconds. */
     roads_project(g, 13.748, 100.560, &spe, &spn);
-    check(router_to(g, se, sn, spe, spn, NAV_MODE_CAR, "X", &car, why,
+    check(router_to(g, se, sn, spe, spn, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, "X", &car, why,
                     (int)sizeof why, NULL) == 0,
           "a car reaches a motorway-only spur");
     route_free(&car);
-    check(router_to(g, se, sn, spe, spn, NAV_MODE_BIKE, "X", &bike, why,
+    check(router_to(g, se, sn, spe, spn, NAV_MODE_BIKE, CFG_TOLLS_ALLOW, 0, "X", &bike, why,
                     (int)sizeof why, NULL) != 0,
           "a bicycle is refused it, rather than sent up a motorway");
 
@@ -682,11 +750,84 @@ t_modes(void)
      * node however far away it is, so a destination outside the pack used to
      * come back as a confident route to the pack's edge. 40 km out must now
      * refuse and say how far. */
-    check(router_to(g, se, sn, de + 40000.0, dn, NAV_MODE_CAR, "X", &car, why,
+    check(router_to(g, se, sn, de + 40000.0, dn, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, "X", &car, why,
                     (int)sizeof why, NULL) != 0,
           "a destination 40 km outside the pack is refused");
     check(strstr(why, "outside this map") != NULL,
           "and the reason says so rather than blaming the roads");
+    roads_close(g);
+}
+
+/* DESIGN.md 7.7.2's class WEIGHTING, which is a different claim from t_modes()'s
+ * class EXCLUSION and needs its own fixture to be testable at all.
+ *
+ * bias.roads is a short residential zigzag against a longer primary between the
+ * same two points. modes.roads cannot serve: there the big road is the SHORTER
+ * one, so shortest-distance already picks it and this test could not fail.
+ *
+ * Three assertions, and each fails on its own:
+ *   - with the bias, a car takes the LONGER road (the whole feature);
+ *   - without it, the same car takes the shorter one (so the bias is what did
+ *     it, and not the fixture merely having one sensible route);
+ *   - a bicycle is byte-identical either way (7.7.2 leaves bike neutral, and a
+ *     weighting that leaked into the bicycle would be a safety decision nobody
+ *     took).
+ *
+ * And the fourth, which is the one the change could most easily get wrong: the
+ * REPORTED length is true metres and not the weighted cost. The primary route
+ * costs about 0.85 of its length, so a router reporting its own cost would say
+ * roughly 1180 m for a 1392 m road -- shorter than the zigzag it just rejected
+ * for being too long, which is the sort of number a rider would notice and never
+ * be able to explain. */
+static void
+t_class_bias(void)
+{
+    char why[160];
+    route_t plain, biased, bike, bike_biased;
+    double se, sn, de, dn;
+    roads_t *g = roads_open("beepy-nav/tests/roads/bias.roads", why,
+                            (int)sizeof why);
+
+    check(g != NULL, "the bias fixture opens");
+    if (!g)
+        return;
+    /* From the south end to the far stub's tip, so the destination is not the
+     * junction where the two candidate roads meet -- a target sitting exactly
+     * there would let snap() pick either and the assertion would flap. */
+    roads_project(g, 13.740, 100.560, &se, &sn);
+    roads_project(g, 13.749, 100.560, &de, &dn);
+
+    check(router_to(g, se, sn, de, dn, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 0, "X",
+                    &plain, why, (int)sizeof why, NULL) == 0,
+          "a car routes over the bias fixture with no bias");
+    check(router_to(g, se, sn, de, dn, NAV_MODE_CAR, CFG_TOLLS_ALLOW, 1, "X",
+                    &biased, why, (int)sizeof why, NULL) == 0,
+          "and with it");
+    check(biased.total_m > plain.total_m,
+          "the biased car route is LONGER -- it took the big road");
+    /* A real margin and not a rounding: the primary is 1.30x the zigzag here, so
+     * anything under 1.2 means the router found some third path and the fixture
+     * has stopped testing what it says it tests. */
+    check(biased.total_m > 1.2 * plain.total_m,
+          "and longer by the margin the fixture was built with");
+    /* True metres, not the cost. Costed at 0.85 the primary would report about
+     * 1180 m -- less than the 1095 m zigzag -- so this is the assertion that says
+     * dist[] and *total_m are two different numbers now. */
+    check(biased.total_m > 1300.0 && biased.total_m < 1500.0,
+          "and it is reported as true metres rather than as its own cost");
+    route_free(&plain);
+    route_free(&biased);
+
+    check(router_to(g, se, sn, de, dn, NAV_MODE_BIKE, CFG_TOLLS_ALLOW, 0, "X",
+                    &bike, why, (int)sizeof why, NULL) == 0,
+          "a bicycle routes over it");
+    check(router_to(g, se, sn, de, dn, NAV_MODE_BIKE, CFG_TOLLS_ALLOW, 1, "X",
+                    &bike_biased, why, (int)sizeof why, NULL) == 0,
+          "and with the bias asked for");
+    check(bike.total_m == bike_biased.total_m && bike.npt == bike_biased.npt,
+          "and gets the identical route -- the bias is car-only, by design");
+    route_free(&bike);
+    route_free(&bike_biased);
     roads_close(g);
 }
 
@@ -701,6 +842,8 @@ main(void)
     t_oneway();
     t_reference_path();
     t_modes();
+    t_class_bias();
+    t_tolls();
     if (failures) {
         printf("test_search: %d FAILURES\n", failures);
         return 1;

@@ -93,6 +93,10 @@ the eight fields they have in common.
                      4  4  u32  len_mm, segment length in millimetres
                      8  2  u16  flags; bit 0 = the parent way is oneway, so
                                 the reverse edge is deliberately ABSENT
+                                bits 1-4 = road class, coarse-to-fine, so
+                                "above class N" is a comparison (v2)
+                                bit 5 = the way is tolled, `toll=yes` only (v4)
+                                bits 6-15 spare
                     10  4  u32  name, index into PLACES, 0xffffffff = unnamed.
                                 WIDENED IN v3: it was a u16, which capped the
                                 PLACES table at 65 534 and stopped a nationwide
@@ -144,7 +148,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mktiles                                                   # noqa: E402
 
 MAGIC = b"BNAVROAD"
-VERSION = 3
+VERSION = 4
 HEADER_BYTES = 64
 SECT_ENTRY = 8
 NSECT = 6
@@ -167,6 +171,19 @@ EDGE_ONEWAY = 1
 # "avoid anything above class N" is a comparison rather than a set.
 EDGE_CLASS_SHIFT = 1
 EDGE_CLASS_MASK = 0x1E
+# EDGES.flags bit 5: the way is tolled (DESIGN.md 7.7.1). Bit 5 because 1-4 are
+# the class and the class is ordered coarse-to-fine to keep "above class N" a
+# comparison -- widening it to five bits to squeeze toll in would have broken
+# that for no gain when ten bits are still spare.
+#
+# ONLY `toll=yes` COUNTS. OSM also carries toll=no (an explicit statement that
+# it is free, which is not a toll road) and a handful of
+# toll:hgv / toll:motorcar variants that qualify it by vehicle. A navigator that
+# treated any `toll` key as tolled would refuse free roads that had been
+# surveyed carefully enough to say so, which is the opposite of what a careful
+# surveyor deserves.
+EDGE_TOLL = 0x20
+TOLL_YES = {"yes", "true", "1"}
 ROAD_CLASS = {
     "motorway": 1, "motorway_link": 1,
     "trunk": 2, "trunk_link": 2,
@@ -226,7 +243,8 @@ def read_osm(path):
         if raw and name is None:
             dropped.add(raw)
         out.append((name or None, tags.get("oneway", ""), geom,
-                    ROAD_CLASS.get(hw, 0)))
+                    ROAD_CLASS.get(hw, 0),
+                    1 if tags.get("toll", "") in TOLL_YES else 0))
     return out, dropped
 
 
@@ -335,7 +353,7 @@ class Graph:
             self.out.append([])
         return i
 
-    def add_way(self, oneway, geom, name_i, cls=0):
+    def add_way(self, oneway, geom, name_i, cls=0, toll=0):
         fwd = oneway not in ONEWAY_REV
         bwd = oneway not in ONEWAY_FWD
         tagged = not (fwd and bwd)
@@ -343,6 +361,10 @@ class Graph:
             fwd = bwd = True
         flags = EDGE_ONEWAY if (tagged and self.honour) else 0
         flags |= (cls << EDGE_CLASS_SHIFT) & EDGE_CLASS_MASK
+        # Both directions of a tolled way are tolled: the flag is a property of
+        # the carriageway, not of travelling along it one way.
+        if toll:
+            flags |= EDGE_TOLL
         for a, b in zip(geom, geom[1:]):
             ia, ib = self._node(*a), self._node(*b)
             if ia == ib:
@@ -375,7 +397,7 @@ def build(ways, pois, frame, honour_oneway):
     # is what makes the table stable between builds and between extracts that
     # differ only in element order.
     by_name = {}
-    for name, _ow, geom, _cls in ways:
+    for name, _ow, geom, _cls, _toll in ways:
         if name:
             by_name.setdefault(name, []).append(geom)
     # A destination joins the same table as a street, carrying a single point
@@ -415,9 +437,9 @@ def build(ways, pois, frame, honour_oneway):
         places.append((off, first, len(points) - first))
 
     g = Graph(frame, honour_oneway)
-    for name, ow, geom, cls in ways:
+    for name, ow, geom, cls, toll in ways:
         g.add_way(ow, geom, name_i.get(name, NAME_NONE) if name else NAME_NONE,
-                  cls)
+                  cls, toll)
     return g, places, points, strings
 
 
@@ -478,10 +500,10 @@ def repeat_ways(ways, spec):
     out = []
     for iy in range(ny):
         for ix in range(nx):
-            for name, ow, geom, cls in ways:
+            for name, ow, geom, cls, toll in ways:
                 out.append((name, ow,
                             [(la + iy * dla, lo + ix * dlo) for la, lo in geom],
-                            cls))
+                            cls, toll))
     return out, nx, ny
 
 
@@ -504,6 +526,16 @@ def info(path):
     print(f"  {nway} ways indexed, {ndrop} names dropped (no ASCII form)")
     for nm, (off, count) in zip(names, tab):
         print(f"  {nm:8s} {count:8d} at {off}")
+    # Tolled edges, counted rather than trusted. A 45 MB region pack built from
+    # an extract whose `toll` tags were stripped is indistinguishable from a good
+    # one by every other line here -- same version, same edge count -- and the
+    # symptom on the device would be `tolls = avoid` quietly doing nothing.
+    eoff, ecount = tab[2]
+    ntoll = sum(1 for i in range(ecount)
+                if struct.unpack_from("<H", blob, eoff + EDGE_BYTES * i + 8)[0]
+                & EDGE_TOLL)
+    print(f"  tolled edges {ntoll} of {ecount}"
+          f"{'  -- NONE: was `toll` kept by the extract?' if not ntoll else ''}")
     off, count = tab[3]
     poff, _ = tab[4]
     soff, _ = tab[5]

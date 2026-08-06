@@ -46,7 +46,11 @@
  * would leave the frame whenever the rotation points it at the margin, so the
  * badge sits four pixels further in and nothing else moves. */
 #define MAPP_COMPASS_X 25
-#define MAPP_HINTS "F FIND   R ROUTES   Q QUIT"
+/* Four keys now, so the separators went from three spaces to two: 32 characters
+ * at scale 2 is 384 px of the 400 and 33 would not fit. S SAVE had to go on this
+ * row rather than being left off it -- DESIGN.md 1.5 makes the row the page's
+ * whole advertisement, and a key absent from it was never claimed. */
+#define MAPP_HINTS "F FIND  R ROUTES  S SAVE  Q QUIT"
 
 /* The breadcrumb plus the position the page joins to it. MAP_TRACK_MAX (view.h)
  * is the cap the caller records to, so this is exactly one point of headroom and

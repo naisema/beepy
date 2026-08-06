@@ -38,4 +38,25 @@ int fix_from_gps(const gps_t *g, time_t now, fix_t *f);
  * pace a replay against the clock the receiver was running on. */
 double fix_utc_seconds(const char *utc);
 
+/* gps_t's "YYYY-MM-DD" and "HH:MM:SS" -> Unix epoch seconds, or 0 when either
+ * is missing or malformed (DESIGN.md 1.1.3). UTC in, UTC out -- the caller
+ * converts to local for display.
+ *
+ * THE RECEIVER'S CLOCK, and that is the point rather than a convenience. The Pi
+ * Zero has no battery-backed RTC, so on a cold boot with no network its system
+ * clock is whatever the last shutdown left; the satellites' is exact. A
+ * navigator holding an atomic clock has no business asking the SD card what time
+ * it is.
+ *
+ * It also makes an arrival time DETERMINISTIC in a replay, because the fixture
+ * carries the date and the hour. Two runs of one ride then produce the same
+ * frame, which is what several byte-for-byte comparisons in the gate depend on.
+ *
+ * Written out rather than handed to timegm(), which is not in C99 and whose
+ * absence would be a link error on a libc this has never met. The civil-date
+ * arithmetic is eight lines and has no timezone in it at all -- mktime() would
+ * have applied the local one and quietly shifted every ETA by the offset it is
+ * supposed to be showing. */
+time_t fix_utc_epoch(const char *date, const char *utc);
+
 #endif /* BEEPY_NAV_FIX_H */

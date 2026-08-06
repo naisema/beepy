@@ -121,6 +121,21 @@ OSM_WEIGHT = {"motorway": 2, "trunk": 2, "primary": 2, "secondary": 2,
               "tertiary": 1, "unclassified": 1, "residential": 1,
               "living_street": 1}
 
+# ROAD WIDTH IN METRES, for --cased. The weights above are a fixed pixel count
+# whatever the rung, which is right for a hairline and wrong for a casing: at
+# 0.375 m/px a 1 px road is 37 cm wide, thinner than a kerb, and there is no room
+# between two edges for an interior. A width in metres draws the road at the size
+# it actually is, so the casing gets wider as you zoom in -- which is what makes
+# it look like a street rather than a wire.
+#
+# Deliberately narrow-ish: these are carriageway widths, not right-of-way. A Thai
+# soi really is about 5 m between walls, and drawing 8 would close up every gap
+# the map has left.
+OSM_WIDTH_M = {"motorway": 14.0, "trunk": 12.0, "primary": 11.0,
+               "secondary": 9.0, "tertiary": 7.0, "unclassified": 6.0,
+               "residential": 5.0, "living_street": 4.0}
+OSM_WIDTH_DEFAULT_M = 5.0
+
 # Tagged `highway` but not a road: at 4 m/px a car park aisle and a footbridge
 # are the same one-pixel line as the street they hang off, and a city's worth
 # of them turns the basemap into felt. The Asok extract contains none of these,
@@ -131,6 +146,10 @@ NOT_A_ROAD = {"footway", "path", "steps", "cycleway", "pedestrian", "bridleway",
               "rest_area", "services", "busway", "via_ferrata"}
 
 TILE_W = TILE_H = 256
+
+# Supersample factor for --cased. 4x resolves a 1 px edge as 4 px before the
+# threshold, which is what lets a casing survive a shallow angle.
+SS = 4
 
 
 # --------------------------------------------------------------------- input
@@ -165,7 +184,7 @@ def read_osm(path):
         if len(geom) < 2:
             continue
         out.append((el.get("tags", {}).get("name", ""), OSM_WEIGHT.get(hw, 1),
-                    geom))
+                    geom, OSM_WIDTH_M.get(hw, OSM_WIDTH_DEFAULT_M)))
     return out
 
 
@@ -285,7 +304,40 @@ def parse_zooms(spec):
     return sorted(set(out))
 
 
-def build_zoom(ways_en, mpp, region, verbose):
+def offset_path(pts, d):
+    """`pts` shifted perpendicular by `d` pixels; positive is the right-hand side.
+
+    A vertex takes the AVERAGE of its two segment normals, which is a cheap miter.
+    A proper one would extend to the intersection and blow up on a hairpin; at a
+    one-pixel offset the difference is invisible and the failure mode is not.
+    """
+    if len(pts) < 2:
+        return list(pts)
+    norms = []
+    for i in range(len(pts) - 1):
+        dx = pts[i + 1][0] - pts[i][0]
+        dy = pts[i + 1][1] - pts[i][1]
+        L = math.hypot(dx, dy) or 1.0
+        norms.append((-dy / L, dx / L))
+    out = []
+    for i, p in enumerate(pts):
+        if i == 0:
+            nx, ny = norms[0]
+        elif i == len(pts) - 1:
+            nx, ny = norms[-1]
+        else:
+            ax, ay = norms[i - 1]
+            bx, by = norms[i]
+            nx, ny = ax + bx, ay + by
+            L = math.hypot(nx, ny)
+            if L < 1e-9:          # a doubled-back vertex has no sensible normal
+                nx, ny, L = bx, by, 1.0
+            nx, ny = nx / L, ny / L
+        out.append((p[0] + d * nx, p[1] + d * ny))
+    return out
+
+
+def build_zoom(ways_en, mpp, region, verbose, cased=False):
     """-> (tx0, ty0, nx, ny, {(ix, iy): bytes}) for one rung.
 
     `ways_en` is [(weight, [(e, n), ...])]; `region` is the corridor's bounding
@@ -310,7 +362,7 @@ def build_zoom(ways_en, mpp, region, verbose):
     # Every way's integer pixel chain, computed ONCE: this is what makes the
     # seams exact and the whole thing deterministic.
     chains = []
-    for wgt, en in ways_en:
+    for wgt, en, wm in ways_en:
         xy = [pix(p) for p in en]
         # Collapse runs of identical pixels; at 25 m/px a 500-point way is a
         # handful of distinct pixels and PIL should not be asked to draw the
@@ -325,7 +377,7 @@ def build_zoom(ways_en, mpp, region, verbose):
         bx1 = max(p[0] for p in chain)
         by0 = min(p[1] for p in chain)
         by1 = max(p[1] for p in chain)
-        chains.append((wgt, chain, bx0, by0, bx1, by1))
+        chains.append((wgt, chain, bx0, by0, bx1, by1, wm))
 
     # Bucket each chain into the tiles its bounding box spans, so a tile only
     # ever looks at ways that can reach it.
@@ -342,8 +394,12 @@ def build_zoom(ways_en, mpp, region, verbose):
     # that makes it safe to keep.
     buckets = {}
     for item in chains:
-        wgt, chain, bx0, by0, bx1, by1 = item
-        pad = wgt  # a 2 px line reaches a pixel past its centreline
+        wgt, chain, bx0, by0, bx1, by1, wm = item
+        # A 2 px line reaches a pixel past its centreline; a CASED one is drawn
+        # wgt+2 wide and reaches one further. Conditional on purpose: widening it
+        # for everybody would change which tiles an uncased way registers in, and
+        # the committed fixture packs are compared byte for byte.
+        pad = wgt + 2 if cased else wgt
         for ty in range((by0 - pad) // TILE_H, (by1 + pad) // TILE_H + 1):
             for tx in range((bx0 - pad) // TILE_W, (bx1 + pad) // TILE_W + 1):
                 if tx0 <= tx <= tx1 and ty0 <= ty <= ty1:
@@ -355,9 +411,49 @@ def build_zoom(ways_en, mpp, region, verbose):
         ox, oy = tx * TILE_W, ty * TILE_H
         img = Image.new("1", (TILE_W, TILE_H), 0)
         draw = ImageDraw.Draw(img)
-        for wgt, chain, bx0, by0, bx1, by1 in here:
-            draw.line([(x - ox, y - oy) for x, y in chain], fill=1,
-                      width=wgt, joint="curve" if wgt > 1 else None)
+        # CASINGS (DESIGN.md 6.5): two passes, all edges then all interiors, so a
+        # junction comes out as one continuous white interior rather than a pile
+        # of overlapping bands. One pass per road would let the next road's edge
+        # cut across the interior of the last.
+        if cased:
+            # Every road, edges then interiors. Whether this survives depends on
+            # the RUNG: a casing is 3 px across, so at 1.5 m/px (4.5 m) roads
+            # closer than ~6 m overlap and erase each other, and at 0.75 m/px
+            # (2.25 m) they do not. See DESIGN.md 6.5.
+            # SUPERSAMPLED, because a casing is a shape and 1-bit rasterising
+            # cannot resolve one directly: the band and the interior are drawn by
+            # different algorithms whose stair-steps do not line up, and a shallow
+            # road came out a regular 6-on-6-off dash at every rung tried.
+            # Rendering at SS x and thresholding is how mockup.py makes the
+            # reference frames, and it resolves the geometry before it quantises.
+            #
+            # Widths come from OSM_WIDTH_M -- METRES, so the road is drawn the size
+            # it is and the interior grows as you zoom in. The edge stays 1 px at
+            # 1x whatever the rung, which is what keeps it a line and not a slab.
+            big = Image.new("1", (TILE_W * SS, TILE_H * SS), 0)
+            bd = ImageDraw.Draw(big)
+            for wgt, chain, bx0, by0, bx1, by1, wm in here:
+                pts = [((x - ox) * SS, (y - oy) * SS) for x, y in chain]
+                w = max(3.0, wm / mpp)          # road width in 1x pixels
+                bd.line(pts, fill=1, width=max(1, int(round(w * SS))),
+                        joint="curve")
+            for wgt, chain, bx0, by0, bx1, by1, wm in here:
+                pts = [((x - ox) * SS, (y - oy) * SS) for x, y in chain]
+                w = max(3.0, wm / mpp)
+                inner = int(round((w - 2.0) * SS))   # 1 px of edge each side
+                if inner > 0:
+                    bd.line(pts, fill=0, width=inner, joint="curve")
+            # Through "L" on the way down: BOX on a 1-bit image does not
+            # resample it, which is why the first attempt produced a pack with
+            # zero tiles in it. mockup.py's resolve() does the same conversion for
+            # the same reason.
+            img = (big.convert("L").resize((TILE_W, TILE_H), Image.BOX)
+                   .point(lambda v: 255 if v >= 128 else 0).convert("1"))
+            draw = ImageDraw.Draw(img)
+        else:
+            for wgt, chain, bx0, by0, bx1, by1, wm in here:
+                draw.line([(x - ox, y - oy) for x, y in chain], fill=1,
+                          width=wgt, joint="curve" if wgt > 1 else None)
         raw = img.tobytes()
         if not any(raw):
             continue
@@ -457,6 +553,14 @@ def main(argv=None):
     ap.add_argument("--zooms", default=None, metavar="LIST",
                     help="comma-separated m/px, or 'all'; default follows "
                          "--corridor (see pick_zooms)")
+    ap.add_argument("--cased", metavar="MPP", type=float, default=0.0,
+                    help="draw roads as CASINGS -- a dark edge each side of a "
+                         "light interior, the way a street map does -- on every "
+                         "rung at or finer than MPP metres per pixel. 0 (the "
+                         "default) draws one filled line per road, as before. "
+                         "Coarse rungs are left alone deliberately: a casing "
+                         "needs three pixels to show an interior, and at 15 m/px "
+                         "a city of them is felt (DESIGN.md 6.5)")
     ap.add_argument("--info", metavar="PACK", help="describe a pack and exit")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
@@ -529,10 +633,10 @@ def main(argv=None):
 
     ways = read_osm(a.osm)
     kept = []
-    for _, wgt, geom in ways:
+    for _, wgt, geom, wm in ways:
         en = [frame.met(la_, lo_) for la_, lo_ in geom]
         if any(sel.near(p) for p in en):
-            kept.append((wgt, en))
+            kept.append((wgt, en, wm))
 
     region = (min_e, min_n, max_e, max_n)
 
@@ -549,7 +653,9 @@ def main(argv=None):
 
     built = []
     for mpp in zlist:
-        tx0, ty0, nx, ny, tiles = build_zoom(kept, mpp, region, not a.quiet)
+        tx0, ty0, nx, ny, tiles = build_zoom(kept, mpp, region, not a.quiet,
+                                             cased=(a.cased > 0.0 and
+                                                    mpp <= a.cased))
         built.append((mpp, tx0, ty0, nx, ny, tiles))
 
     ntiles = write_pack(a.out, frame, extent, built)

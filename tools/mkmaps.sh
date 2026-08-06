@@ -8,6 +8,16 @@
 #     tools/mkmaps.sh --no-install    # build only, touch nothing remote
 #     tools/mkmaps.sh --roads-only    # the road pack alone: no tiles built,
 #                                     # and 31 MB over the wire instead of 380
+#     tools/mkmaps.sh --reuse-country # keep the nationwide extracts and coarse
+#                                     # tiles that are already built
+#
+# A SECOND REGION is the same script with variables in front of it:
+#
+#     REGION=songkhla RIDE_LL=7.1037,100.5349 TILES=songkhla-nav \
+#         tools/mkmaps.sh --no-download --reuse-country
+#
+# which builds songkhla-nav.tiles and songkhla.roads beside the Bangkok pair and
+# leaves both on the device; beepy-nav.conf picks whichever you are riding in.
 #
 # Why a script and not three commands in the README: the three builds are not
 # independent. The fine tiles must be cut in the SAME projection frame as the
@@ -40,10 +50,24 @@ set -e
 # on the 15-250 m/px coarse rungs.
 #
 # Recompute it if the pair moves:  midpoint = ((lat1+lat2)/2, (lon1+lon2)/2)
-RIDE_LL=13.7854,100.4948          # midway between 13.8851,100.3785 (home)
-                                  #            and 13.6856,100.6111 (work)
-RIDE_RADIUS=20000        # metres of detail around RIDE_LL
-RIDE_PAD=0.25            # degrees of extract around it; must exceed the radius
+# OVERRIDABLE, because there is more than one place to ride. Everything below is
+# the Bangkok default; a second region is the same script with four variables in
+# front of it and no edit to this file:
+#
+#   REGION=songkhla RIDE_LL=7.1037,100.5349 TILES=songkhla-nav \
+#       tools/mkmaps.sh --no-download --reuse-country
+#
+# The packs then sit side by side on the device and beepy-nav.conf picks one.
+RIDE_LL=${RIDE_LL:-13.7854,100.4948}   # midway between 13.8851,100.3785 (home)
+                                       #           and 13.6856,100.6111 (work)
+RIDE_RADIUS=${RIDE_RADIUS:-20000}  # metres of detail around RIDE_LL
+RIDE_PAD=${RIDE_PAD:-0.25}         # degrees of extract; must exceed the radius
+
+# What the region-specific artefacts are called. The defaults are the names the
+# device's config already points at, so a plain run of this script still
+# overwrites exactly what it always did.
+REGION=${REGION:-region}           # -> $OUT/$REGION.json, $OUT/$REGION.roads
+TILES=${TILES:-thailand-nav}       # -> $OUT/$TILES.tiles, the merged basemap
 
 # The country, in coarse strokes: major roads only, for when you are 200 km out.
 COUNTRY=5.5,97.3,20.6,105.7
@@ -53,6 +77,10 @@ PBF_URL=https://download.geofabrik.de/asia/thailand-latest.osm.pbf
 # in both inputs is taken from the first and the other is discarded, so an
 # overlap here would quietly throw away a whole grid.
 ZOOMS_FINE=1.5,2.5,4,6,10
+# Roads as casings on the two finest rungs (DESIGN.md 6.5). Passed to the FINE
+# build only -- the coarse rungs are 15 m/px and up, where a casing has no room
+# for an interior. CASED=0 builds the old single-line pack.
+CASED=${CASED:-2.5}
 ZOOMS_COARSE=15,25,40,60,100,150,250
 
 DEVICE=${DEVICE:-beepy@beepy.local}
@@ -65,12 +93,17 @@ PY=${PY:-python3}
 # a device whose roads pack is too old needs one 31 MB file rebuilt and not a
 # 380 MB one re-sent over wifi. It still needs the extract, and therefore still
 # needs the download -- there is no road graph without one.
-download=1 install=1 roads_only=0
+download=1 install=1 roads_only=0 reuse_country=0
 for a in "$@"; do
     case $a in
     --no-download) download=0 ;;
     --no-install)  install=0 ;;
     --roads-only)  roads_only=1 ;;
+    # The country extract, the nationwide destinations and the coarse tiles do
+    # not depend on the region at all -- same box, same frame, same ~7 minutes.
+    # Reusing them is what makes a second region cheap; it is opt-in because a
+    # STALE one is invisible, and a rebuilt PBF should rebuild all three.
+    --reuse-country) reuse_country=1 ;;
     -h|--help)     sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "mkmaps: unknown option $a" >&2; exit 2 ;;
     esac
@@ -140,14 +173,16 @@ fi
 # Two conversions, because the two builds want genuinely different data.
 # Coarse drops names -- a basemap never draws them and for a country they are
 # most of the JSON. The region keeps them: they are what F searches.
-if [ "$roads_only" = 0 ]; then
+if [ "$roads_only" = 0 ] && ! { [ "$reuse_country" = 1 ] && [ -f "$OUT/country.json" ]; }; then
     echo "mkmaps: country extract, major roads, no names"
     $OSMPY tools/pbf2osm.py "$PBF" --bbox "$COUNTRY" --classes coarse \
         --no-names -o "$OUT/country.json"
+else
+    echo "mkmaps: reusing $OUT/country.json"
 fi
 echo "mkmaps: region extract, every road class, with names and destinations"
 $OSMPY tools/pbf2osm.py "$PBF" --bbox "$REGION_BOX" --classes all \
-    -o "$OUT/region.json"
+    -o "$OUT/$REGION.json"
 
 # Destinations for the WHOLE COUNTRY, and no roads at all. The two indexes cost
 # wildly different amounts: every ASCII-named POI in Thailand is about 5.8 MB
@@ -155,22 +190,30 @@ $OSMPY tools/pbf2osm.py "$PBF" --bbox "$REGION_BOX" --classes all \
 # with 512 MB and a framebuffer in it (DESIGN.md 1.4.7). So search reaches the
 # whole country and routing reaches REGION_BOX, which is exactly the split
 # 7.10's RC_OFFMAP -> online path was built for.
-echo "mkmaps: country destinations, no roads"
-$OSMPY tools/pbf2osm.py "$PBF" --bbox "$COUNTRY" --classes none \
-    -o "$OUT/pois.json"
+if ! { [ "$reuse_country" = 1 ] && [ -f "$OUT/pois.json" ]; }; then
+    echo "mkmaps: country destinations, no roads"
+    $OSMPY tools/pbf2osm.py "$PBF" --bbox "$COUNTRY" --classes none \
+        -o "$OUT/pois.json"
+else
+    echo "mkmaps: reusing $OUT/pois.json"
+fi
 
 # -------------------------------------------------------------------- tiles
 if [ "$roads_only" = 0 ]; then
-    echo "mkmaps: coarse tiles"
-    $PY tools/mktiles.py --osm "$OUT/country.json" --bbox "$COUNTRY" \
-        --zooms "$ZOOMS_COARSE" -o "$OUT/coarse.tiles"
+    if ! { [ "$reuse_country" = 1 ] && [ -f "$OUT/coarse.tiles" ]; }; then
+        echo "mkmaps: coarse tiles"
+        $PY tools/mktiles.py --osm "$OUT/country.json" --bbox "$COUNTRY" \
+            --zooms "$ZOOMS_COARSE" -o "$OUT/coarse.tiles"
+    else
+        echo "mkmaps: reusing $OUT/coarse.tiles"
+    fi
     echo "mkmaps: fine tiles, in the coarse frame"
-    $PY tools/mktiles.py --osm "$OUT/region.json" --ref "$RIDE_LL" \
+    $PY tools/mktiles.py --osm "$OUT/$REGION.json" --ref "$RIDE_LL" \
         --radius "$RIDE_RADIUS" --frame "$FRAME" --zooms "$ZOOMS_FINE" \
-        -o "$OUT/fine.tiles"
+        --cased "$CASED" -o "$OUT/fine-$REGION.tiles"
     echo "mkmaps: merging"
-    $PY tools/mergetiles.py "$OUT/fine.tiles" "$OUT/coarse.tiles" \
-        -o "$OUT/thailand-nav.tiles"
+    $PY tools/mergetiles.py "$OUT/fine-$REGION.tiles" "$OUT/coarse.tiles" \
+        -o "$OUT/$TILES.tiles"
 fi
 
 # --------------------------------------------------------------- road graph
@@ -180,14 +223,14 @@ fi
 # Its extent is the extract's, so search and routing reach exactly as far as
 # REGION_BOX -- not as far as the basemap, which is the whole country.
 echo "mkmaps: road and name pack"
-$PY tools/mkpack.py --osm "$OUT/region.json" --pois-osm "$OUT/pois.json" \
-    --ref "$RIDE_LL" -o "$OUT/region.roads"
+$PY tools/mkpack.py --osm "$OUT/$REGION.json" --pois-osm "$OUT/pois.json" \
+    --ref "$RIDE_LL" -o "$OUT/$REGION.roads"
 
 echo "mkmaps: built"
 if [ "$roads_only" = 1 ]; then
-    ls -l "$OUT/region.roads"
+    ls -l "$OUT/$REGION.roads"
 else
-    ls -l "$OUT/thailand-nav.tiles" "$OUT/region.roads"
+    ls -l "$OUT/$TILES.tiles" "$OUT/$REGION.roads"
 fi
 
 [ "$install" = 1 ] || exit 0
@@ -200,9 +243,9 @@ fi
 echo "mkmaps: installing on $DEVICE"
 ssh -i "$SSHKEY" "$DEVICE" 'mkdir -p ~/packs'
 if [ "$roads_only" = 1 ]; then
-    files="region.roads"
+    files="$REGION.roads"
 else
-    files="thailand-nav.tiles region.roads"
+    files="$TILES.tiles $REGION.roads"
 fi
 for f in $files; do
     scp -i "$SSHKEY" "$OUT/$f" "$DEVICE:packs/$f.new"
@@ -217,8 +260,8 @@ cat <<EOF
 
 mkmaps: done. ~/.config/beepy-nav.conf should name them:
 
-    basemap    = /home/beepy/packs/thailand-nav.tiles
-    roads      = /home/beepy/packs/region.roads
+    basemap    = /home/beepy/packs/$TILES.tiles
+    roads      = /home/beepy/packs/$REGION.roads
 
 A running navigator holds its packs open -- restart it to see the new data.
 EOF

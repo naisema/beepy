@@ -73,7 +73,7 @@ the device. See **Finding a destination**.
    │ ├─500M─┤                               │
    ├────────────────────────────────────────┤
    │ 13.88510 100.37850                     │   where you are, in degrees
-   │ F FIND   R ROUTES   Q QUIT             │
+   │ F FIND  R ROUTES  S SAVE  Q QUIT       │
    └────────────────────────────────────────┘
 ```
 
@@ -122,7 +122,7 @@ the page's whole keymap, so if a key is not on that line it does not do anything
    │──────────│         ┄┄┄┘             │   ┄ where you have been
    │  44 MIN  │  ├─200M─┤                │
    │  12.6KM  │                          │
-   │ 10:42 ETA│                          │
+   │ 18:41 ETA│                          │
    └──────────┴──────────────────────────┘
 ```
 
@@ -134,7 +134,7 @@ the page's whole keymap, so if a key is not on that line it does not do anything
 | Big number + unit | how far to *that junction* |
 | `44 MIN` | time left on the whole route |
 | `12.6KM` | distance left on the whole route |
-| `10:42 ETA` | what time you arrive, 12-hour |
+| `18:41 ETA` | what time you arrive: **24-hour, local time**, from the receiver's own clock rather than the Pi's (which has no battery-backed RTC and is wrong after a cold boot with no network) |
 
 The big number **does not tick smoothly, on purpose.** It steps 100 m at a
 time beyond a kilometre, 50 m from 200 m out, and 10 m inside that — coarse
@@ -174,9 +174,11 @@ passed, total distance, distance and time remaining.
 | `Tab` | switch page: NAV ↔ OVERVIEW (nothing on MAP — there is no route to overview) |
 | `F` | find a destination — opens on your saved places; says `NO ROAD PACK` if there is no pack |
 | `R` | pick a route — from MAP, or to change route mid-ride |
+| `S` | save where you are as a favourite — MAP only; see *Saving where you are* |
 | `Z` / `X` | zoom the map out / in (switches to manual zoom) |
 | `A` | back to automatic zoom (on MAP: back to the 6 m/px default) |
 | `O` | course-up ↔ north-up |
+| `V` | flat map ↔ 3D — NAV only. Needs a road pack. The first press says `BUILDING 3D` and takes about a second; after that it is instant. **For this ride only** — see below for the default |
 | `U` | metric ↔ imperial |
 | `L` | cue alerts on ↔ off, for this ride only |
 | `H` | hold — freeze the display |
@@ -254,6 +256,7 @@ fine — these are the defaults:
 ```ini
 units      = metric     # or imperial          (--imperial / --metric)
 north_up   = 0          # 1 starts north-up    (--north-up)
+view3d     = 0          # 1 starts the NAV map in 3D  (--view3d / --no-view3d)
 led_alerts = 1          # 0 mutes cue alerts
 rate_5hz   = 0          # see the note below   (--rate-5hz)
 routes_dir = ~/routes   # what the panel chooser lists
@@ -262,14 +265,28 @@ basemap    =            # empty: no streets    (--basemap F / --no-basemap)
 roads      =            # empty: F does nothing (--roads F / --no-roads)
 place      =            # repeats: NAME LAT,LON -- see Saving Home and Work
 mode       = bike       # or car -- picks which roads routing will use
+major_roads = 1         # offline: prefer bigger roads. See below
+tolls      = avoid      # or allow. See Tolls below
 router_url =            # empty: offline only. See Online routing below
 router_type = valhalla  # or osrm
 fetch_cmd  =            # how bytes are fetched; the default uses curl
 reroute    = ask        # or auto, off. See Rerouting below
 ```
 
+**Starting in 3D.** `view3d = 1` is what makes the NAV map open tilted; `V`
+toggles it during a ride but does **not** write it back, so the config line is
+the only thing that survives a restart. It needs `roads` set — with no road pack
+there is no graph to draw and the page stays flat. Expect about a second of
+`BUILDING 3D` at startup while the index is built (once per run, ~7.4 MB).
+
+
 `place` is the one key here that **accumulates** rather than replaces: each line
 adds another saved destination, up to eight, kept in the order you wrote them.
+`S` on the map writes the same lines into `~/.config/beepy-nav.places`, which is
+read straight after this file — so eight is the total across the two. `--places
+F` points both the reading and the writing somewhere else, and `--no-places`
+turns the whole thing off; naming a `--config` also suppresses the default places
+file, since the two are one configuration.
 
 An unknown key or a malformed line is a warning naming the line number, never
 a failure to start.
@@ -303,6 +320,45 @@ would be worse than no default.
 router_url  = https://valhalla1.openstreetmap.de/route
 router_type = valhalla          # or osrm
 ```
+
+### Tolls
+
+```
+tolls = avoid          # the default; or `allow`
+```
+
+**In `car` mode, `tolls = avoid` keeps you off toll roads both offline and
+online**, and the CONFIRM page reports what the route actually is: the title row
+reads `TOLL` or `NO TOLL` on the right.
+
+One key for both routers, deliberately. Your pack is asked first and the network
+only where it cannot answer, and you never see which one replied — so a setting
+that meant different things either side of that fallback would avoid tolls on
+some trips and not others for no visible reason.
+
+- **Offline it is an exclusion**, so it is absolute: tolled edges are not in the
+  graph the router searches. Where the only road is tolled you get *no route*
+  rather than a toll road, which is the same honest refusal a bicycle gets on a
+  motorway-only spur.
+- **Online it is a preference.** Valhalla's `use_tolls: 0` means avoid strongly,
+  not never, and it will still route over a toll road with no alternative. That
+  is why the badge reports the answer rather than the request.
+- **The badge is measured, not assumed** — offline from the edges the router
+  chose, online from `trip.summary.has_toll`. It is a fact about the route, not
+  an echo of the setting.
+- **A blank right margin means "not told", not "no tolls".** An OSRM reply does
+  not report it and a GPX has no router, so both draw nothing. `NO TOLL` is
+  spelled out when it *is* known precisely so the blank keeps meaning "nobody
+  said".
+- **Bicycle mode ignores the key entirely.** Motorway and trunk are already
+  excluded offline, and Valhalla's bicycle costing has no `use_tolls`.
+
+**This needs a v4 road pack.** The toll bit arrived in `BNAVROAD` v4, and
+`beepy-nav` refuses a pack whose version it does not know — so the binary and
+the pack have to travel together, and `tools/mkmaps.sh --roads-only` is what
+rebuilds one. That refusal is deliberate: a v3 pack has no toll bit, every edge
+in it reads as untolled, and `tolls = avoid` against one would be a setting that
+silently did nothing.
 
 **Your pack is asked first, always.** Inside it, a route costs 0.1 ms and no
 connection. The network is only asked where the pack cannot honestly answer —
@@ -362,6 +418,47 @@ It changes the route, not a preference about it: bike refuses motorways and trun
 roads outright, so the same two points come back as **43.8 km by bicycle and
 56.4 km by car** over different roads. Offline it decides which road classes the
 router will use; online it picks the profile the router is asked for.
+
+### Why the streets have two lines each
+
+Roads are drawn as **casings** — a thin dark edge each side of a white interior —
+at the two finest zooms, which is what makes a junction readable rather than a
+crossing of wires. Below that (4 m/px and coarser) a road is too narrow to hold an
+interior, so it goes back to a single line; a whole city of edge-only casings turns
+the map to felt.
+
+If you rebuild your own packs, it is `--cased 2.5` on `tools/mktiles.py`, and
+`tools/mkmaps.sh` passes it for you. It costs about 0.1% of pack size.
+
+### Priority roads, offline
+
+The offline router used to minimise **distance**, full stop — so it would happily
+send you through a tangle of sois to save a few hundred metres. On a real trip
+that came out as **15.95 km with 32 turns** where the online router took 19.66 km
+with 13.
+
+`major_roads = 1` (the default) makes a metre of soi cost more than a metre of
+main road, so the same trip now comes out as:
+
+| router | distance | turns |
+|---|---|---|
+| `major_roads = 0` (the old behaviour) | 15.95 km | 32 |
+| `major_roads = 1` (the default) | **16.94 km** | **17** |
+| online (Valhalla) | 19.66 km | 13 |
+
+Turns halved for one kilometre more — and still 2.7 km shorter than the online
+answer.
+
+Two things to know:
+
+- **It only applies in `mode = car`.** A bicycle still takes the short way, and it
+  is still kept off motorways and trunk roads outright. Steering a bike onto a
+  Thai primary to save turns is not a call this program makes for you.
+- **A main road can be up to 1.76x longer and still win.** Past that the small
+  roads really are the better answer and you get them.
+
+Set `major_roads = 0` for the old shortest-distance behaviour, or compare the two
+on the spot with `--major-roads` / `--no-major-roads`.
 
 **`M` toggles it**, and the useful place to press it is `CONFIRM`, where the strip
 reads `M BIKE` and pressing it rebuilds the route for the same destination — the
@@ -593,6 +690,48 @@ position marker**, because nobody knows where you are yet.
 Getting the coordinates: stand somewhere and read them off the MAP page's bottom
 row, or right-click the spot in any online map. Latitude first. A typo warns on
 startup with its line number and that one place is dropped; the rest still load.
+
+**Names can have spaces in them** — `place = MY OFFICE 13.7338,100.5601` is one
+place. The coordinate is found from the right-hand end of the line, so a name
+ending in a number (`GYM 2`) works too.
+
+### Saving where you are, without a laptop — `S`
+
+You do not have to write coordinates into a file at all. **Standing at the
+place, press `S` on the map.** A page opens with a name already in it, and two
+presses is the whole job:
+
+```
+S ENTER            saves it as PLACE 3 — rename it later if you care
+S C A F E ENTER    saves it as CAFE
+```
+
+The offered name comes up **highlighted**, which means the next letter you type
+replaces all of it — you never have to delete it first. Backspace once clears
+it, backspace again on the empty field backs out of the page (handy, since `Esc`
+needs the symbol layer). Names are A–Z, 0–9 and spaces, up to 19 characters, and
+they are stored in capitals because that is all the font has.
+
+`ENTER` writes one line and drops you back on the map, where **the mark is
+already under you** and `SAVED CAFE` sits on the bottom row for a moment. Press
+`F` and it is in the list.
+
+The line goes to `~/.config/beepy-nav.places` — a second file, in exactly the
+same format as the config above, which the program owns and appends to. Yours
+stays yours: nothing here ever rewrites `beepy-nav.conf`. Both files are read at
+startup and the hand-written ones come first, so whatever you put in the config
+keeps the top of the list. **To delete one, edit that file** — over ssh, with any
+editor; there is no delete key on the device, which is the one rough edge here.
+
+It says no in four situations, and each says why on the bottom row rather than
+doing nothing:
+
+| | |
+|---|---|
+| `NO FIX` | there is no position, or the one there was has gone stale. It will not write a coordinate from under the last bridge |
+| `8 PLACES MAX` | the list is full, counting both files. Delete one to make room — it will not quietly drop your oldest |
+| `NAME IN USE` | that name is already saved. The page stays up; edit the name and press `ENTER` again |
+| `NOT SAVED` | the file could not be written — a full or read-only card. `dmesg` and the program's own stderr have the reason |
 
 **What you can search for:** street names *and* destinations — schools,
 stations, markets, shops, hospitals, parks, temples. Anything OpenStreetMap

@@ -7,8 +7,19 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-const double MAP_ZOOMS[MAP_NZOOM] = {1.5, 2.5, 4,  6,   10,  15,
+/* The two finest rungs MAGNIFY the pack's finest tiles rather than being cut
+ * (DESIGN.md 6.1, 6.5): 0.75 is 1.5 m/px doubled and 0.375 is it quadrupled, so
+ * one pack pixel becomes a 2x2 or 4x4 block. They exist because the scale bar
+ * cannot say 50 M or 25 M above 1.0 and 0.5 m/px respectively -- the bar must
+ * land in 50..100 px -- and a rider asking to see a junction wants those.
+ *
+ * MANUAL ONLY. map_auto_zoom() skips them: magnification adds no information, so
+ * choosing it FOR a rider as a cue approaches would trade a sharp map for a
+ * blocky one without being asked. Z and X reach them; A does not. */
+const double MAP_ZOOMS[MAP_NZOOM] = {0.375, 0.75,
+                                     1.5, 2.5, 4,  6,   10,  15,
                                      25,  40,  60, 100, 150, 250};
+/* MAP_AUTO_FIRST lives in map.h, so the tests assert against the same number. */
 
 void
 map_project(const double *en, int n, double org_e, double org_n, double mpp,
@@ -152,7 +163,8 @@ double
 map_auto_zoom(double cue_dist_m, double ahead_px)
 {
     int i;
-    for (i = 0; i < MAP_NZOOM; i++)
+    /* From the finest CUT rung, never from the magnified ones -- see MAP_ZOOMS. */
+    for (i = MAP_AUTO_FIRST; i < MAP_NZOOM; i++)
         if (cue_dist_m / MAP_ZOOMS[i] <= 0.8 * ahead_px)
             return MAP_ZOOMS[i];
     return MAP_ZOOMS[MAP_NZOOM - 1];
@@ -212,7 +224,12 @@ map_scale_pick(double mpp, int *out_m, int *out_px)
 void
 map_scale_pick_ft(double mpp, int *out_ft, int *out_px)
 {
-    static const int LADDER[] = {100,  250,   500,   1000,  2640,
+    /* 200 FT is here for DESIGN.md 6.1's magnified rungs. The bar must land in
+     * 50..100 px, and at 0.75 m/px (2.46 ft/px) 100 FT is 41 px and 250 FT is
+     * 102 -- so without a rung between them scale_pick() ran off the end of the
+     * ladder and returned TEN MILES. The metric ladder needed nothing: it
+     * already had 50 M for exactly this span. */
+    static const int LADDER[] = {100,  200,   250,   500,   1000,  2640,
                                  5280, 10560, 26400, 52800, 105600};
     scale_pick(LADDER, (int)(sizeof LADDER / sizeof LADDER[0]),
                mpp * MAP_FT_PER_M, out_ft, out_px);

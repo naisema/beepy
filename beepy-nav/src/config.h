@@ -12,7 +12,9 @@
  * stderr with its line number and is then ignored; the setting keeps its
  * default. An absent file is not even a warning -- it is the ordinary case.
  *
- * Portable C: stdio and string handling, nothing device-specific.
+ * Portable C: stdio and string handling, plus the mkdir and errno that
+ * cfg_place_add() needs for the one directory it may have to make -- both POSIX,
+ * and present everywhere the rest of the navigator compiles.
  */
 #ifndef BEEPY_NAV_CONFIG_H
 #define BEEPY_NAV_CONFIG_H
@@ -33,6 +35,20 @@ typedef struct {
     char name[CFG_PLACE_NAME];
     double lat, lon;
 } cfgplace_t;
+
+/* PACK IS 0, so the memset keeps today's behaviour for anyone who never sets
+ * the key: the pack answers and the network is only asked where it cannot.
+ * `online` does not REPLACE that order, it appends to it -- see nav.c. */
+#define CFG_PREFER_PACK 0
+#define CFG_PREFER_ONLINE 1
+
+/* AVOID IS 0, so cfg_defaults()'s memset gives it for free -- and it matches
+ * what the online request already did before there was a key at all. It is also
+ * the safer default to forget: a rider who wanted the expressway and got the
+ * surface road loses time, and one who wanted to avoid tolls and silently paid
+ * them loses money and some trust in the device. */
+#define CFG_TOLLS_AVOID 0
+#define CFG_TOLLS_ALLOW 1
 
 typedef struct {
     int units;      /* UNITS_METRIC (default) / UNITS_IMPERIAL   */
@@ -71,6 +87,44 @@ typedef struct {
      * bicycle navigator) or NAV_MODE_CAR. It picks the online costing and,
      * offline, which road classes the router will use. */
     int mode;
+    /* Tolls (DESIGN.md 7.7.1): CFG_TOLLS_AVOID (the default) or
+     * CFG_TOLLS_ALLOW. ONE key for both routers, deliberately -- it excludes
+     * tolled edges in the offline graph AND sets Valhalla's use_tolls, so a
+     * rider cannot end up avoiding tolls on the routes the pack answers and
+     * taking them on the ones it cannot. A setting that meant different things
+     * either side of a fallback the rider never sees would be worse than none.
+     *
+     * It does nothing at all in bike mode: 7.7 already excludes motorway and
+     * trunk offline, and Valhalla's bicycle costing has no use_tolls. */
+    int tolls;
+    /* Prefer bigger roads offline (DESIGN.md 7.7.2): 1 costs a metre of soi more
+     * than a metre of primary, 0 is the shortest-distance router this used to be.
+     *
+     * DEFAULT 1, which is a deliberate change to what the offline router answers.
+     * `mode = car` is a claim about a vehicle, and shortest-distance sent one
+     * 15.95 km through 32 turns of soi where the online router took 19.66 km with
+     * 13 -- the shorter answer is not the better one for something that fits on a
+     * main road. A rider who wants the old behaviour sets 0 and gets it exactly.
+     *
+     * It does nothing in BIKE mode, for the reason router.c gives: 7.7 already
+     * keeps a bicycle off motorway and trunk by exclusion, and a bicycle wants
+     * the short way. */
+    int major_roads;
+
+    /* The NAV page's 3D view (DESIGN.md 6.6). Off by default: it needs a roads
+     * pack, costs about a second to build its index on first use, and is a
+     * preference rather than an improvement -- 2D shows road WIDTH through the
+     * basemap's casings, 3D shows the way ahead. Persisted because a rider who
+     * chose one does not want to choose it again every boot. */
+    int view3d;
+    /* CFG_PREFER_PACK (the default) or CFG_PREFER_ONLINE (DESIGN.md 7.7.1).
+     *
+     * The offline router minimises DISTANCE -- 7.7's `len_mm` is both the cost
+     * and the reported number -- so it will not take an expressway, which is
+     * longer in metres and shorter in minutes. Valhalla costs by time and
+     * will. `prefer = online` is for a rider who wants that answer for
+     * destinations the pack could have answered itself. */
+    int prefer;
     /* Online routing (DESIGN.md 7.8). `router_url` empty means offline only,
      * and there is NO DEFAULT -- a safety argument, not a licensing one: the
      * public OSRM demo server is car-only and ignores the profile in the path,
@@ -100,6 +154,28 @@ void cfg_defaults(navcfg_t *c);
 
 /* $HOME/.config/beepy-nav.conf, or /home/beepy/... when HOME is unset. */
 void cfg_default_path(char *buf, size_t n);
+
+/* The same directory's beepy-nav.places -- the list `S` writes (DESIGN.md
+ * 1.4.8). A SECOND FILE and not a section of the first, because the program
+ * writes this one and the rider writes the other: no bug on the SAVE page can
+ * reach a hand-written setting. Read with cfg_load() like any other config
+ * file, and read AFTER it, which is what keeps hand-written places at the head
+ * of the list -- the head is load-bearing, since 1.4.6 makes the first saved
+ * place the map's centre before there has ever been a fix. */
+void cfg_places_path(char *buf, size_t n);
+
+/* Append one `place = NAME LAT,LON` line to `path`. 0 on success, -1 with a
+ * line on stderr otherwise; the caller puts NOT SAVED on the panel.
+ *
+ * APPEND-ONLY, never a rewrite: comments, ordering and anything else in the
+ * file survive because this function has no opinion about them -- and a line cut
+ * short by a power loss is a malformed line, which cfg_load() already drops with
+ * a warning while the rest of the list loads.
+ *
+ * Five decimals, because five is what the MAP strip showed the rider (1.5). A
+ * file disagreeing with the screen about the sixth decimal would be a number
+ * nobody could check against anything. */
+int cfg_place_add(const char *path, const char *name, double lat, double lon);
 
 /* Reads `path` over `c`, which the caller has already filled with defaults.
  * Returns 0 when the file was read, -1 when it was not there. `loud` makes an

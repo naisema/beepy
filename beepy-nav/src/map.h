@@ -18,8 +18,13 @@
 #define BEEPY_NAV_MAP_H
 
 /* The zoom ladder, metres per pixel. */
-#define MAP_NZOOM 12
+#define MAP_NZOOM 14
 extern const double MAP_ZOOMS[MAP_NZOOM];
+/* The finest rung tools/mktiles.py CUTS, and so the finest one auto zoom may
+ * choose. Rungs below it magnify the pack's finest tiles (DESIGN.md 6.5), which
+ * adds no information -- so a rider reaches them with Z/X and the program never
+ * picks one on their behalf. */
+#define MAP_AUTO_FIRST 2
 
 /* Feet per metre. map.c cannot include route.h -- tests/test_map.c links
  * map.c on its own, which is the property that makes the map maths testable

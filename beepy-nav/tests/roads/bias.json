@@ -1,0 +1,70 @@
+{
+  "_comment": [
+    "A hand-written extract for DESIGN.md 7.7.2: the class WEIGHTING, as opposed",
+    "to 7.7's class exclusion that modes.json covers.",
+    "",
+    "Two ways between the same pair of points, and the shape is the whole test:",
+    "  1  a RESIDENTIAL zigzag, SHORT   -- what shortest-distance picks",
+    "  2  a PRIMARY sweep, LONGER       -- what a weighted cost picks",
+    "",
+    "modes.json cannot serve for this, and the reason is worth stating: there the",
+    "big road is the SHORTER one (442 m of motorway against 1091 m of",
+    "residential), so shortest-distance already picks it and a weighting test",
+    "over that fixture could not fail. Here the big road must LOSE on distance",
+    "and WIN on cost, which is the only shape that can tell the two routers",
+    "apart.",
+    "",
+    "The margin is deliberate, and it is measured rather than guessed. Residential",
+    "is weighted 1.50 and primary 0.85, so the break-even ratio is 1.76: past",
+    "that the zigzag wins again however big the road. The two candidate stretches",
+    "here are 984 m of zigzag against 1282 m of primary, a ratio of 1.30 -- so the",
+    "primary wins on cost by about 26%, and it loses on distance by 30%, which is",
+    "what makes this a test of the weighting and not of the router in general.",
+    "",
+    "The first cut of this fixture was 1.65x, six per cent inside break-even. That",
+    "passes and it is a bad test: any tuning of the weight table would flip it,",
+    "and a test that fails when a constant moves by a hair is measuring the",
+    "constant rather than the behaviour.",
+    "",
+    "Plus 3: a residential stub off the far end, so the destination is not itself",
+    "a junction of the two candidate ways -- a target that sat exactly where they",
+    "meet would let the snap pick either one and the assertion would flap.",
+    "",
+    "Coordinates on a 0.001 degree grid near Asok, like the other fixtures."
+  ],
+  "elements": [
+    {
+      "type": "way",
+      "id": 1,
+      "tags": { "highway": "residential", "name:en": "ZIGZAG SOI" },
+      "geometry": [
+        { "lat": 13.740, "lon": 100.560 },
+        { "lat": 13.742, "lon": 100.561 },
+        { "lat": 13.744, "lon": 100.560 },
+        { "lat": 13.746, "lon": 100.561 },
+        { "lat": 13.748, "lon": 100.560 }
+      ]
+    },
+    {
+      "type": "way",
+      "id": 2,
+      "tags": { "highway": "primary", "name:en": "BIG ROAD" },
+      "geometry": [
+        { "lat": 13.740, "lon": 100.560 },
+        { "lat": 13.741, "lon": 100.5575 },
+        { "lat": 13.744, "lon": 100.5565 },
+        { "lat": 13.747, "lon": 100.5575 },
+        { "lat": 13.748, "lon": 100.560 }
+      ]
+    },
+    {
+      "type": "way",
+      "id": 3,
+      "tags": { "highway": "residential", "name:en": "FAR STUB" },
+      "geometry": [
+        { "lat": 13.748, "lon": 100.560 },
+        { "lat": 13.749, "lon": 100.560 }
+      ]
+    }
+  ]
+}

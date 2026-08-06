@@ -89,7 +89,24 @@ typedef struct {
     double min_e, min_n, max_e, max_n; /* bbox, metres           */
     int prepared;
     int decimated; /* raw point count before the 20 000 cap */
+    int toll;      /* ROUTE_TOLL_*, below */
 } route_t;
+
+/* Whether this route uses a toll road (DESIGN.md 7.7.1).
+ *
+ * Two sources can say. Valhalla reports `trip.summary.has_toll`; the offline
+ * router measures it on the edges it chose, from BNAVROAD v4's EDGES.flags bit
+ * 5. OSRM does not report it and a GPX has no router, so both of those still
+ * cannot answer and the type has to be able to say so.
+ *
+ * UNKNOWN IS 0, which is the whole point of the numbering. route_init() is a
+ * memset, so a GPX and an OSRM reply say "I do not know" for free. The obvious
+ * spelling -- -1 unknown, 0 no, 1 yes -- would have both claim NO TOLLS
+ * instead, which is a lie in exactly the case the rider has no way to check.
+ * vid.c:300 records the same trap for a zeroed fd claiming stdin. */
+#define ROUTE_TOLL_UNKNOWN 0
+#define ROUTE_TOLL_NO 1
+#define ROUTE_TOLL_YES 2
 
 /* DESIGN.md 8, plus the three values the OVERVIEW strip and the trace need
  * and that are pure functions of the rest (pct, eta_s, snap_e/snap_n). */
@@ -103,7 +120,20 @@ typedef struct {
     double togo_m;
     double pct;
     double eta_s; /* seconds remaining, < 0 = unknown        */
-    time_t eta;   /* wall clock, 0 = unknown                 */
+    /* THERE IS NO `eta` TIME_T HERE, and its absence is deliberate (DESIGN.md
+     * 1.1.3). There was one, documented as "wall clock" -- and route_snap()
+     * filled it with `now + eta_s`, where `now` is whatever clock the caller
+     * passes for the speed ring. nav.c passes the RIDE clock, seconds since the
+     * ride began, so the field held about 660 on a ten-minute ride and the panel
+     * rendered it as 07:11 in Bangkok: a plausible-looking morning that meant
+     * nothing at all.
+     *
+     * An arrival CLOCK TIME is the caller's business, because the caller is the
+     * only one that knows the wall clock; route.c is a pure function of a route
+     * and a ride and has no business reading a system clock. `eta_s` is the
+     * honest output -- a duration -- and nav.c adds time(NULL) to it. Deleting
+     * the field is what makes the old mistake unrepeatable rather than merely
+     * fixed. */
     double snap_e, snap_n;
     int cue_q;    /* cue_m quantised + latched (1.1.1)            */
     int then_q;   /* same, for the distance to the cue after it     */
@@ -265,6 +295,11 @@ void route_progress(const route_t *r, navctx_t *ctx, double now, nav_t *nv);
 /* Local-tangent projection about (lat0, lon0), DESIGN.md 6.1. */
 void geo_project(double lat0, double lon0, double lat, double lon, double *e,
                  double *n);
+
+/* And its inverse, for callers that must hand a point to a frame with a
+ * different origin -- the 3D view's roads pack (DESIGN.md 6.6). */
+void geo_unproject(double lat0, double lon0, double e, double n, double *lat,
+                   double *lon);
 
 /* Signed smallest difference b - a, degrees, in (-180, 180]. */
 double route_wrap_deg(double d);

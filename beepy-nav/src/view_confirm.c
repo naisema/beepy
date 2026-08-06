@@ -114,6 +114,10 @@ view_confirm(cov_t *c, const confirm_t *cf)
      * "TO SOI SUKHUMVIT 23" is 19 characters and fits either limit. */
     char buf[96], dtxt[CF_TITLE_CHARS + 1];
     int n, i, ns, nseg, mins;
+    /* titlechars only ever SHRINKS from CF_TITLE_CHARS, so dtxt's sizing above
+     * still bounds it and the %.*s cannot outrun the buffer. */
+    const char *tolltxt;
+    int titlechars;
 
     n = thin(cf->pts, cf->npts, f_raw, CF_MAXPTS);
     min_e = max_e = f_raw[0];
@@ -180,9 +184,30 @@ view_confirm(cov_t *c, const confirm_t *cf)
     mark_compass(c, W - 21, CF_MY0 + 4 + 21, 0.0, 11);
     mark_scale_bar(c, 7, CF_MY1 - 5, mpp, cf->units);
 
+    /* The toll badge, and what it costs the title.
+     *
+     * Only a router that ANSWERED gets to put anything here. An offline route
+     * cannot know -- the pack has no toll bit at all -- and OSRM does not say,
+     * so both draw nothing rather than an absence the rider would read as NO.
+     * That is also why NO TOLL is spelled out when it IS known: a blank right
+     * margin has to keep meaning "not told", or the one case worth trusting
+     * becomes indistinguishable from the three that cannot be. */
+    tolltxt = cf->toll == ROUTE_TOLL_YES   ? "T TOLL"
+              : cf->toll == ROUTE_TOLL_NO  ? "T NO TOLL"
+                                           : "T TOLL?";
+    /* Two characters of gap, taken off the title rather than overlaid on it.
+     * The title is cut and not shrunk (CF_TITLE_CHARS), so it is the thing
+     * with room to give -- and the destination is the part the rider already
+     * knows, which is the argument 6.5 makes for cutting it in the first
+     * place. */
+    titlechars = CF_TITLE_CHARS;
+    if (tolltxt)
+        titlechars -= (int)strlen(tolltxt) + 2;
     snprintf(buf, sizeof buf, "TO %s", cf->dest ? cf->dest : "DESTINATION");
-    snprintf(dtxt, sizeof dtxt, "%.*s", CF_TITLE_CHARS, buf);
+    snprintf(dtxt, sizeof dtxt, "%.*s", titlechars, buf);
     cov_text(c, 6, 5, dtxt, 2, COV_INK);
+    if (tolltxt)
+        rtext(c, W - 6, 5, tolltxt, 2, COV_INK);
 
     /* The length is measured off the geometry this page just drew rather than
      * taken from the caller, so the number and the picture cannot disagree. */
@@ -257,5 +282,11 @@ view_confirm_demo(cov_t *c)
      * explicitly, because the strip reads it. */
     cf.mode = NAV_MODE_BIKE;
     cf.note = NULL;
+    /* UNKNOWN, and explicitly for the same reason mode is explicit: the page
+     * reads it. This is also the value that keeps the frozen frame frozen --
+     * the badge draws nothing and takes no width, so mockup.py needs no
+     * counterpart and the design gate stays byte-exact on this page. A demo
+     * left uninitialised here would flap the gate on stack contents. */
+    cf.toll = ROUTE_TOLL_UNKNOWN;
     view_confirm(c, &cf);
 }

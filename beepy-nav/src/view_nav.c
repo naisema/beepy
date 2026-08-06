@@ -9,10 +9,12 @@
  */
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "arrows.h"
 #include "draw.h"
 #include "map.h"
+#include "nav3d.h"
 #include "seg.h"
 #include "tile.h"
 #include "view.h"
@@ -488,85 +490,125 @@ view_nav_map(cov_t *c, const navmap_t *m)
                     map_cue_distance(pts, n, on_e, on_n, pos_i, m->turn_i),
                     cy);
 
-    /* The basemap goes UNDER everything, which is the whole reason the route
-     * is cased (DESIGN.md 1.1): streets run beneath it and the white outer
-     * stroke is what keeps the black core readable crossing them. With no
-     * pack this is a single NULL test and the frame is unchanged -- the five
-     * original nav goldens are the standing proof of that. */
-    if (m->tiles) {
-        tileview_t tv;
-        tv.mpp = mpp;
-        tv.cx = cx;
-        tv.cy = cy;
-        tv.theta = theta;
-        tv.org_e = pos_e;
-        tv.org_n = pos_n;
-        tv.x0 = MAP_X;
-        tv.y0 = 0;
-        tv.x1 = W - 1;
-        tv.y1 = H - 1;
-        tiles_blit(c, m->tiles, &tv);
-    }
+    /* THE 3D BRANCH (DESIGN.md 6.6). It replaces the basemap, the ridden track
+     * and the cased route in one go, and deliberately so: the route has to be
+     * projected through the same camera as the roads under it, and a 2D route
+     * line laid over a tilted map would be a picture of two different places.
+     *
+     * Everything after this point -- the chevron, compass, badge and scale bar
+     * -- is common to both views and untouched, which is what "keep the
+     * existing design" meant. The knockouts below are why those four stay
+     * legible: a raster basemap at 4 m/px is sparse enough to read a compass
+     * through, and an oblique street grid is not. They are given in VIEWPORT
+     * coordinates, so they track MAP_X rather than restating it. */
+    if (m->view3d && m->roads && m->grid) {
+        roadgraph_t rg;
+        nav3d_ctx_t ctx;
+        nav3d_cfg_t cfg;
+        nav3d_knockout_t ko[3];
 
-    /* Ridden track: everything behind the fix, plus the fix itself. */
-    k = 0;
-    for (i = 0; i <= pos_i && k < MAXPTS; i++, k++) {
-        g_world[2 * k] = pts[2 * i];
-        g_world[2 * k + 1] = pts[2 * i + 1];
-    }
-    if (m->off != 0.0 && k < MAXPTS) { /* a kink where the detour starts */
-        g_world[2 * k] = pts[2 * pos_i] + (on_e - pts[2 * pos_i]) * 0.55;
-        g_world[2 * k + 1] = pts[2 * pos_i + 1] + (on_n - pts[2 * pos_i + 1]) * 0.55;
-        k++;
-    }
-    if (k < MAXPTS) {
-        g_world[2 * k] = pos_e;
-        g_world[2 * k + 1] = pos_n;
-        k++;
-    }
-    ns = map_round_corners(g_world, k, MAP_CORNER_RADIUS, MAP_CORNER_MIN_DEG,
-                           g_scr, MAXPTS);
-    map_project(g_scr, ns, pos_e, pos_n, mpp, cx, cy, theta, g_scr);
-    nseg = map_clip_segs(g_scr, ns, MAP_X, 0, W - 1, H - 1, g_segs, MAXPTS);
-    mark_dashed(c, g_segs, nseg, 5, 5, 1, COV_INK);
+        roads_graph(m->roads, &rg);
+        ctx.roads = m->roads;
+        ctx.g = &rg;
+        ctx.grid = m->grid;
+        nav3d_defaults(&cfg, mpp);
+        /* mark_compass(MAP_X + 21, 27, r 11) */
+        ko[0].r = 15.0; ko[0].cx = 21.0; ko[0].cy = 27.0;
+        ko[0].x0 = ko[0].y0 = ko[0].x1 = ko[0].y1 = 0.0;
+        /* mark_speed_badge(W - 33, 33, r 27) */
+        ko[1].r = 31.0; ko[1].cx = (double)(W - 33 - MAP_X); ko[1].cy = 33.0;
+        ko[1].x0 = ko[1].y0 = ko[1].x1 = ko[1].y1 = 0.0;
+        /* mark_scale_bar(MAP_X + 7, H - 8): the bar, its tick and its label.
+         * Kept in 3D at the product owner's request -- see 6.6 on what a single
+         * scale bar can honestly mean when the scale changes every row. */
+        ko[2].r = 0.0; ko[2].cx = ko[2].cy = 0.0;
+        ko[2].x0 = 2.0; ko[2].y0 = (double)(H - 26);
+        ko[2].x1 = 80.0; ko[2].y1 = (double)(H - 1);
 
-    /* The route ahead, cased so it stays legible over the track. */
-    g_world[0] = on_e;
-    g_world[1] = on_n;
-    k = 1;
-    for (i = pos_i + 1; i < n && k < MAXPTS; i++, k++) {
-        g_world[2 * k] = pts[2 * i];
-        g_world[2 * k + 1] = pts[2 * i + 1];
-    }
-    ns = map_round_corners(g_world, k, MAP_CORNER_RADIUS, MAP_CORNER_MIN_DEG,
-                           g_scr, MAXPTS);
-    map_project(g_scr, ns, pos_e, pos_n, mpp, cx, cy, theta, g_scr);
-    nseg = map_clip_segs(g_scr, ns, MAP_X, 0, W - 1, H - 1, g_segs, MAXPTS);
-    mark_cased_route(c, g_segs, nseg, 10, 6);
+        nav3d_draw(c, &ctx, &cfg, m->lat, m->lon, theta,
+                   m->r3d_pts, m->r3d_n, ko, 3,
+                   MAP_X, 0, W - MAP_X, H);
+    } else {
+        /* The basemap goes UNDER everything, which is the whole reason the route
+         * is cased (DESIGN.md 1.1): streets run beneath it and the white outer
+         * stroke is what keeps the black core readable crossing them. With no
+         * pack this is a single NULL test and the frame is unchanged -- the five
+         * original nav goldens are the standing proof of that. */
+        if (m->tiles) {
+            tileview_t tv;
+            tv.mpp = mpp;
+            tv.cx = cx;
+            tv.cy = cy;
+            tv.theta = theta;
+            tv.org_e = pos_e;
+            tv.org_n = pos_n;
+            tv.x0 = MAP_X;
+            tv.y0 = 0;
+            tv.x1 = W - 1;
+            tv.y1 = H - 1;
+            tiles_blit(c, m->tiles, &tv);
+        }
 
-    if (m->off != 0.0) {
-        /* Dotted tie-line back to the route: it says which way, without
-         * pretending to know a way back. */
-        double ox, oy, en[2], xy[2];
-        int t;
-        en[0] = on_e;
-        en[1] = on_n;
-        map_project(en, 1, pos_e, pos_n, mpp, cx, cy, theta, xy);
-        ox = xy[0];
-        oy = xy[1];
-        for (t = 0; t < 100; t += 7)
-            cov_disc(c, cx + (ox - cx) * t / 100.0, cy + (oy - cy) * t / 100.0,
-                     1.5, COV_INK);
-    } else if (m->pin_i > 0 && m->pin_i < n) {
-        /* The pin marks the cue AFTER the announced one: the announced
-         * junction is already the bend plus the whole left panel. */
-        double en[2], xy[2];
-        en[0] = pts[2 * m->pin_i];
-        en[1] = pts[2 * m->pin_i + 1];
-        map_project(en, 1, pos_e, pos_n, mpp, cx, cy, theta, xy);
-        if (MAP_X + 10 < xy[0] && xy[0] < W - 10 && 24 < xy[1] &&
-            xy[1] < H - 10)
-            mark_pin(c, xy[0], xy[1], 10);
+        /* Ridden track: everything behind the fix, plus the fix itself. */
+        k = 0;
+        for (i = 0; i <= pos_i && k < MAXPTS; i++, k++) {
+            g_world[2 * k] = pts[2 * i];
+            g_world[2 * k + 1] = pts[2 * i + 1];
+        }
+        if (m->off != 0.0 && k < MAXPTS) { /* a kink where the detour starts */
+            g_world[2 * k] = pts[2 * pos_i] + (on_e - pts[2 * pos_i]) * 0.55;
+            g_world[2 * k + 1] = pts[2 * pos_i + 1] + (on_n - pts[2 * pos_i + 1]) * 0.55;
+            k++;
+        }
+        if (k < MAXPTS) {
+            g_world[2 * k] = pos_e;
+            g_world[2 * k + 1] = pos_n;
+            k++;
+        }
+        ns = map_round_corners(g_world, k, MAP_CORNER_RADIUS, MAP_CORNER_MIN_DEG,
+                               g_scr, MAXPTS);
+        map_project(g_scr, ns, pos_e, pos_n, mpp, cx, cy, theta, g_scr);
+        nseg = map_clip_segs(g_scr, ns, MAP_X, 0, W - 1, H - 1, g_segs, MAXPTS);
+        mark_dashed(c, g_segs, nseg, 5, 5, 1, COV_INK);
+
+        /* The route ahead, cased so it stays legible over the track. */
+        g_world[0] = on_e;
+        g_world[1] = on_n;
+        k = 1;
+        for (i = pos_i + 1; i < n && k < MAXPTS; i++, k++) {
+            g_world[2 * k] = pts[2 * i];
+            g_world[2 * k + 1] = pts[2 * i + 1];
+        }
+        ns = map_round_corners(g_world, k, MAP_CORNER_RADIUS, MAP_CORNER_MIN_DEG,
+                               g_scr, MAXPTS);
+        map_project(g_scr, ns, pos_e, pos_n, mpp, cx, cy, theta, g_scr);
+        nseg = map_clip_segs(g_scr, ns, MAP_X, 0, W - 1, H - 1, g_segs, MAXPTS);
+        mark_cased_route(c, g_segs, nseg, 10, 6);
+
+        if (m->off != 0.0) {
+            /* Dotted tie-line back to the route: it says which way, without
+             * pretending to know a way back. */
+            double ox, oy, en[2], xy[2];
+            int t;
+            en[0] = on_e;
+            en[1] = on_n;
+            map_project(en, 1, pos_e, pos_n, mpp, cx, cy, theta, xy);
+            ox = xy[0];
+            oy = xy[1];
+            for (t = 0; t < 100; t += 7)
+                cov_disc(c, cx + (ox - cx) * t / 100.0, cy + (oy - cy) * t / 100.0,
+                         1.5, COV_INK);
+        } else if (m->pin_i > 0 && m->pin_i < n) {
+            /* The pin marks the cue AFTER the announced one: the announced
+             * junction is already the bend plus the whole left panel. */
+            double en[2], xy[2];
+            en[0] = pts[2 * m->pin_i];
+            en[1] = pts[2 * m->pin_i + 1];
+            map_project(en, 1, pos_e, pos_n, mpp, cx, cy, theta, xy);
+            if (MAP_X + 10 < xy[0] && xy[0] < W - 10 && 24 < xy[1] &&
+                xy[1] < H - 10)
+                mark_pin(c, xy[0], xy[1], 10);
+        }
     }
 
     mark_position(c, cx, cy, 13, m->residual);
@@ -610,6 +652,16 @@ view_nav_demo(cov_t *c, int off, int nofix, int ask)
 {
     navmap_t m;
     panel_t p;
+
+    /* memset FIRST, and this is not tidiness. navmap_t grew optional 3D fields
+     * (6.6) that view_nav_map() tests before drawing, and a stack struct's
+     * padding is indeterminate -- a demo page that happened to find a non-zero
+     * view3d and a plausible pointer there would draw a 3D map into a FROZEN
+     * golden, on some builds and not others. The fields these demos care about
+     * are all set explicitly below; this is what makes the ones they do not
+     * care about defined. */
+    memset(&m, 0, sizeof m);
+    memset(&p, 0, sizeof p);
 
     m.pts = DEMO_ROUTE;
     m.npts = DEMO_NPTS;
@@ -679,11 +731,115 @@ static const double ASOK_ROUTE[] = {
     308.1608, 414.2486, 316.6171, 475.8858, 320.8778, 511.3470};
 #define ASOK_NPTS ((int)(sizeof ASOK_ROUTE / sizeof ASOK_ROUTE[0] / 2))
 
+/* ------------------------------------------------ the 3D demo page (6.6)
+ *
+ * The frozen state for the 3D nav view, and the FIRST demo page in this program
+ * whose map content is byte-compared against mockup.py. Every other page passes
+ * basemap=False and nav-turn-osm is not gated at all, because a raster basemap
+ * cannot be reproduced from osm-asok.json -- the two sides would be comparing
+ * two renderers of two different inputs. This one can be: mockup.py reads the
+ * SAME .roads pack these bytes come from, so the only thing left to disagree
+ * about is the drawing, which is the thing worth gating.
+ *
+ * It reuses ASOK_ROUTE and the tiles demo's state, so the 2D and 3D reference
+ * frames are the same ride at the same moment and the pair can be read together.
+ *
+ * THE FRAME. ASOK_ROUTE is referenced to its own first point, which is where
+ * the pack's own (lat0, lon0) lands -- so route metres and pack metres coincide
+ * with no offset, and the rider's lat/lon is just roads_unproject() of the
+ * on-route position. mockup.py subtracts its own ROUTE_M[0] to reach the same
+ * frame, because its coordinates are referenced to the computed junction
+ * instead. That difference is invisible in 2D, where everything is projected
+ * relative to the fix, and it is exactly what has to be got right in 3D, which
+ * converts absolutely.
+ */
+void
+view_nav_3d_demo(cov_t *c, const struct roads *roads, const struct roadgrid *grid)
+{
+    navmap_t m;
+    panel_t p;
+    static double r3d[2 * ASOK_NPTS];
+    double on_e, on_n, lat, lon;
+    int i, k;
+
+    memset(&m, 0, sizeof m);
+    memset(&p, 0, sizeof p);
+
+    m.pts = ASOK_ROUTE;
+    m.npts = ASOK_NPTS;
+    m.pos_i = 2;
+    m.pos_f = 0.0;
+    m.turn_i = 11;
+    m.pin_i = 14;
+    m.off = 0;
+    m.spd_kmh = 24;
+    m.course_up = 1;
+    m.heading = 0.0;
+    m.have_heading = 0;
+    m.residual = 0.0;
+    m.units = UNITS_METRIC;
+    m.mpp_manual = 0.0;
+    m.tiles = NULL;          /* 3D draws the graph; a basemap would be unused */
+
+    /* The window mockup.py passes: the fix, then every vertex ahead of it. */
+    on_e = ASOK_ROUTE[2 * m.pos_i];
+    on_n = ASOK_ROUTE[2 * m.pos_i + 1];
+    r3d[0] = on_e;
+    r3d[1] = on_n;
+    k = 1;
+    for (i = m.pos_i + 1; i < ASOK_NPTS; i++, k++) {
+        r3d[2 * k] = ASOK_ROUTE[2 * i];
+        r3d[2 * k + 1] = ASOK_ROUTE[2 * i + 1];
+    }
+    roads_unproject(roads, on_e, on_n, &lat, &lon);
+
+    m.view3d = 1;
+    m.roads = roads;
+    m.grid = grid;
+    m.lat = lat;
+    m.lon = lon;
+    m.r3d_pts = r3d;
+    m.r3d_n = k;
+
+    p.off = 0;
+    p.units = UNITS_METRIC;
+    p.note = NULL;
+    p.nofix = 0;
+    p.ask_reroute = 0;
+    /* The DESIGN's sample panel, the same numbers view_nav_demo() freezes --
+     * 410 quantised to 400, 44 MIN, 12.6 km, 10:42 -- and not the tiles demo's.
+     * The panel is not what this page is testing, so it should be the panel
+     * every other frozen page already agrees on; mockup.py's nav-3d overrides
+     * the route dict's turn/then_d to these for the same reason. Leaving the
+     * tiles demo's 3 MIN / 827 m here cost 1657 differing pixels in a region
+     * that has nothing to do with 6.6. */
+    p.turn_m = cue_quantise(410);
+    p.kind = ARROW_RIGHT;
+    p.remain = "44 MIN";
+    p.eta = "10:42 ETA";
+    p.togo_m = 12600;
+    p.batt = 86;
+    p.clock = "09:40";
+
+    view_nav(c, &m, &p);
+}
+
+
 void
 view_nav_tiles_demo(cov_t *c, struct tiles *t)
 {
     navmap_t m;
     panel_t p;
+
+    /* memset FIRST, and this is not tidiness. navmap_t grew optional 3D fields
+     * (6.6) that view_nav_map() tests before drawing, and a stack struct's
+     * padding is indeterminate -- a demo page that happened to find a non-zero
+     * view3d and a plausible pointer there would draw a 3D map into a FROZEN
+     * golden, on some builds and not others. The fields these demos care about
+     * are all set explicitly below; this is what makes the ones they do not
+     * care about defined. */
+    memset(&m, 0, sizeof m);
+    memset(&p, 0, sizeof p);
 
     m.pts = ASOK_ROUTE;
     m.npts = ASOK_NPTS;
@@ -770,6 +926,16 @@ view_cliptest(cov_t *c)
 {
     navmap_t m;
     panel_t p;
+
+    /* memset FIRST, and this is not tidiness. navmap_t grew optional 3D fields
+     * (6.6) that view_nav_map() tests before drawing, and a stack struct's
+     * padding is indeterminate -- a demo page that happened to find a non-zero
+     * view3d and a plausible pointer there would draw a 3D map into a FROZEN
+     * golden, on some builds and not others. The fields these demos care about
+     * are all set explicitly below; this is what makes the ones they do not
+     * care about defined. */
+    memset(&m, 0, sizeof m);
+    memset(&p, 0, sizeof p);
     m.pts = CLIP_ROUTE;
     m.npts = CLIP_NPTS;
     m.pos_i = 2;
@@ -798,6 +964,16 @@ view_cliptest_panel(cov_t *c)
 {
     navmap_t m;
     panel_t p;
+
+    /* memset FIRST, and this is not tidiness. navmap_t grew optional 3D fields
+     * (6.6) that view_nav_map() tests before drawing, and a stack struct's
+     * padding is indeterminate -- a demo page that happened to find a non-zero
+     * view3d and a plausible pointer there would draw a 3D map into a FROZEN
+     * golden, on some builds and not others. The fields these demos care about
+     * are all set explicitly below; this is what makes the ones they do not
+     * care about defined. */
+    memset(&m, 0, sizeof m);
+    memset(&p, 0, sizeof p);
     static const double NONE[] = {0, 0, 0, 1};
     m.pts = NONE;
     m.npts = 2;

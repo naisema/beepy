@@ -68,6 +68,12 @@ ROADS = os.path.join(NAVDIR, "tests", "roads", "asok.roads")
 EXACT_PANEL = ("panel",)
 EXACT_MAP_STRIP = ("0,198,399,239",)       # MAP with a position: the 42 px strip
 EXACT_MAP_WAIT = ("0,216,399,239",)        # and without one: the hint row alone
+# The SAVE page of DESIGN.md 1.4.8 is text and block fills END TO END -- a title
+# bar, a 24 px glyph table, a scale-3 coordinate, two strip rows and one
+# rectangle. There is no coverage shape anywhere on it, so the exact-by-
+# construction region is the WHOLE FRAME and this is the strictest entry in the
+# gate: not "within 480 pixels", but identical.
+EXACT_ALL = ("0,0,399,239",)
 
 # page name -> how mockup.py renders it, the exact-by-construction region, and
 # any extra flags the C binary needs.
@@ -98,6 +104,23 @@ PAGES = (
     ("overview", "nav-overview", lambda m, n: m.page_overview(), EXACT_PANEL,
      ()),
     ("arrows", "nav-arrows", lambda m, n: m.page_arrows(), EXACT_PANEL, ()),
+    # The 3D view of DESIGN.md 6.6, and the FIRST entry in this gate whose MAP
+    # CONTENT is compared at all. Every other page passes basemap=False and
+    # nav-turn-osm is not here, because a raster basemap cannot be reproduced
+    # from osm-asok.json -- the two sides would be two renderers of two
+    # different inputs. This one can be: mockup.py reads the same .roads pack
+    # the C does, so the only thing left to disagree about is the drawing.
+    #
+    # It is also the first entry to spend any of MAX_PX. It differs by THREE
+    # pixels, a vertical run at one fill-span boundary, where every other page
+    # spends zero. That is worth stating rather than burying: the road plane is
+    # byte-identical in isolation -- 426 ribbons, 3904 ink px, 0 differing of
+    # 64 800 -- the panel here is exact, and these three survive coordinate
+    # quantisation to 1/256 px on both the quad corners and the interpolated
+    # span ends. So they are NOT an ulp at a rounding boundary, and they are
+    # unfinished business rather than an accepted cost.
+    ("nav-3d", "nav-3d", lambda m, n: m.page_nav3d(n), EXACT_PANEL,
+     ("--view3d", "--roads", ROADS)),
     # M6. FIND is here because its 24 px query became a generated glyph table
     # (tools/gen_query.py) rather than a live TrueType render: the device has no
     # rasterizer, so the only way "24 px bold" could survive the port was to
@@ -108,6 +131,13 @@ PAGES = (
     ("find", "nav-search", lambda m, n: m.page_search(), EXACT_PANEL,
      ("--roads", ROADS)),
     ("confirm", "nav-confirm", lambda m, n: m.page_confirm(), EXACT_PANEL, ()),
+    # SAVE (DESIGN.md 1.4.8), in both states of its field. Two entries because
+    # the difference between them IS the feature -- a selected default that the
+    # first keystroke replaces, against an edited name with a caret -- and a
+    # renderer that drew the second for both would look perfectly reasonable.
+    ("save", "nav-save", lambda m, n: m.page_save(n), EXACT_ALL, ()),
+    ("save-typed", "nav-save-typed",
+     lambda m, n: m.page_save(n, typed=True), EXACT_ALL, ()),
 )
 
 

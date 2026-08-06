@@ -65,6 +65,42 @@ typedef struct {
 #define ROADCLASS_MOTORWAY 1
 #define ROADCLASS_TRUNK 2
 #define ROADCLASS_PRIMARY 3
+/* The rest of what tools/mkpack.py's ROAD_CLASS emits. Named here because
+ * DESIGN.md 7.7.2's weight table is indexed by class, and a table of bare
+ * integers is a table nobody can check against the packer.
+ *
+ * SERVICE AND TRACK ARE NOT HERE, and that is a limitation rather than an
+ * omission: the packer has no entry for them, so they land in class 0 alongside
+ * "a highway tag we do not recognise" -- which must stay neutral, or every road
+ * OSM invents gets penalised. Weighting an alley therefore needs a packer change
+ * and a re-cut pack; 6, 7 and 8 are what a Bangkok soi route is actually made
+ * of, and those are here. */
+#define ROADCLASS_SECONDARY 4
+#define ROADCLASS_TERTIARY 5
+#define ROADCLASS_UNCLASSIFIED 6
+#define ROADCLASS_RESIDENTIAL 7
+#define ROADCLASS_LIVING_STREET 8
+/* One past the highest the packer emits, so the weight table can be sized and
+ * bounds-checked rather than trusted. The 5-bit field holds 0-31; anything above
+ * this is a pack from a future packer and takes the neutral weight. */
+#define ROADCLASS_N 9
+
+/* Bit 5: the parent way is tolled (DESIGN.md 7.7.1), pack version 4. Set from
+ * `toll=yes` and from nothing else -- OSM's explicit `toll=no` says a road is
+ * FREE, and the toll:hgv / toll:motorcar variants qualify it by vehicle, so a
+ * packer that set this for any `toll` key would refuse free roads for having
+ * been surveyed carefully.
+ *
+ * A separate bit rather than a class, because tolled is orthogonal to class:
+ * expressways here are motorway AND tolled, but so is the odd tolled bridge on
+ * a primary, and a bicycle route already excluded by class must not depend on
+ * that. Bit 5 leaves 6-15 spare.
+ *
+ * ABSENT IS NOT FREE. A v1-v3 pack has no such bit, so every edge in it reads
+ * as untolled -- which is why search.c refuses a pack whose version it does not
+ * know rather than routing over one optimistically. `tolls = avoid` against an
+ * older pack would otherwise be a setting that silently did nothing. */
+#define ROADEDGE_TOLL 0x20u
 
 /* Travel modes (DESIGN.md 7.7). They pick the online costing and, offline,
  * which road classes the router will use. */

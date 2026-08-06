@@ -39,6 +39,21 @@ geo_project(double lat0, double lon0, double lat, double lon, double *e,
     *n = (lat - lat0) * GEO_M_PER_DEG_LAT;
 }
 
+/* The exact inverse of the above, and written directly under it so the two
+ * cannot drift. It exists because the 3D nav view (6.6) has to hand route
+ * points to a roads pack that keeps its OWN tangent origin: the only common
+ * language between two tangent planes is lat/lon, so the route comes out here
+ * and goes back in through roads_project(). Composing the two projections
+ * algebraically would be fewer operations and one more place for the constants
+ * to disagree. */
+void
+geo_unproject(double lat0, double lon0, double e, double n, double *lat,
+              double *lon)
+{
+    *lat = lat0 + n / GEO_M_PER_DEG_LAT;
+    *lon = lon0 + e / (GEO_M_PER_DEG_LON * cos(lat0 * (M_PI / 180.0)));
+}
+
 /* en[], cum[], the bbox and total_m about a GIVEN tangent origin. The body of
  * route_prepare(), factored out for route_rebase() -- see route.h. */
 static int
@@ -607,11 +622,9 @@ route_progress(const route_t *r, navctx_t *ctx, double now, nav_t *nv)
 
     if (v > 0.1) {
         nv->eta_s = nv->togo_m / v;
-        nv->eta = (time_t)(now + nv->eta_s);
     } else {
         /* Stopped, or not enough history: no ETA rather than a wrong one. */
         nv->eta_s = -1.0;
-        nv->eta = 0;
     }
 
     route_countdown_refresh(r, ctx, nv);

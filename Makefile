@@ -44,6 +44,12 @@ ROADPOIS   ?= beepy-nav/tests/roads/pois.json
 # dogleg between the same two points, so "the mode changed the route" is a
 # length and not a flag. Read by tests/test_search.c, which runs on the device.
 ROADMODES  ?= beepy-nav/tests/roads/modes.json
+# The class-WEIGHTING fixture (DESIGN.md 7.7.2), which modes.json cannot be: a
+# short residential zigzag against a LONGER primary, so the big road has to win
+# on cost while losing on distance. Over modes.json the big road is already the
+# shorter one and a weighting test there could not fail.
+ROADBIAS   ?= beepy-nav/tests/roads/bias.json
+ROADTOLLS  ?= beepy-nav/tests/roads/tolls.json
 # DESIGN.md 7.8's fetch fixtures: a deliberately slow fetcher, and the tiny
 # moving route the paced replay follows while it is in flight.
 NETCONF    ?= beepy-nav/tests/net/slow.conf
@@ -87,9 +93,12 @@ NAV_OBJS  = beepy-nav/src/nav.o beepy-nav/src/view_nav.o beepy-nav/src/seg.o \
             beepy-nav/src/fix.o beepy-nav/src/chooser.o beepy-nav/src/led.o \
             beepy-nav/src/config.o beepy-nav/src/ridelog.o \
             beepy-nav/src/tile.o beepy-nav/src/search.o \
+            beepy-nav/src/roadgrid.o beepy-nav/src/persp.o \
+            beepy-nav/src/nav3d.o \
             beepy-nav/src/router.o beepy-nav/src/view_find.o \
             beepy-nav/src/view_confirm.o beepy-nav/src/view_map.o \
-            beepy-nav/src/view_quit.o beepy-nav/src/netfetch.o \
+            beepy-nav/src/view_quit.o beepy-nav/src/view_save.o \
+            beepy-nav/src/netfetch.o \
             beepy-nav/src/netroute.o
 HDRS      = $(wildcard libbeepyfb/*.h libnmea/*.h gps-monitor/*.h \
                        beepy-nav/src/*.h beepy-vid/src/*.h)
@@ -200,6 +209,15 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav beepy-vid/beepy-vid \
 		--basemap $(TILEPACK) --dump out-nav-map-saved.fb
 	./beepy-nav/beepy-nav --demo --page map-wait-home \
 		--basemap $(TILEPACK) --dump out-nav-map-wait-home.fb
+#	The SAVE page of DESIGN.md 1.4.8, in both states of its field. Two frames
+#	because the difference between them IS the feature: a default drawn as a
+#	SELECTION that the first keystroke replaces, against an edited name with a
+#	caret after it. A build that drew the second for both would look perfectly
+#	reasonable and would have thrown away the only warning a rider gets before
+#	their typing eats the default.
+	./beepy-nav/beepy-nav --demo --page save --dump out-nav-save.fb
+	./beepy-nav/beepy-nav --demo --page save-typed \
+		--dump out-nav-save-typed.fb
 	./beepy-nav/beepy-nav --demo --page quit     --dump out-nav-quit.fb
 	./beepy-nav/beepy-nav --demo --page quit-map --dump out-nav-quit-map.fb
 	cmp goldens/nav-turn.fb     out-nav-turn.fb
@@ -211,6 +229,16 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav beepy-vid/beepy-vid \
 	! cmp -s goldens/nav-ask.fb goldens/nav-off.fb
 	cmp goldens/nav-arrows.fb   out-nav-arrows.fb
 	cmp goldens/nav-overview.fb out-nav-overview.fb
+#	DESIGN.md 6.6's frozen 3D state. --view3d is required AFTER --demo, which
+#	pins 2D: the goldens must not change because a rider set view3d in their
+#	config, and this is the one page that asks for it explicitly.
+	./beepy-nav/beepy-nav --demo --page nav-3d --view3d \
+		--roads $(ROADPACK) --dump out-nav-3d.fb
+	cmp goldens/nav-3d.fb        out-nav-3d.fb
+#	And with no pack it falls back rather than drawing nothing -- the same
+#	"the layer is optional" claim nav-tiles makes one level down.
+	./beepy-nav/beepy-nav --demo --page nav-3d --view3d --dump out-nav-3d-nopack.fb
+	! cmp -s goldens/nav-3d.fb out-nav-3d-nopack.fb
 	cmp goldens/nav-map.fb       out-nav-map.fb
 	cmp goldens/nav-map-nofix.fb out-nav-map-nofix.fb
 	cmp goldens/nav-map-wait.fb  out-nav-map-wait.fb
@@ -244,6 +272,12 @@ check: gps-monitor/gps-monitor beepy-nav/beepy-nav beepy-vid/beepy-vid \
 #	that says so.
 	! cmp -s goldens/nav-find-saved.fb goldens/nav-find.fb
 	cmp goldens/nav-map-wait-home.fb out-nav-map-wait-home.fb
+	cmp goldens/nav-save.fb       out-nav-save.fb
+	cmp goldens/nav-save-typed.fb out-nav-save-typed.fb
+#	And the two are not one frame, which is the whole reason there are two:
+#	nav-find-saved's lesson (line 241) applied to a page whose two states differ
+#	only in how one field is drawn.
+	! cmp -s goldens/nav-save.fb goldens/nav-save-typed.fb
 	cmp goldens/nav-quit.fb     out-nav-quit.fb
 	cmp goldens/nav-quit-map.fb out-nav-quit-map.fb
 #	beepy-vid's pages. The player is portable, so these frames are rendered
@@ -357,6 +391,8 @@ endif
 	./gps-monitor/gps-monitor --demo --page bars --dump goldens/gm-bars.fb
 	./gps-monitor/gps-monitor --demo --page sky  --dump goldens/gm-sky.fb
 	./beepy-nav/beepy-nav --demo --page nav     --dump goldens/nav-turn.fb
+	./beepy-nav/beepy-nav --demo --page nav-3d --view3d \
+		--roads $(ROADPACK) --dump goldens/nav-3d.fb
 	./beepy-nav/beepy-nav --demo --page nav-off --dump goldens/nav-off.fb
 	./beepy-nav/beepy-nav --demo --page nav-nofix --dump goldens/nav-nofix.fb
 	./beepy-nav/beepy-nav --demo --page nav-ask   --dump goldens/nav-ask.fb
@@ -390,6 +426,9 @@ endif
 		--basemap $(TILEPACK) --dump goldens/nav-map-saved.fb
 	./beepy-nav/beepy-nav --demo --page map-wait-home \
 		--basemap $(TILEPACK) --dump goldens/nav-map-wait-home.fb
+	./beepy-nav/beepy-nav --demo --page save --dump goldens/nav-save.fb
+	./beepy-nav/beepy-nav --demo --page save-typed \
+		--dump goldens/nav-save-typed.fb
 	./beepy-nav/beepy-nav --demo --page quit     --dump goldens/nav-quit.fb
 	./beepy-nav/beepy-nav --demo --page quit-map --dump goldens/nav-quit-map.fb
 	./beepy-vid/beepy-vid --demo --page play --pack $(VIDPACK) --at 12 \
@@ -588,7 +627,17 @@ test-replay: $(NAV) $(REPLAYS)
 # against a stored answer from a previous run.
 test-frames: $(NAV) $(REPLAYS)
 	@echo "--- T-DR: extrapolation, and a correction eased over three frames"
+#	--config /dev/null, and it has to be here rather than only where the frames
+#	are COMPARED. plain-a is the reference for T-CUE-LED-MUTE's note-a and for
+#	T-FIND-NOPACK's nopack-a, and all three runs used to read
+#	~/.config/beepy-nav.conf. They agreed -- not because the frames were
+#	independent of the config, but because all three read the SAME config on
+#	whichever machine ran the gate. Pinning one of the three and not the others
+#	made the difference visible: 2981 px, which is the device's own basemap
+#	drawn behind the map. So the family is pinned together, and each of these
+#	frames is now a function of the fixtures alone.
 	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless $(FPS8) \
+		--config /dev/null \
 		--dump-at 120.5:$(RDIR)/plain-a.fb \
 		--dump-at 122.5:$(RDIR)/plain-b.fb \
 		--dump-at 190:$(RDIR)/plain-pre.fb \
@@ -612,7 +661,7 @@ test-frames: $(NAV) $(REPLAYS)
 	$(ASSERT) $(RDIR)/detour-frames.tsv --cue-led 9 --any off_latched "==" 1
 	@echo "--- T-CUE-LED-MUTE: L off at 120 s, on at 250 s, no backlog"
 	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless $(FPS8) \
-		--key 120:l --key 250:l \
+		--config /dev/null --key 120:l --key 250:l \
 		--dump-at 120.5:$(RDIR)/note-a.fb \
 		--dump-at 122.5:$(RDIR)/note-b.fb \
 		--trace-frames $(RDIR)/mute-frames.tsv
@@ -644,6 +693,7 @@ test-frames: $(NAV) $(REPLAYS)
 	$(ASSERT) $(RDIR)/still-frames.tsv --settles presented
 	@echo "--- T-NOFIX: thirty seconds with no fix (DESIGN.md 1.1)"
 	$(NAV) --route $(RROUTE) --replay $(RDIR)/nofix.nmea --headless $(FPS8) \
+		--config /dev/null \
 		--dump-at 190:$(RDIR)/nofix-pre.fb \
 		--dump-at 215:$(RDIR)/nofix-gap.fb \
 		--dump-at 250:$(RDIR)/nofix-post.fb \
@@ -731,8 +781,17 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
            $(RDIR)/still-net.nmea $(RDIR)/reroute.nmea \
            $(RDIR)/reroute-long.nmea $(RDIR)/detour.nmea
 	@echo "--- T-FIND: F, a typed query, ENTER, CONFIRM, ENTER, riding"
+#	--config /dev/null, for the reason T-SAVE states below and this test learned
+#	the more expensive way. With no --config the run reads whatever
+#	~/.config/beepy-nav.conf says, and on a device that has been ridden that
+#	file says `prefer = online` -- so the assertion below stopped being about
+#	the offline router and became about whichever routing server the owner last
+#	configured. It failed on a device with no route to that server while the
+#	code it tests was correct, and it would have PASSED on a broken offline
+#	router as long as the network answered. Either way it was measuring the
+#	config, not the program.
 	$(NAV) --route $(TILEROUTE) --replay $(RDIR)/asok.nmea --headless $(FPS8) \
-		--roads $(ROADPACK) \
+		--config /dev/null --no-view3d --roads $(ROADPACK) \
 		--dump-at 9.5:$(RDIR)/find-nav.fb \
 		--key 10:f --key 11:s --key 12:o --key 13:i \
 		--key 14:space --key 15:2 --key 16:3 \
@@ -763,7 +822,7 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
 #	that did nothing would fail the first comparison; a key that changed the map
 #	would fail it too.
 	$(NAV) --route $(RROUTE) --replay $(RDIR)/ride.nmea --headless $(FPS8) \
-		--no-roads --key 120:f \
+		--config /dev/null --no-roads --key 120:f \
 		--dump-at 120.5:$(RDIR)/nopack-a.fb \
 		--dump-at 122.5:$(RDIR)/nopack-b.fb
 	python3 tools/fbdiff.py $(RDIR)/nopack-a.fb $(RDIR)/plain-a.fb \
@@ -864,6 +923,174 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
 #	still carried one would mean the route was freed and the page was not.
 	python3 tools/fbdiff.py $(RDIR)/ended.fb $(RDIR)/quit-before.fb \
 		--min-px 4000
+	@echo "--- T-SAVE: S writes a place, and the program can then find it"
+#	DESIGN.md 1.4.8. Everything before this could only READ favourites, so a
+#	`place` line existed if a rider had carried a coordinate off the MAP strip as
+#	far as a laptop. The claim here is the write: S opens a page, a typed name and
+#	ENTER put one line in a file, and the place is in the live list before the
+#	program exits.
+#
+#	--places INTO THE REPLAY DIRECTORY, and this is not a convenience. The rule
+#	CLAUDE.md carries -- a test whose absent case reads the device config is not
+#	a test -- applies with more force to a test that WRITES: a gate that appended
+#	to ~/.config on every run would be editing the machine it is measuring, and
+#	after four runs the device's own list would be full. The file is removed
+#	first, so "one line" is a count and not a growth.
+#
+#	--config /dev/null, so the list starts EMPTY however many places the device's
+#	owner has saved. Without it the ceiling assertion below would pass or fail
+#	depending on whose Beepy `check` is running on. (`--config` also suppresses
+#	the default places file, which is what makes the --places on the next line
+#	the only one in play.)
+	rm -f $(RDIR)/t-save.places $(RDIR)/t-save-none.places
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config /dev/null --roads $(ROADPACK) \
+		--places $(RDIR)/t-save.places \
+		--dump-at 19:$(RDIR)/save-map.fb \
+		--key 20:s --dump-at 21:$(RDIR)/save-page.fb \
+		--key 22:c --key 23:a --key 24:f --key 25:e \
+		--dump-at 26:$(RDIR)/save-typed.fb \
+		--key 27:enter --dump-at 29:$(RDIR)/save-done.fb \
+		2> $(RDIR)/save.log
+#	ONE line, and it is the name that was typed rather than the default that was
+#	offered. `PLACE 1CAFE` is what this looked like before the default was drawn
+#	and treated as a selection, and it passed a laxer grep.
+	test `grep -c "^place = " $(RDIR)/t-save.places` -eq 1
+	grep -q "^place = CAFE " $(RDIR)/t-save.places
+#	The coordinate is the fix's, to the five decimals the MAP strip showed -- so
+#	the file agrees with the screen the rider read it off. still.nmea sits at
+#	13.72936, 100.56100.
+	grep -q "^place = CAFE 13.72936,100.56100$$" $(RDIR)/t-save.places
+	grep -q "beepy-nav: saved CAFE at 13.72936,100.56100" $(RDIR)/save.log
+#	S opened a page: the frame changes, and it changes again as the name is
+#	typed over the selected default. Two comparisons, because a build that
+#	opened the page but ignored the keyboard would pass only the first.
+	python3 tools/fbdiff.py $(RDIR)/save-page.fb $(RDIR)/save-map.fb --min-px 2000
+	python3 tools/fbdiff.py $(RDIR)/save-typed.fb $(RDIR)/save-page.fb --min-px 200
+#	ENTER went back to the MAP page, which is what says the page is not a trap.
+#	Not byte-identical to the frame before S: the new place is now a mark on the
+#	map and SAVED CAFE is on the strip's transient row.
+	python3 tools/fbdiff.py $(RDIR)/save-done.fb $(RDIR)/save-typed.fb --min-px 2000
+#	AND IT SURVIVES A RESTART, which is the end-to-end claim and the one thing a
+#	favourite is for. A second process reads the file this one wrote and F opens
+#	on a list with the place in it -- against a control run whose places file does
+#	not exist, which is T-SAVED's own pairing and is there for T-SAVED's reason:
+#	"the frame changed" is only evidence if the other frame could not have
+#	contained the row. Both runs are otherwise identical, and /dev/null as the
+#	config is what stops the device's own favourites from being in either.
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config /dev/null --roads $(ROADPACK) \
+		--places $(RDIR)/t-save.places \
+		--key 10:f --dump-at 12:$(RDIR)/save-find.fb 2>/dev/null
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config /dev/null --roads $(ROADPACK) \
+		--places $(RDIR)/t-save-none.places \
+		--key 10:f --dump-at 12:$(RDIR)/save-find-none.fb 2>/dev/null
+	python3 tools/fbdiff.py $(RDIR)/save-find.fb $(RDIR)/save-find-none.fb \
+		--min-px 200
+#	And the control really did have no places file to read, so the pair above is
+#	not two runs of the same state.
+	test ! -f $(RDIR)/t-save-none.places
+	@echo "--- T-SAVE-ROUNDTRIP: the name it offers survives being read back"
+#	THE TWO-PRESS PATH, and the bug it is here for. `S ENTER` writes the offered
+#	default, which contains a space -- and config.c used to take the name as the
+#	FIRST field, so `place = PLACE 1 13.72936,100.56100` came back as a place
+#	called PLACE at 1.00000, 13.72936: a point in the Atlantic off Guinea. Both
+#	halves are legal numbers, so the +-90 guard could not see it, nothing warned,
+#	and the rider would have had a favourite that read back as somewhere else.
+#	place_split() now finds the coordinate from the right.
+#
+#	Asserted by ROUTING to it after a restart, which is the only assertion that
+#	can tell the two apart: a place 10 000 km away is off the pack, the offline
+#	router refuses it, and there is no "routed to" line at all.
+	rm -f $(RDIR)/t-save-fast.places
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config /dev/null --places $(RDIR)/t-save-fast.places \
+		--key 20:s --key 21:enter 2> $(RDIR)/save-fast.log
+	grep -q "^place = PLACE 1 13.72936,100.56100$$" \
+		$(RDIR)/t-save-fast.places
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config /dev/null --roads $(ROADPACK) \
+		--places $(RDIR)/t-save-fast.places \
+		--key 10:f --key 12:enter 2> $(RDIR)/save-fast2.log
+	grep -q "routed to PLACE 1 --" $(RDIR)/save-fast2.log
+#	A NAME WITH A SPACE IN IT, typed. The same claim from the other side: the
+#	writer and the reader agree about where a multi-word name ends, so "CO OP" is
+#	a name and not a name plus a number.
+	rm -f $(RDIR)/t-save-word.places
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config /dev/null --places $(RDIR)/t-save-word.places \
+		--key 20:s --key 21:c --key 22:o --key 23:space --key 24:o \
+		--key 25:p --key 26:enter 2> $(RDIR)/save-word.log
+	grep -q "^place = CO OP 13.72936,100.56100$$" $(RDIR)/t-save-word.places
+	@echo "--- T-SAVE-REFUSE: the four ways S says no"
+#	Each of them a transient AND a line on stderr (DESIGN.md 2's "a dead key is
+#	indistinguishable from a broken program"), and each asserted on the line,
+#	because a transient lives 1.5 s and a frame comparison cannot tell which of
+#	four refusals it was looking at.
+#
+#	A DUPLICATE NAME. saved.conf already has HOME, so this types it and finds
+#	the refusal -- and the file must not have grown, which is the assertion that
+#	says the check happens BEFORE the append rather than after it.
+	rm -f $(RDIR)/t-save-dup.places
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config $(SAVEDCONF) --places $(RDIR)/t-save-dup.places \
+		--key 20:s --key 21:h --key 22:o --key 23:m --key 24:e \
+		--key 25:enter 2> $(RDIR)/save-dup.log
+	grep -q "HOME is already a saved place" $(RDIR)/save-dup.log
+	! grep -q "beepy-nav: saved" $(RDIR)/save-dup.log
+	test ! -f $(RDIR)/t-save-dup.places
+#	NO PLACES FILE. --no-places means the program was told not to touch one, and
+#	a save that lived only until exit would be worse than a refusal: the mark
+#	would appear, the rider would trust it, and it would be gone next boot.
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config $(SAVEDCONF) --no-places --key 20:s \
+		2> $(RDIR)/save-nofile.log
+	grep -q "no places file" $(RDIR)/save-nofile.log
+	! grep -q "beepy-nav: saved" $(RDIR)/save-nofile.log
+#	NO FIX, in the harder of its two forms. nofix.nmea voids the fix from 200 s
+#	to 230 s, and S is pressed inside that gap -- so there IS a last known
+#	position, it is on the strip, and this asserts that S will not write it. That
+#	is the case a rider meets (a bridge, a car park); "there has never been a fix"
+#	is the same condition reached more easily, and it is not separately asserted
+#	here because the fixture cannot be cold and warm at once.
+	rm -f $(RDIR)/t-save-nofix.places
+	$(NAV) --replay $(RDIR)/nofix.nmea --headless $(FPS8) --no-basemap \
+		--config /dev/null --places $(RDIR)/t-save-nofix.places \
+		--key 210:s --key 212:enter 2> $(RDIR)/save-nofix.log
+	grep -q "the fix is lost, and the last one is stale" \
+		$(RDIR)/save-nofix.log
+	! grep -q "beepy-nav: saved" $(RDIR)/save-nofix.log
+	test ! -f $(RDIR)/t-save-nofix.places
+#	THE CEILING. Eight places is CFG_PLACES_MAX, and the ninth is refused rather
+#	than rotated: dropping the rider's oldest favourite to make room for a coffee
+#	shop is not a decision this program gets to make. The fixture is eight
+#	`place` lines, so the refusal is reached without eight keypress rounds.
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config beepy-nav/tests/full.conf \
+		--places $(RDIR)/t-save-full.places --key 20:s \
+		2> $(RDIR)/save-full.log
+	grep -q "8 places already saved" $(RDIR)/save-full.log
+	test ! -f $(RDIR)/t-save-full.places
+#	NAME NEEDED. Backspace on the selected default empties the field, and the
+#	field is then empty for exactly one keypress -- so ENTER during it must not
+#	write a nameless place. Reachable, which is why it is asserted rather than
+#	commented as impossible.
+	rm -f $(RDIR)/t-save-empty.places
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config /dev/null --places $(RDIR)/t-save-empty.places \
+		--key 20:s --key 21:bs --key 22:enter 2> $(RDIR)/save-empty.log
+	grep -q "a saved place needs a name" $(RDIR)/save-empty.log
+	test ! -f $(RDIR)/t-save-empty.places
+#	NOT SAVED. A path whose directory cannot be created -- a read-only card is
+#	the real case, and this is the reachable stand-in for it. The errno text
+#	differs between the Mac and the device (Read-only file system against
+#	Permission denied), so only the sentence is matched.
+	$(NAV) --replay $(RDIR)/still.nmea --headless $(FPS8) --no-basemap \
+		--config /dev/null --places /nope-no-perm/x.places \
+		--key 20:s --key 21:enter 2> $(RDIR)/save-ro.log
+	grep -q "cannot write /nope-no-perm/x.places" $(RDIR)/save-ro.log
+	! grep -q "beepy-nav: saved" $(RDIR)/save-ro.log
 	@echo "--- T-FIND-POI: routing to something that is not on the graph"
 #	Every destination before this one WAS a graph node: a street's candidate
 #	points are its own vertices, so the "snap to the nearest node" in router.c
@@ -1092,6 +1319,98 @@ test-find: $(NAV) $(RDIR)/asok.nmea $(RDIR)/ride.nmea $(ROADPACK) \
 #	would pass on a build that asked the network for WORK as well and simply
 #	preferred the pack's answer.
 	test `grep -c "asking valhalla" $(RDIR)/find-online.log` -eq 1
+	@echo "--- T-NET-USETOLLS: the car asks to avoid tolls, the bicycle does not"
+#	ASSERTED ON THE REQUEST, because nothing downstream reflects it. A
+#	costing_options block attached to the wrong costing, or malformed, would come
+#	back as a perfectly good route -- the fixture answers the same bytes whatever
+#	was asked -- so the only evidence is the body itself. These two confs keep it.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still-net.nmea --headless $(FPS8) \
+		--pace --roads $(ROADPACK) \
+		--config beepy-nav/tests/net/body-car.conf \
+		--key 10:f --key 12:enter 2> $(RDIR)/req-car.log
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still-net.nmea --headless $(FPS8) \
+		--pace --roads $(ROADPACK) \
+		--config beepy-nav/tests/net/body-bike.conf \
+		--key 10:f --key 12:enter 2> $(RDIR)/req-bike.log
+#	Both must actually have asked, or the greps below run on a stale file from a
+#	previous build -- or on no file at all, which `grep -q` would also fail on but
+#	for the wrong reason.
+	grep -q "asking valhalla for a route to HOME (car)" $(RDIR)/req-car.log
+	grep -q "asking valhalla for a route to HOME (bike)" $(RDIR)/req-bike.log
+	grep -q '"costing":"auto"' $(RDIR)/req-car.json
+	grep -q '"costing_options":{"auto":{"use_tolls":0}}' $(RDIR)/req-car.json
+#	And NOT on the bicycle: Valhalla's bicycle costing has no use_tolls, and a
+#	stricter server may reject an unknown option outright. This is the assertion
+#	that a future edit cannot quietly widen the flag to both profiles.
+	grep -q '"costing":"bicycle"' $(RDIR)/req-bike.json
+	! grep -q "use_tolls" $(RDIR)/req-bike.json
+#	Still valid JSON after the insert -- the comma placement around an optional
+#	object is exactly what a hand-built body gets wrong.
+	python3 -c "import json,sys; json.load(open('$(RDIR)/req-car.json')); \
+		json.load(open('$(RDIR)/req-bike.json')); print('  PASS  both bodies parse')"
+	rm -f $(RDIR)/req-car.json $(RDIR)/req-bike.json \
+		$(RDIR)/req-car.log $(RDIR)/req-bike.log
+	@echo "--- T-NET-TOLL: has_toll reaches the CONFIRM title, and only there"
+#	TWO RUNS DIFFERING IN ONE JSON LITERAL. online-toll.conf is online.conf with
+#	a fetcher pointed at a sed of the same capture -- same 177 points, same
+#	4.95 km, same 9 cues -- so every pixel that differs between these frames is
+#	`"has_toll":true` arriving on the panel. A second real capture would have
+#	moved the geometry too, and then a badge that never drew would still have
+#	produced two different frames.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still-net.nmea --headless $(FPS8) \
+		--pace --roads $(ROADPACK) \
+		--config beepy-nav/tests/net/online-toll.conf \
+		--key 10:f --key 11:down --key 12:enter --key 14:esc \
+		--key 15:up --key 16:enter --dump-at 18:$(RDIR)/confirm-toll.fb \
+		--key 20:enter 2> $(RDIR)/find-toll.log
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still-net.nmea --headless $(FPS8) \
+		--pace --roads $(ROADPACK) \
+		--config beepy-nav/tests/net/online.conf \
+		--key 10:f --key 11:down --key 12:enter --key 14:esc \
+		--key 15:up --key 16:enter --dump-at 18:$(RDIR)/confirm-notoll.fb \
+		--key 20:enter 2> $(RDIR)/find-notoll.log
+#	Both runs must have gone online at all, or two identical OFFLINE frames
+#	would satisfy the mask check below and prove nothing.
+	grep -q "routed to HOME -- 177 points" $(RDIR)/find-toll.log
+	grep -q "routed to HOME -- 177 points" $(RDIR)/find-notoll.log
+#	The flag changed the frame...
+	! cmp -s $(RDIR)/confirm-toll.fb $(RDIR)/confirm-notoll.fb
+#	...and changed NOTHING outside the title row. This is the half that makes
+#	it a placement assertion rather than "something moved": the badge is drawn
+#	in the title because DESIGN.md 7.7 built the strip for four half-lines and
+#	said no fifth value competes for the space, and a badge that crept into the
+#	strip would pass the line above and fail here.
+	python3 tools/fbdiff.py $(RDIR)/confirm-toll.fb \
+		$(RDIR)/confirm-notoll.fb --mask 0,0,399,25 --max-px 0
+#	And an OFFLINE proposal says nothing at all -- the pack has no toll bit, so
+#	a blank right margin has to keep meaning "not told". WORK is answered by the
+#	pack, so the SAME two configs that produced different frames above must now
+#	produce IDENTICAL ones: the fetcher is never reached, and a build that let a
+#	reply's flag reach a route the pack built would differ here.
+#
+#	Comparing the two runs and not a run against itself. The first draft of this
+#	assertion diffed confirm-offline.fb with confirm-offline.fb, which passes for
+#	every possible build and tests nothing.
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still-net.nmea --headless $(FPS8) \
+		--pace --roads $(ROADPACK) \
+		--config beepy-nav/tests/net/online.conf \
+		--key 10:f --key 11:down --key 12:enter \
+		--dump-at 13:$(RDIR)/confirm-offa.fb 2> $(RDIR)/find-offa.log
+	$(NAV) --route $(RROUTE) --replay $(RDIR)/still-net.nmea --headless $(FPS8) \
+		--pace --roads $(ROADPACK) \
+		--config beepy-nav/tests/net/online-toll.conf \
+		--key 10:f --key 11:down --key 12:enter \
+		--dump-at 13:$(RDIR)/confirm-offb.fb 2> $(RDIR)/find-offb.log
+	grep -q "routed to WORK -- 30 points" $(RDIR)/find-offa.log
+	grep -q "routed to WORK -- 30 points" $(RDIR)/find-offb.log
+#	Neither run may have gone online, or this compares two fetches.
+	test `grep -c "asking valhalla" $(RDIR)/find-offa.log` -eq 0
+	test `grep -c "asking valhalla" $(RDIR)/find-offb.log` -eq 0
+	cmp $(RDIR)/confirm-offa.fb $(RDIR)/confirm-offb.fb
+	rm -f $(RDIR)/confirm-toll.fb $(RDIR)/confirm-notoll.fb \
+		$(RDIR)/confirm-offa.fb $(RDIR)/confirm-offb.fb \
+		$(RDIR)/find-toll.log $(RDIR)/find-notoll.log \
+		$(RDIR)/find-offa.log $(RDIR)/find-offb.log
 #	Run two: a fetcher that never answers, so FETCHING and then TIMED OUT are
 #	both on the panel -- paced and stationary for the reasons still-net.nmea
 #	gives. The dumps are 1 s apart because 6.3 renders a STOPPED ride at 1 Hz:
@@ -1295,8 +1614,10 @@ HOST_OBJS = host/canvas.o host/font.o host/cover.o host/dump.o \
             host/seg.o host/arrows.o host/map.o host/gpx.o host/route.o \
             host/view_nav.o host/view_overview.o host/fix.o host/chooser.o \
             host/led.o host/config.o host/ridelog.o host/tile.o \
+            host/roadgrid.o host/persp.o host/nav3d.o \
             host/search.o host/router.o host/view_find.o \
             host/view_confirm.o host/view_map.o host/view_quit.o \
+            host/view_save.o \
            host/netfetch.o host/netroute.o \
             host/nav.o
 
@@ -1306,7 +1627,9 @@ HOST_NAV = host/nav.o host/view_nav.o host/view_overview.o host/seg.o \
            host/arrows.o host/map.o host/gpx.o host/route.o host/fix.o \
            host/chooser.o host/led.o host/config.o host/ridelog.o \
            host/tile.o host/search.o host/router.o host/view_find.o \
+           host/roadgrid.o host/persp.o host/nav3d.o \
            host/view_confirm.o host/view_map.o host/view_quit.o \
+           host/view_save.o \
            host/netfetch.o host/netroute.o \
            host/nmea.o host/gps.o \
            host/canvas.o host/font.o host/cover.o host/dump.o
@@ -1332,6 +1655,7 @@ UNIT_TESTS = libbeepyfb/tests/test_expand \
              beepy-nav/tests/test_map beepy-nav/tests/test_gpx \
              beepy-nav/tests/test_route beepy-nav/tests/test_tile \
              beepy-nav/tests/test_search \
+             beepy-nav/tests/test_roadgrid beepy-nav/tests/test_persp \
              beepy-nav/tests/test_netroute \
              beepy-nav/tests/test_netfetch
 
@@ -1350,6 +1674,18 @@ test-unit: $(UNIT_TESTS) beepy-nav/tests/gpx/oversize.gpx
 	./beepy-nav/tests/test_route
 	./beepy-nav/tests/test_tile
 	./beepy-nav/tests/test_search
+#	T-ROADGRID. The spatial index the 3D nav view queries every frame (6.6).
+#	Node coordinates only, built by hand, so it needs no pack and runs here.
+#	The assertion that matters is the 22-million-cell extent holding two nodes:
+#	the sparse TILE index shipped with that bound written against the extent
+#	instead of the occupancy, and a 4x4 fixture could not tell the difference.
+	./beepy-nav/tests/test_roadgrid
+#	T-PERSP. The tilted camera, and one assertion in it is load-bearing for the
+#	whole 2D/3D design: at pitch 90 the projection must be EXACTLY the top-down
+#	affine, to 1e-12. If it is not, then 2D and 3D are two projections sharing
+#	a name and every later claim about one code path is false. Clamping the
+#	pitch to 89.98 degrees -- invisible on the panel -- fails it four ways.
+	./beepy-nav/tests/test_persp
 #	T-NETROUTE / T-NETROUTE-BAD. Reads its fixtures by relative path, so it
 #	runs from the repo root like the rest.
 	./beepy-nav/tests/test_netroute
@@ -1423,6 +1759,20 @@ beepy-nav/tests/test_route: beepy-nav/tests/test_route.c beepy-nav/src/gpx.c \
 # what lets the test build its fixtures byte by byte instead of shelling out
 # to mktiles.py (Pillow, and therefore Mac-only, and therefore useless to a
 # test that has to run inside `make check` on the device).
+# roadgrid.c reads node coordinates and nothing else, so the test links it
+# alone -- no pack, no search.c, no pixels. persp.c is pure arithmetic and
+# links against libm only. Both are therefore runnable in either lane, which is
+# what puts them inside `check` on the device.
+beepy-nav/tests/test_roadgrid: beepy-nav/tests/test_roadgrid.c \
+                              beepy-nav/src/roadgrid.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
+		beepy-nav/tests/test_roadgrid.c beepy-nav/src/roadgrid.c $(LDLIBS)
+
+beepy-nav/tests/test_persp: beepy-nav/tests/test_persp.c \
+                           beepy-nav/src/persp.c $(HDRS)
+	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
+		beepy-nav/tests/test_persp.c beepy-nav/src/persp.c $(LDLIBS)
+
 beepy-nav/tests/test_tile: beepy-nav/tests/test_tile.c beepy-nav/src/tile.c \
                            $(HDRS)
 	$(CC) $(CFLAGS) $(INC) -Ibeepy-nav/src -o $@ \
@@ -1754,13 +2104,63 @@ test-tiles: host/beepy-nav $(TILEPACK)
 	./host/beepy-nav --demo --page nav-tiles \
 		--basemap out-tiles-merged-1.tiles --dump out-nav-tiles-merged.fb
 	cmp goldens/nav-tiles.fb out-nav-tiles-merged.fb
+#	DESIGN.md 6.5: a rung present in two inputs is UNIONED, which is what puts
+#	fine detail for several cities in one basemap. This pack pair is the smallest
+#	case that can tell the union from the rule it replaced -- the same ground at
+#	the same rung cut to two corridor widths, so one is a strict superset of the
+#	other and the counts differ. Taking the rung from the FIRST input, which is
+#	what this used to do, returns 6 tiles for narrow-then-wide; unioning returns
+#	32 whichever way round they are given.
+	@echo "--- T-TILES-MERGE-UNION: one rung from two packs keeps both areas"
+	python3 tools/mktiles.py --osm $(TILEOSM) --route $(TILEROUTE) \
+		--corridor 300 --zooms 2.5 -o out-tiles-narrow.tiles --quiet
+	python3 tools/mktiles.py --osm $(TILEOSM) --route $(TILEROUTE) \
+		--corridor 2000 --zooms 2.5 -o out-tiles-wide.tiles --quiet
+	python3 tools/mktiles.py --info out-tiles-narrow.tiles | \
+		grep -q "1 zooms  6 tiles"
+	python3 tools/mktiles.py --info out-tiles-wide.tiles | \
+		grep -q "1 zooms  32 tiles"
+	python3 tools/mergetiles.py out-tiles-narrow.tiles out-tiles-wide.tiles \
+		-o out-tiles-union.tiles --quiet
+	python3 tools/mktiles.py --info out-tiles-union.tiles | \
+		grep -q "1 zooms  32 tiles"
+	python3 tools/mergetiles.py out-tiles-wide.tiles out-tiles-narrow.tiles \
+		-o out-tiles-union2.tiles --quiet
+	python3 tools/mktiles.py --info out-tiles-union2.tiles | \
+		grep -q "1 zooms  32 tiles"
 #	Joining a pack to itself is the degenerate case, and it is the one that
 #	catches an off-by-one in the index rewrite: every rung is already present,
-#	so the output must be the input, byte for byte.
+#	so the output must be the input, byte for byte. It is ALSO what covers the
+#	union's collision path: every cell is present in both inputs, the first wins
+#	every time, and byte-for-byte is the proof that nothing was added or moved.
 	@echo "--- T-TILES-MERGE-IDEMPOTENT: a pack joined to itself is itself"
 	python3 tools/mergetiles.py $(TILEPACK) $(TILEPACK) \
 		-o out-tiles-merged-3.tiles --quiet
 	cmp $(TILEPACK) out-tiles-merged-3.tiles
+#	DESIGN.md 6.5's SPARSE index (pack v2). A merged pack uses one grid per rung
+#	spanning every region in it, and a dense index is 4 bytes per CELL: two cuts
+#	far enough apart overflow it, so mergetiles switches encodings. The claim that
+#	has to hold is that the encoding changes NOTHING a reader can see.
+#
+#	--sparse forces the encoding. The alternative was two fixtures placed far
+#	enough apart to overflow the dense ceiling by accident, which at 4 m/px means
+#	2 000 km and makes the test rest on a coincidence in the geography.
+	@echo "--- T-TILES-SPARSE: a sparse pack is the dense pack, exactly"
+	python3 tools/mktiles.py --osm $(TILEOSM) --route $(TILEROUTE) \
+		--corridor 500 --zooms 4 -o out-tiles-near.tiles --quiet
+	python3 tools/mergetiles.py out-tiles-near.tiles --sparse \
+		-o out-tiles-sparse.tiles --quiet
+	python3 tools/mktiles.py --info out-tiles-sparse.tiles | grep -q "^.*: v2"
+#	Same tiles, same frame: the merged sparse pack must draw the corridor exactly
+#	as the pack it came from. A binary search that returned a neighbour on a miss,
+#	or a key computed against the wrong grid width, fails here and nowhere else.
+	./host/beepy-nav --demo --page nav-tiles \
+		--basemap out-tiles-near.tiles --dump out-nav-near.fb
+	./host/beepy-nav --demo --page nav-tiles \
+		--basemap out-tiles-sparse.tiles --dump out-nav-sparse.fb
+	cmp out-nav-near.fb out-nav-sparse.fb
+	rm -f out-tiles-near.tiles out-tiles-sparse.tiles \
+		out-nav-near.fb out-nav-sparse.fb
 #	DESIGN.md 6.5: a tile is addressed as floor(e / mpp) in the PACK's frame,
 #	so joining packs cut against different references would silently name
 #	different ground. The tool has to refuse rather than produce a plausible
@@ -1774,6 +2174,8 @@ test-tiles: host/beepy-nav $(TILEPACK)
 	rm -f out-tiles-1.tiles out-tiles-2.tiles out-tiles-coarse.tiles \
 		out-tiles-merged-1.tiles out-tiles-merged-2.tiles \
 		out-tiles-merged-3.tiles out-tiles-elsewhere.tiles \
+		out-tiles-narrow.tiles out-tiles-wide.tiles \
+		out-tiles-union.tiles out-tiles-union2.tiles \
 		out-nav-tiles-merged.fb
 	@echo "test-tiles: PASS"
 
@@ -1831,8 +2233,14 @@ test-roads: $(ROADPACK) $(ROADOPEN) $(ROADNAMES)
 		-o out-roads-modes.roads --quiet
 	cmp out-roads-modes.roads beepy-nav/tests/roads/modes.roads
 	python3 tools/mkpack.py --info beepy-nav/tests/roads/asok.roads | \
-		grep -q "^beepy-nav/tests/roads/asok.roads: v3"
+		grep -q "^beepy-nav/tests/roads/asok.roads: v4"
 	rm -f out-roads-modes.roads
+#	And the weighting fixture beside it, by the same rule: a committed pack is
+#	only evidence for as long as it is still what the packer produces.
+	python3 tools/mkpack.py --osm $(ROADBIAS) --ref $(ROADREF) \
+		-o out-roads-bias.roads --quiet
+	cmp out-roads-bias.roads beepy-nav/tests/roads/bias.roads
+	rm -f out-roads-bias.roads
 	@echo "--- T-ROADS-POIS: a school is somewhere to go, an unnamed thing is not"
 	python3 tools/mkpack.py --osm $(ROADPOIS) --ref $(ROADREF) \
 		-o out-roads-pois.roads --quiet
@@ -1912,6 +2320,10 @@ endif
 		-o beepy-nav/tests/roads/pois.roads
 	python3 tools/mkpack.py --osm $(ROADMODES) --ref $(ROADREF) \
 		-o beepy-nav/tests/roads/modes.roads
+	python3 tools/mkpack.py --osm $(ROADBIAS) --ref $(ROADREF) \
+		-o beepy-nav/tests/roads/bias.roads
+	python3 tools/mkpack.py --osm $(ROADTOLLS) --ref $(ROADREF) \
+		-o beepy-nav/tests/roads/tolls.roads
 
 # Rebuilding the fixture is deliberate, like regenerating a golden.
 tiles: 
@@ -1943,6 +2355,7 @@ clean:
 		$(RDIR)/*.nmea $(RDIR)/*.tsv $(RDIR)/*.fb $(RDIR)/*.log \
 		out-tiles-*.tiles out-roads-*.roads out-*.roads \
 		beepy-nav/tests/test_tile beepy-nav/tests/test_search \
+		beepy-nav/tests/test_roadgrid beepy-nav/tests/test_persp \
 		*.o */*.o */*/*.o *.a */*.a
 	rm -rf host
 

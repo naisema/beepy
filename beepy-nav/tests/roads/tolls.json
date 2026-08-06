@@ -1,0 +1,89 @@
+{
+    "_comment": [
+        "A hand-written extract for the ONE thing pack v4 added: the toll bit in",
+        "EDGES.flags, and a router that honours it (DESIGN.md 7.7.1).",
+        "",
+        "modes.json's shape, spent on a different flag. Two ways between the same",
+        "pair of points:",
+        "  1  a TOLLWAY, straight and short  -- toll=yes, the fast way across",
+        "  2  a FREE ROAD dogleg, longer     -- the only way `tolls = avoid` may go",
+        "",
+        "That is the assertion, and it is a LENGTH rather than a flag: with tolls",
+        "allowed the router takes the short tolled way, with tolls avoided it must",
+        "take the longer free one, and the two totals must differ. A router that",
+        "ignored the bit would return the same route twice and the test would see",
+        "one length twice.",
+        "",
+        "BOTH ARE PRIMARY, deliberately. In modes.json the short way is a motorway,",
+        "so a class-aware router already refuses it for a bicycle -- reusing that",
+        "would make this test pass on 7.7's code with no toll bit at all. Here",
+        "class is held constant and toll is the only difference, so nothing but the",
+        "new bit can produce the two lengths.",
+        "",
+        "Way 3 is a toll-only spur to a dead end: 'avoiding tolls means no route at",
+        "all where the only road is tolled' is the honest answer and needs a case.",
+        "",
+        "Way 4 carries toll=no -- OSM's explicit statement that a road is FREE.",
+        "It must be routable with tolls avoided. A packer that set the bit for any",
+        "`toll` key rather than for `toll=yes` would refuse it, and that mistake",
+        "punishes exactly the ways someone surveyed carefully.",
+        "",
+        "Coordinates on a 0.001 degree grid near Asok, like the other fixtures."
+    ],
+    "elements": [
+        {
+            "type": "way",
+            "id": 1,
+            "tags": {
+                "highway": "primary",
+                "toll": "yes",
+                "name:en": "TOLLWAY"
+            },
+            "geometry": [
+                {"lat": 13.740, "lon": 100.560},
+                {"lat": 13.744, "lon": 100.560}
+            ]
+        },
+        {
+            "type": "way",
+            "id": 2,
+            "tags": {
+                "highway": "primary",
+                "name:en": "FREE ROAD"
+            },
+            "geometry": [
+                {"lat": 13.740, "lon": 100.560},
+                {"lat": 13.740, "lon": 100.558},
+                {"lat": 13.744, "lon": 100.558},
+                {"lat": 13.744, "lon": 100.560}
+            ]
+        },
+        {
+            "type": "way",
+            "id": 3,
+            "tags": {
+                "highway": "primary",
+                "toll": "yes",
+                "name:en": "TOLL SPUR"
+            },
+            "geometry": [
+                {"lat": 13.744, "lon": 100.560},
+                {"lat": 13.748, "lon": 100.560}
+            ]
+        },
+        {
+            "type": "way",
+            "id": 4,
+            "tags": {
+                "highway": "primary",
+                "toll": "no",
+                "name:en": "SURVEYED FREE"
+            },
+            "geometry": [
+                {"lat": 13.740, "lon": 100.560},
+                {"lat": 13.740, "lon": 100.562},
+                {"lat": 13.736, "lon": 100.562}
+            ]
+        }
+    ]
+}

@@ -85,9 +85,18 @@ enum {
  * from the rider's actual position to the first node and from the last node to
  * the point that was asked for -- because that is the distance the rider will
  * cover and therefore the one CONFIRM must show. */
+/* `tolls` is CFG_TOLLS_AVOID or CFG_TOLLS_ALLOW (DESIGN.md 7.7.1). A separate
+ * argument and not a bit folded into `mode`, because it is a rider's policy and
+ * `mode` is a vehicle: the two combine four ways and a caller reading
+ * router_path(..., NAV_MODE_CAR, CFG_TOLLS_AVOID, ...) can see which is which. */
+/* `major` is DESIGN.md 7.7.2's class weighting: 1 costs a metre of soi more than
+ * a metre of primary, 0 is the shortest-distance router this used to be. It only
+ * does anything in CAR mode -- a bicycle is kept off big roads by exclusion and
+ * wants the short way -- and it changes what is CHOSEN, never what is reported:
+ * `*total_m` stays true metres, measured off the chosen path. */
 int router_path(const roads_t *g, double se, double sn, double de, double dn,
-                int mode, int *nodes, int maxn, double *total_m, char *why,
-                int nwhy, int *code);
+                int mode, int tolls, int major, int *nodes, int maxn,
+                double *total_m, char *why, int nwhy, int *code);
 
 /* The same, as a route_t: the requested start, the path, the requested
  * destination, then route_prepare() + route_cues_derive() + route_cues_finish()
@@ -105,8 +114,13 @@ int router_path(const roads_t *g, double se, double sn, double de, double dn,
  * of the pack edge. */
 #define ROUTER_MAX_SNAP_M 2000.0
 
+/* Also sets out->toll from the edges it actually chose -- MEASURED on the
+ * result, not inferred from `tolls`. With CFG_TOLLS_AVOID the answer is NO by
+ * construction, but inferring it would make the badge on CONFIRM a restatement
+ * of the setting rather than a fact about the route, and the two come apart the
+ * moment an exclusion is ever relaxed. */
 int router_to(const roads_t *g, double se, double sn, double de, double dn,
-              int mode, const char *name, route_t *out, char *why, int nwhy,
-              int *code);
+              int mode, int tolls, int major, const char *name, route_t *out,
+              char *why, int nwhy, int *code);
 
 #endif /* BEEPY_NAV_ROUTER_H */

@@ -218,8 +218,16 @@ test_auto_zoom(void)
              "boundary takes the finer rung");
     close_to(map_auto_zoom(0.8 * ahead * 1.5 + 1e-6, ahead), 2.5, 1e-12,
              "just past the boundary steps up");
-    close_to(map_auto_zoom(0.0, ahead), MAP_ZOOMS[0], 1e-12,
-             "zero distance takes the finest rung");
+    /* The finest rung AUTO ZOOM may choose, which is not MAP_ZOOMS[0] any more:
+     * the two rungs below it magnify the basemap (DESIGN.md 6.1) and the program
+     * never picks those for the rider. */
+    close_to(map_auto_zoom(0.0, ahead), MAP_ZOOMS[MAP_AUTO_FIRST], 1e-12,
+             "zero distance takes the finest CUT rung");
+    check(MAP_ZOOMS[MAP_AUTO_FIRST] == 1.5, "which is 1.5 m/px");
+    /* And it never returns a magnified one, however near the cue. */
+    check(map_auto_zoom(0.0, ahead) > MAP_ZOOMS[0] &&
+              map_auto_zoom(0.0, ahead) > MAP_ZOOMS[1],
+          "auto zoom never chooses a magnified rung");
     close_to(map_auto_zoom(1e9, ahead), MAP_ZOOMS[MAP_NZOOM - 1], 1e-12,
              "beyond the ladder saturates");
     /* Monotone: more distance never zooms in. */
@@ -306,8 +314,10 @@ test_zoom_step(void)
     close_to(map_zoom_step(MAP_ZOOMS[4], 0), MAP_ZOOMS[4], 1e-12,
              "a zero step stays put");
     /* Off-ladder input snaps to the nearest rung first: 5.5 is nearer 6 than
-     * 4, so stepping in from it gives 4 and not 2.5. */
-    close_to(map_zoom_step(5.5, -1), MAP_ZOOMS[2], 1e-12,
+     * 4, so stepping in from it gives 4 and not 2.5. Written as a VALUE rather
+     * than an index, because the index moved when 6.1 added two finer rungs and
+     * an index here says nothing about which rung is meant. */
+    close_to(map_zoom_step(5.5, -1), 4.0, 1e-12,
              "off-ladder input snaps to the nearest rung");
     /* Out then in returns where it started, everywhere in the middle. */
     {

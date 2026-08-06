@@ -180,6 +180,27 @@ jnext(const char *v)
     return *p == ',' ? jws(p + 1) : NULL;
 }
 
+/* A JSON `true` or `false`. Returns 0 and sets *b, or -1 for anything else --
+ * including a missing key and a `null`, because "the server did not say" is a
+ * third answer and not a quiet false. The caller turns the -1 into
+ * ROUTE_TOLL_UNKNOWN rather than into NO. */
+static int
+jbool(const char *v, int *b)
+{
+    if (!v)
+        return -1;
+    v = jws(v);
+    if (!strncmp(v, "true", 4)) {
+        *b = 1;
+        return 0;
+    }
+    if (!strncmp(v, "false", 5)) {
+        *b = 0;
+        return 0;
+    }
+    return -1;
+}
+
 static int
 jnum(const char *v, double *out)
 {
@@ -979,6 +1000,14 @@ netroute_parse(const char *json, int type, const char *name, route_t *out,
     }
 
     route_init(&r);
+    /* AFTER route_init, whose memset would otherwise wipe it back to UNKNOWN.
+     * Only Valhalla is asked: OSRM's reply carries no such field, and reading
+     * a missing key as false would put NO TOLLS on a page that has no idea. */
+    if (type == NETROUTE_VALHALLA) {
+        int t;
+        if (jbool(jget(jget(node, "summary"), "has_toll"), &t) == 0)
+            r.toll = t ? ROUTE_TOLL_YES : ROUTE_TOLL_NO;
+    }
     r.pt = s.pt;
     r.npt = s.npt;
     s.pt = NULL; /* r owns the points now; s keeps only the leg bases */

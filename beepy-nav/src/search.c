@@ -30,7 +30,7 @@
 #endif
 
 #define MAGIC "BNAVROAD"
-#define ROADS_VERSION 3
+#define ROADS_VERSION 4
 /* One EDGES record on disk: to, len_mm, flags, name. 12 before v3 widened the
  * name to a u32 -- named here rather than repeated four times, because the last
  * time this stride was a literal it appeared in four expressions on four lines. */
@@ -207,8 +207,9 @@ roads_open(const char *path, char *why, int nwhy)
     if (rd_u16(hdr + 8) != ROADS_VERSION) {
         /* Which version, which is wanted, and what to run. This message is the
          * one a rider actually meets after a version bump -- 7.7's road class
-         * took BNAVROAD to v2 and 1.4.7's nationwide destination index took it to
-         * v3 -- and "unsupported pack version" on its own sent them to the source
+         * took BNAVROAD to v2, 1.4.7's nationwide destination index took it to
+         * v3, and 7.7.1's toll bit to v4 -- and "unsupported pack version" on
+         * its own sent them to the source
          * to find out what to do about it. The tile format has never moved, which
          * is why the command named here rebuilds only this pack.
          *
